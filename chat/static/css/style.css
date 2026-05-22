@@ -740,20 +740,27 @@ button {
     font-size: 1.35rem;
 }
 
+/* Compact Environment pill grid — was 2-col 74px-tall tiles that ate
+   ~600px vertical; now flex-wrap pills ~30px tall to balance with the
+   right-side Forge Brain pills and free vertical space for the work. */
 .facts-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
     min-width: 0;
 }
 
 .fact {
     min-width: 0;
-    min-height: 74px;
-    padding: 12px;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 6px 12px;
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 999px;
     background: var(--panel-alt);
+    font-size: 0.78rem;
+    line-height: 1.2;
 }
 
 .fact.state-ready {
@@ -771,7 +778,6 @@ button {
     background: #fff0ee;
 }
 
-.fact span,
 .model-card small,
 .model-card em,
 .workflow-card p {
@@ -779,14 +785,17 @@ button {
 }
 
 .fact span {
-    display: block;
-    margin-bottom: 8px;
-    font-size: 0.78rem;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
 }
 
 .fact strong {
-    display: block;
-    font-size: 1.02rem;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--ink);
     overflow-wrap: anywhere;
 }
 
@@ -880,8 +889,8 @@ textarea {
 .directory-question {
     display: grid;
     gap: 8px;
-    margin-top: 12px;
-    padding: 12px;
+    margin-top: 10px;
+    padding: 10px 12px;
     border: 1px solid var(--line);
     border-radius: 7px;
     background: #fbfcfb;
@@ -892,15 +901,52 @@ textarea {
     justify-content: space-between;
     gap: 10px;
     align-items: center;
-    font-weight: 800;
+    font-weight: 700;
+    font-size: 0.85rem;
+}
+
+/* Convert the radio rows into a horizontal pill toggle. Hide the raw
+   radio input and style the surrounding label as a clickable pill —
+   :has() lets us reflect the :checked state without JS. */
+.directory-question {
+    --radio-pill-gap: 6px;
+}
+
+.directory-question .radio-row + .radio-row {
+    margin-top: 0;
 }
 
 .radio-row {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 8px;
+    display: inline-flex;
     align-items: center;
+    gap: var(--radio-pill-gap);
+    padding: 6px 12px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel-alt);
     color: var(--muted);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    font-size: 0.8rem;
+    margin-right: 6px;
+}
+
+.radio-row input[type="radio"] {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.radio-row:has(input[type="radio"]:checked) {
+    background: var(--accent);
+    color: #ffffff;
+    border-color: var(--accent-strong);
+    font-weight: 700;
+}
+
+.radio-row:hover:not(:has(input[type="radio"]:checked)) {
+    border-color: var(--accent);
+    color: var(--ink);
 }
 
 .directory-path-label {
@@ -951,6 +997,16 @@ textarea {
     display: flex;
     flex-direction: column;
     min-height: 0;
+    /* Allow the panel to scroll internally when its content exceeds the
+       column height (e.g. Start panel expanded squeezes vertical space).
+       Without this the Start Planning button could slide off-screen. */
+    overflow-y: auto;
+}
+
+/* Tighten the textarea so the rest of the intake panel always fits. */
+#project-input {
+    min-height: 90px;
+    max-height: 160px;
 }
 
 
@@ -1503,7 +1559,13 @@ textarea {
    ============================================================ */
 
 .start-panel {
-    margin-bottom: 18px;
+    margin-bottom: 14px;
+    padding: 14px 18px;
+    flex-shrink: 0;
+}
+
+.start-panel .panel-header h2 {
+    font-size: 1rem;
 }
 
 .start-panel.is-collapsed .collapsible-panel-body {
@@ -1715,7 +1777,11 @@ textarea {
    ============================================================ */
 
 .event-terminal {
-    margin: 18px 0 8px 0;
+    /* Sit cleanly under the cards with a real gap and never shrink to
+       overlap the planner-grid above. flex-shrink: 0 reserves its space
+       even when the planner-grid wants more. */
+    margin: 14px 0 4px 0;
+    flex-shrink: 0;
     background: #0b0f17;
     color: #e8eef9;
     border-radius: 10px;
