@@ -1,0 +1,130 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": ["1", 0],
+      "lora_name": "ltx-2.3-22b-distilled-lora-384.safetensors",
+      "strength_model": 1.0
+    }
+  },
+  "3": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "gemma-forge-harness-ready.png"
+    }
+  },
+  "4": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": ["3", 0],
+      "upscale_method": "lanczos",
+      "width": 768,
+      "height": 512,
+      "crop": "center"
+    }
+  },
+  "5": {
+    "class_type": "LTXVPreprocess",
+    "inputs": {
+      "image": ["4", 0],
+      "img_compression": 28
+    }
+  },
+  "6": {
+    "class_type": "LTXAVTextEncoderLoader",
+    "inputs": {
+      "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors",
+      "device": "default"
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["6", 0],
+      "text": "Cinematic product demo motion of the Gemma Forge local AI work harness. The clean teal interface remains readable while panels gently illuminate, protocol cards activate in sequence, model lane glows softly, and the workspace feels calm, capable, private, and approachable. Smooth camera push-in, modern open source launch video, subtle forge-light energy, no people."
+    }
+  },
+  "8": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "clip": ["6", 0],
+      "text": "blurry text, unreadable interface, distorted UI, extra logos, chaotic motion, harsh flicker, dark horror lighting, people, hands, low quality, broken layout"
+    }
+  },
+  "9": {
+    "class_type": "LTXVConditioning",
+    "inputs": {
+      "positive": ["7", 0],
+      "negative": ["8", 0],
+      "frame_rate": 24.0
+    }
+  },
+  "10": {
+    "class_type": "LTXVImgToVideo",
+    "inputs": {
+      "positive": ["9", 0],
+      "negative": ["9", 1],
+      "vae": ["1", 2],
+      "image": ["5", 0],
+      "width": 768,
+      "height": 512,
+      "length": 17,
+      "batch_size": 1,
+      "strength": 0.62
+    }
+  },
+  "11": {
+    "class_type": "ModelSamplingLTXV",
+    "inputs": {
+      "model": ["2", 0],
+      "max_shift": 2.05,
+      "base_shift": 0.95,
+      "latent": ["10", 2]
+    }
+  },
+  "12": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["11", 0],
+      "seed": 26052026,
+      "steps": 8,
+      "cfg": 3.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": ["10", 0],
+      "negative": ["10", 1],
+      "latent_image": ["10", 2],
+      "denoise": 0.82
+    }
+  },
+  "13": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["12", 0],
+      "vae": ["1", 2]
+    }
+  },
+  "14": {
+    "class_type": "CreateVideo",
+    "inputs": {
+      "images": ["13", 0],
+      "fps": 24.0
+    }
+  },
+  "15": {
+    "class_type": "SaveVideo",
+    "inputs": {
+      "video": ["14", 0],
+      "filename_prefix": "video/gemma_forge_intent_i2v",
+      "format": "mp4",
+      "codec": "h264"
+    }
+  }
+}

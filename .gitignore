@@ -1,0 +1,27 @@
+.DS_Store
+.axon/
+__pycache__/
+*.py[cod]
+*.log
+*.egg-info/
+
+.env
+.venv/
+venv/
+.gforge/
+
+crash_log.txt
+
+chat/sessions.json
+chat/session-data/
+chat/models.json
+
+*.gguf
+*.safetensors
+models/
+downloads/
+
+# Raw screen recordings — each exceeds GitHub's 100 MB/file limit.
+# Processed/compressed mp4 versions under docs/submission-media/processed/
+# are committed; the masters stay local.
+docs/submission-media/raw-recordings/

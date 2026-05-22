@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemma-forge"
+version = "0.1.0"
+description = "A local Gemma 4 work harness for project planning, orchestration, verification, and handoff."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "flask",
+    "flask-cors",
+    "huggingface_hub",
+    "requests",
+]
+
+[project.optional-dependencies]
+gui = ["customtkinter"]
+
+[project.scripts]
+gemma-forge = "chat.server:main"
+
+[tool.setuptools]
+packages = ["chat", "src"]
+
+[tool.setuptools.package-data]
+chat = [
+    "templates/*.html",
+    "static/css/*.css",
+    "static/js/*.js",
+    "static/assets/*.svg",
+]

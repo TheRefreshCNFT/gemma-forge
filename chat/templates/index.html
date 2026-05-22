@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gemma Forge | Work Harness</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div id="setup-screen" class="setup-screen">
+        <div class="setup-panel">
+            <div class="brand-mark">GEMMA FORGE</div>
+            <h1>Setting up workspace</h1>
+            <p>Scanning local resources, Ollama, model availability, and planning tools.</p>
+            <div class="loader-track"><div class="loader-bar"></div></div>
+        </div>
+    </div>
+
+    <div id="app" class="app-shell hidden">
+        <aside class="sidebar">
+            <div class="brand">
+                <img class="brand-logo" src="/static/assets/forge-logo.svg" alt="Gemma Forge">
+                <div>
+                    <div class="brand-title">Gemma Forge</div>
+                    <div class="brand-subtitle">Local work harness</div>
+                </div>
+            </div>
+            <button id="new-session-btn" class="primary-action">New project plan</button>
+            <button id="link-sessions-btn" class="secondary-sidebar-action">Link projects</button>
+            <button id="lock-sessions-btn" class="secondary-sidebar-action hidden">Lock selected projects</button>
+            <div class="sidebar-label-row">
+                <div class="sidebar-label">Projects</div>
+                <button class="help-trigger dark-help" data-help-key="session-list" aria-label="Help for projects">?</button>
+            </div>
+            <div id="sessions-list" class="sessions-list"></div>
+        </aside>
+
+        <main class="main">
+            <header class="topbar">
+                <div class="title-row">
+                    <h1>Forge Harness</h1>
+                    <button class="help-trigger" data-help-key="forge-harness" aria-label="Help for Forge Harness">?</button>
+                </div>
+                <div class="topbar-actions">
+                    <div id="active-model-pill" class="status-pill model-active-pill">Forge Brain: loading.</div>
+                    <button id="settings-toggle-btn" class="secondary-action">Settings</button>
+                    <div id="workspace-pill" class="status-pill">Workspace ready</div>
+                </div>
+            </header>
+
+            <section id="settings-panel" class="panel settings-panel hidden">
+                <div class="panel-header">
+                    <div>
+                        <p class="section-label">Settings</p>
+                        <h2>Models and interfaces</h2>
+                    </div>
+                    <button class="help-trigger" data-help-key="settings" aria-label="Help for settings">?</button>
+                </div>
+                <div class="settings-grid">
+                    <div>
+                        <button id="import-models-btn" class="primary-action compact-action">Import installed Ollama models</button>
+                        <div id="model-registry-status" class="inline-status">Models imported into `models.json` appear in the selector.</div>
+                        <div id="model-route-status" class="inline-status">Selected model: loading.</div>
+                        <button id="view-error-log-btn" class="secondary-action compact-action">View error log</button>
+                        <div id="error-log-panel" class="error-log-panel hidden">
+                            <div class="error-log-header">
+                                <strong>Meaningful errors</strong>
+                                <button id="close-error-log-btn" class="secondary-action compact-action" type="button">Close</button>
+                            </div>
+                            <pre id="error-log-output">No errors loaded.</pre>
+                        </div>
+                    </div>
+                    <div class="download-card">
+                        <label>
+                            Hugging Face repo
+                            <input id="download-repo-input" type="text" placeholder="google/gemma-4-E2B-it">
+                        </label>
+                        <label>
+                            Ollama model name
+                            <input id="download-name-input" type="text" placeholder="gemma-4">
+                        </label>
+                        <label class="check-row">
+                            <input id="download-only-check" type="checkbox">
+                            <span>Download only</span>
+                        </label>
+                        <label class="check-row">
+                            <input id="create-interface-check" type="checkbox" checked>
+                            <span>Create a new project interface for this model</span>
+                        </label>
+                        <button id="provision-model-btn" class="primary-action compact-action">Provision or skip if installed</button>
+                        <div id="provision-status" class="inline-status"></div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="start-panel" class="panel start-panel">
+                <div class="panel-header">
+                    <div>
+                        <p class="section-label">Start a project</p>
+                        <h2>Environment + Forge Brain</h2>
+                    </div>
+                    <div class="panel-header-actions">
+                        <button class="help-trigger" data-help-key="start-panel" aria-label="Help for Start panel">?</button>
+                        <button class="panel-toggle-btn" data-collapse-target="start-panel-body" aria-controls="start-panel-body" aria-expanded="true" aria-label="Collapse Start panel" title="Collapse Start panel">-</button>
+                    </div>
+                </div>
+                <div id="start-panel-body" class="collapsible-panel-body start-panel-body">
+                    <div class="start-grid">
+                        <div class="start-environment">
+                            <p class="section-sublabel">Environment</p>
+                            <div id="environment-summary" class="facts-grid"></div>
+                            <div id="ollama-plan" class="notice"></div>
+                        </div>
+                        <div class="start-models">
+                            <p class="section-sublabel">Forge Brain</p>
+                            <div class="pill-group">
+                                <div class="pill-group-label">
+                                    <span>Primary</span>
+                                    <span class="pill-group-hint">click a model to activate</span>
+                                </div>
+                                <div id="primary-model-pills" class="model-pills"></div>
+                            </div>
+                            <div class="pill-group">
+                                <div class="pill-group-label">
+                                    <span>Fallback</span>
+                                    <span class="pill-group-hint">used if the primary is unreachable</span>
+                                </div>
+                                <div id="fallback-model-pills" class="model-pills"></div>
+                            </div>
+                            <div id="model-options" class="hidden"></div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="planner-grid">
+                <div class="panel intake-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-label">New Project</p>
+                            <h2>What project are we planning?</h2>
+                        </div>
+                        <div class="panel-header-actions">
+                            <button class="help-trigger" data-help-key="new-session" aria-label="Help for new projects">?</button>
+                            <label class="verify-toggle">
+                                <input id="global-human-verify" type="checkbox" checked>
+                                <span>Human verify</span>
+                            </label>
+                            <button class="help-trigger" data-help-key="human-verify" aria-label="Help for human verification">?</button>
+                        </div>
+                    </div>
+                    <textarea id="project-input" placeholder="Describe the project, deadline, constraints, and what done looks like."></textarea>
+                    <div class="directory-question">
+                        <div class="directory-question-title">
+                            <span>Do you already have a project directory for this?</span>
+                            <button class="help-trigger" data-help-key="project-directory" aria-label="Help for project directory">?</button>
+                        </div>
+                        <label class="radio-row">
+                            <input type="radio" name="project-directory-mode" value="no" checked>
+                            <span>No, this plan is the project seed</span>
+                        </label>
+                        <label class="radio-row">
+                            <input type="radio" name="project-directory-mode" value="yes">
+                            <span>Yes, use an existing directory</span>
+                        </label>
+                        <label class="directory-path-label" for="project-directory-input">Project directory or desired new location</label>
+                        <input id="project-directory-input" type="text" placeholder="/Users/webot/Projects/example">
+                        <p id="project-directory-note" class="directory-note">No directory yet: leave blank for Forge to create a workspace automatically, or enter a desired new path and Project Execution will create it.</p>
+                    </div>
+                    <button id="start-planning-btn" class="primary-action">Start planning</button>
+                    <div id="agent-output" class="agent-output">The planning agent will map intent, activate the right protocol cards, and define the first checkpoint.</div>
+                </div>
+
+                <div class="panel cards-panel">
+                    <div class="panel-header">
+                        <div>
+                            <p class="section-label">Orchestration</p>
+                            <h2>Protocol cards</h2>
+                        </div>
+                        <div class="plan-controls">
+                            <button class="help-trigger" data-help-key="protocol-cards" aria-label="Help for protocol cards">?</button>
+                            <button id="run-plan-btn" class="primary-action compact-action">Full Forge</button>
+                            <div id="plan-run-status" class="inline-status">Start a project to run active cards.</div>
+                        </div>
+                    </div>
+                    <div class="cards-panel-body">
+                        <div id="workflow-cards" class="workflow-cards"></div>
+                        <details id="skipped-protocols" class="skipped-protocols hidden">
+                            <summary>Skipped protocols</summary>
+                            <div id="skipped-cards" class="skipped-cards"></div>
+                        </details>
+                    </div>
+                    <div class="session-conversation-card">
+                        <div class="session-conversation-header">Project context</div>
+                        <div id="session-messages" class="session-messages"></div>
+                        <div class="message-compose">
+                            <textarea id="session-message-input" placeholder="Ask the agent to continue this project, manage a model, or audit the current plan."></textarea>
+                            <button id="send-session-message-btn" class="primary-action compact-action">Send to agent</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="event-terminal" class="event-terminal collapsed">
+                <header class="event-terminal-header">
+                    <div class="event-terminal-title">
+                        <span class="event-terminal-dot"></span>
+                        <span>Activity stream</span>
+                    </div>
+                    <div class="event-terminal-actions">
+                        <span id="event-terminal-status" class="event-terminal-status">connecting</span>
+                        <button id="event-terminal-clear" class="secondary-action compact-action" type="button">Clear</button>
+                        <button id="event-terminal-toggle" class="secondary-action compact-action" type="button">Show</button>
+                    </div>
+                </header>
+                <pre id="event-terminal-stream" class="event-terminal-stream" aria-live="polite"></pre>
+            </section>
+        </main>
+    </div>
+    <div id="help-popover" class="help-popover hidden" role="dialog" aria-live="polite"></div>
+    <script src="/static/js/chat.js"></script>
+</body>
+</html>

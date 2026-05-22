@@ -1,0 +1,12 @@
+{
+  "name": "gemma-forge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local Gemma work harness for project planning, execution, and verification.",
+  "scripts": {
+    "check": "python3 -m py_compile chat/server.py chat/workspace_scan.py chat/tool_runtime.py src/app.py src/config.py src/hf_engine.py src/utils.py tests/model_route_test.py tests/integration_test.py && node --check chat/static/js/chat.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

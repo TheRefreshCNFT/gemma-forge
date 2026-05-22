@@ -1,0 +1,7 @@
+customtkinter
+flask
+flask-cors
+huggingface_hub
+requests
+PyYAML>=6.0
+scrapling[all]>=0.4.5

@@ -1,0 +1,33 @@
+# Gemma Forge Submission Media
+
+This directory holds local media assets for the Gemma 4 Challenge submission.
+
+## Screenshots
+
+- `screenshots/01-setting-up-workspace.png`
+- `screenshots/02-forge-harness-ready.png`
+- `screenshots/03-forge-engine-panel.png`
+- `screenshots/04-forge-intelligence-panel.png`
+- `screenshots/05-project-session-protocol-cards.png`
+- `screenshots/06-settings-model-route-error-log.png`
+- `screenshots/07-mobile-responsive-harness.png`
+
+## Clean Demo Clip
+
+- `video/gemma-forge-screenshot-demo.mp4`
+
+This is a deterministic screenshot-based product clip. It preserves readable UI and is the safer base for the submission video.
+
+## ComfyUI Mood Clips
+
+- `comfy/outputs/video/gemma_forge_intent_i2v_00001_.mp4`
+- `comfy/outputs/video/gemma_forge_intent_i2v_subtle_00001_.mp4`
+
+These are local LTX image-to-video generations based on the Forge Harness screenshot. They are useful as atmospheric intro or transition material, not as the main product demo because generated UI text can distort.
+
+## ComfyUI Workflows
+
+- `comfy/gemma-forge-ltx-i2v-api.json`
+- `comfy/gemma-forge-ltx-i2v-subtle-api.json`
+
+Both workflows were checked against the running local ComfyUI server and had all required nodes and models available.
