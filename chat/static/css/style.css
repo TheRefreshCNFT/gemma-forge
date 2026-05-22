@@ -427,6 +427,15 @@ button {
     max-width: 100%;
     overflow-x: hidden;
     padding: 28px;
+    /* V2 — .main is a single-viewport flex column. The sidebar is
+       sticky 100vh; locking main to the same height (height: 100vh,
+       not min-height) makes the planner-grid's bottom align with the
+       sidebar's bottom regardless of content height. Individual
+       sections scroll internally when they overflow. */
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    overflow: hidden;
 }
 
 .topbar {
@@ -584,7 +593,11 @@ button {
 
 .planner-grid {
     grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr);
-    align-items: start;
+    align-items: stretch;
+    /* V2 — fill the remaining vertical space of .main so the intake
+       and cards columns stretch to bottom-align with the sidebar. */
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .panel,
@@ -916,7 +929,6 @@ textarea {
 .agent-output {
     max-width: 100%;
     margin-top: 14px;
-    max-height: 360px;
     overflow: auto;
     padding: 14px;
     border-radius: 7px;
@@ -926,6 +938,177 @@ textarea {
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     word-break: break-word;
+    /* V2 — within a flex-column intake-panel this region grows to
+       fill the remaining height so the panel's bottom edge aligns
+       with the sidebar's bottom. Min-height keeps it readable when
+       there's not much content. */
+    flex: 1 1 auto;
+    min-height: 200px;
+    max-height: none;
+}
+
+.intake-panel {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+
+
+/* ============================================================
+   V3 — Cards rolodex: deck-of-cards z-layered stack + arrow nav
+   ============================================================ */
+
+.cards-rolodex {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.rolodex-nav {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 4px 0;
+}
+
+.rolodex-arrow {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: var(--panel-alt);
+    color: var(--ink);
+    font-size: 1rem;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.rolodex-arrow:hover:not(:disabled) {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent-strong);
+    transform: scale(1.06);
+}
+
+.rolodex-arrow:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.rolodex-indicator {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    min-width: 60px;
+    text-align: center;
+}
+
+.workflow-cards.rolodex-stack {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 280px;
+    /* Reserve space for the peeking top edges of cards behind the front. */
+    padding-top: 30px;
+}
+
+/* Each card absolutely positioned over the others. The active card has
+   z-index = stack length; behind cards step down. translateY + scale
+   create the deck-edge peek effect. */
+.workflow-cards.rolodex-stack > .workflow-card {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 30px;
+    transform-origin: top center;
+    transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+                opacity 0.25s ease,
+                box-shadow 0.25s ease;
+    will-change: transform, opacity;
+    box-shadow: 0 12px 30px rgba(24, 33, 31, 0.10);
+}
+
+/* The active card sits flush on top. */
+.workflow-cards.rolodex-stack > .workflow-card.is-front {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+    z-index: 50;
+    box-shadow: 0 18px 40px rgba(24, 33, 31, 0.16);
+    cursor: default;
+}
+
+/* Cards behind the front, in order. Up to ~4 visible peek-edges, the rest
+   stack into the same slot at zero opacity. */
+.workflow-cards.rolodex-stack > .workflow-card.behind-1 {
+    transform: translateY(-10px) scale(0.985);
+    opacity: 0.92;
+    z-index: 40;
+}
+.workflow-cards.rolodex-stack > .workflow-card.behind-2 {
+    transform: translateY(-20px) scale(0.97);
+    opacity: 0.78;
+    z-index: 30;
+}
+.workflow-cards.rolodex-stack > .workflow-card.behind-3 {
+    transform: translateY(-28px) scale(0.955);
+    opacity: 0.6;
+    z-index: 20;
+}
+.workflow-cards.rolodex-stack > .workflow-card.behind-deep {
+    transform: translateY(-32px) scale(0.94);
+    opacity: 0;
+    z-index: 10;
+    pointer-events: none;
+}
+
+/* Cards "above" the front (haven't been seen yet) tuck off the top edge. */
+.workflow-cards.rolodex-stack > .workflow-card.ahead-1 {
+    transform: translateY(-44px) scale(0.985);
+    opacity: 0.4;
+    z-index: 40;
+}
+.workflow-cards.rolodex-stack > .workflow-card.ahead-2 {
+    transform: translateY(-56px) scale(0.97);
+    opacity: 0.25;
+    z-index: 30;
+}
+.workflow-cards.rolodex-stack > .workflow-card.ahead-deep {
+    transform: translateY(-64px) scale(0.94);
+    opacity: 0;
+    z-index: 10;
+    pointer-events: none;
+}
+
+/* Non-front cards lose interactive controls so the front card is the only
+   one accepting clicks. (CSS guard; JS also no-ops when not front.) */
+.workflow-cards.rolodex-stack > .workflow-card:not(.is-front) button,
+.workflow-cards.rolodex-stack > .workflow-card:not(.is-front) input {
+    pointer-events: none;
+}
+
+/* When a card has needs-attention, give the peek edges an amber accent so
+   the user can SEE there's an unresolved card behind the front. */
+.workflow-cards.rolodex-stack > .workflow-card.needs-attention {
+    border-color: #d97706;
+    box-shadow: 0 12px 30px rgba(217, 119, 6, 0.18);
+}
+
+/* Mobile: cards-panel-body height is constrained, so stack tightens. */
+@media (max-width: 980px) {
+    .workflow-cards.rolodex-stack {
+        min-height: 240px;
+        padding-top: 24px;
+    }
+    .workflow-cards.rolodex-stack > .workflow-card {
+        top: 24px;
+    }
 }
 
 .session-conversation {
@@ -1597,6 +1780,75 @@ textarea {
 
 .event-terminal-actions .secondary-action:hover {
     background: #2c3a55;
+}
+
+/* V4 — Forge mascot strip: pixelated icon + rotating quip. Lives in the
+   terminal header between the title and the actions. Hides on narrow
+   viewports so the Clear/Show buttons keep their tap targets. */
+.forge-mascot {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+    margin-right: 14px;
+    padding: 4px 10px 4px 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    color: #c7d2e1;
+    font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+    font-size: 0.74rem;
+    line-height: 1.2;
+    max-width: 520px;
+    min-width: 0;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+    will-change: opacity, transform;
+}
+
+.forge-mascot-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: linear-gradient(140deg, #1b2538 0%, #2c3a55 100%);
+    color: #fbbf24;
+    font-size: 16px;
+    flex-shrink: 0;
+    transition: transform 0.45s ease, color 0.3s ease;
+}
+
+.forge-mascot-icon svg {
+    width: 18px;
+    height: 18px;
+    display: block;
+    image-rendering: pixelated;
+}
+
+.forge-mascot:hover .forge-mascot-icon {
+    transform: rotate(-8deg);
+}
+
+.forge-mascot-quip {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+    color: #d6def0;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+}
+
+.forge-mascot.is-fading .forge-mascot-quip,
+.forge-mascot.is-fading .forge-mascot-icon {
+    opacity: 0;
+    transform: translateY(-3px);
+}
+
+@media (max-width: 880px) {
+    .forge-mascot {
+        display: none;
+    }
 }
 
 .event-terminal-stream {

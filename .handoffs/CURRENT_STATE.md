@@ -480,6 +480,52 @@ the contest demo path works end-to-end.** Driving doc:
   responded in 2.7 s (Ollama probe still snaps fast — confirms the
   short probes are still short).
 
+- **2026-05-22 — Visual polish round (V1–V4).**
+  Pre-work backup at
+  `~/Backups/gemma-forge/20260522T001538Z-pre-visual-polish/`.
+
+  - **V1** — focusing the "Send to agent" textarea now auto-collapses
+    the top Start panel (in addition to the existing
+    type-into-project-input collapse). Added a `focus` listener to
+    `#session-message-input` that calls the existing `collapseOnce`
+    helper.
+  - **V2** — `.main` is now `height: 100vh, overflow: hidden` and a
+    flex column; `.planner-grid` is `flex: 1, align-items: stretch`;
+    `.intake-panel` is a flex column where `.agent-output` is
+    `flex: 1, min-height: 200px`. Result: sidebar + intake column +
+    cards column all bottom-align inside the viewport; sections
+    scroll internally. Verified: sidebar bottom 1100 px,
+    intake/cards bottom 993 px (107 px gap = event terminal +
+    `.main` padding — intentional chrome).
+  - **V3** — rolodex card stack. `#workflow-cards` is now
+    `position: relative` with each card `position: absolute, inset
+    sides`. CSS classes `.is-front`, `.behind-1/2/3`,
+    `.behind-deep`, `.ahead-1/2`, `.ahead-deep` control z-order +
+    transform (translateY + scale + opacity) for a deck-of-cards
+    peek look. New `.rolodex-nav` above the stack with prev/next
+    arrows and a `1 / 8` indicator. New JS:
+    `applyRolodexLayering`, `updateRolodexNav`, `rolodexStep`,
+    `setupRolodexNav`. Auto-rotate: when the chain advances to a
+    new active/needs-attention/awaiting-human card, the rolodex
+    front follows automatically; manual arrow nav wins until the
+    next status change. Arrow-key support when focus is inside the
+    card area.
+  - **V4** — Forge mascot strip in the terminal header. 8 pixel-art
+    SVG icons (anvil, hammer, sparks, gear, flame, bolt, cube, tiny
+    robot face) drawn with `shape-rendering: crispEdges` and
+    `image-rendering: pixelated`. ~40-line quip bag of forge-themed
+    sayings ("Hammer down.", "Iron sharpens iron.", "Local model,
+    real heat.", etc.) shuffled in Fisher-Yates batches and rotated
+    every 14 s with a gentle fade. New JS: `setupForgeMascot`,
+    `_renderForgeMascot`. Hides on viewports < 880 px to preserve
+    the Clear/Show buttons.
+  - **Sanity check**: 5 states screenshotted (pristine, focused,
+    rolodex mid, terminal open, narrow viewport). Zero page errors
+    in any state.
+
+  Files changed: `chat/static/js/chat.js`, `chat/static/css/style.css`,
+  `chat/templates/index.html`. Server unchanged.
+
 ## Product philosophy (load-bearing)
 
 Gemma Forge is an **execution machine, not a chatbot.** Small input →

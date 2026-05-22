@@ -782,6 +782,11 @@ function renderToolExecution(toolExecution) {
     `;
 }
 
+// V3 rolodex state — index into the visible-cards array of the card
+// currently in the "front" slot. Auto-rotates when the active card changes.
+let rolodexFrontIndex = 0;
+let _rolodexLastFrontCardId = null;
+
 function renderWorkflowCards(cards) {
     const container = document.getElementById("workflow-cards");
     currentCards = Array.isArray(cards) ? cards : defaultCards;
@@ -792,7 +797,26 @@ function renderWorkflowCards(cards) {
 
     if (!visibleCards.length) {
         container.innerHTML = `<div class="empty-card">No active protocol cards yet.</div>`;
+        updateRolodexNav(0, 0);
+        renderSkippedCards(skippedCards);
+        refreshRunPlanButton();
+        return;
     }
+
+    // Auto-rotate: when the chain advances to a new "active now" card, move
+    // the rolodex front to that card. Manual arrow nav still wins until the
+    // active card changes again.
+    const activeIndex = visibleCards.findIndex(card =>
+        ["active", "needs-attention", "awaiting-human"].includes(card.status)
+    );
+    const activeCardId = activeIndex >= 0 ? visibleCards[activeIndex].id : null;
+    if (activeCardId && activeCardId !== _rolodexLastFrontCardId) {
+        rolodexFrontIndex = activeIndex;
+        _rolodexLastFrontCardId = activeCardId;
+    }
+    // Clamp front index in case the visible-card set shrank.
+    if (rolodexFrontIndex >= visibleCards.length) rolodexFrontIndex = visibleCards.length - 1;
+    if (rolodexFrontIndex < 0) rolodexFrontIndex = 0;
 
     visibleCards.forEach(card => {
         const lastRun = card.lastRun || null;
@@ -868,8 +892,83 @@ function renderWorkflowCards(cards) {
         container.appendChild(section);
     });
 
+    // V3 rolodex: layer the now-rendered card sections by distance from the
+    // front index. The front card gets `.is-front`; cards behind get
+    // `.behind-1` / `.behind-2` / `.behind-3` / `.behind-deep`; cards ahead
+    // get the matching `.ahead-*` classes. Pure CSS controls the visual.
+    applyRolodexLayering(container, visibleCards);
+    updateRolodexNav(rolodexFrontIndex, visibleCards.length);
+
     renderSkippedCards(skippedCards);
     refreshRunPlanButton();
+}
+
+function applyRolodexLayering(container, visibleCards) {
+    const sections = Array.from(container.querySelectorAll(".workflow-card"));
+    sections.forEach((section, idx) => {
+        section.classList.remove(
+            "is-front", "behind-1", "behind-2", "behind-3", "behind-deep",
+            "ahead-1", "ahead-2", "ahead-deep",
+        );
+        const distance = idx - rolodexFrontIndex;
+        if (distance === 0) section.classList.add("is-front");
+        else if (distance === 1) section.classList.add("behind-1");
+        else if (distance === 2) section.classList.add("behind-2");
+        else if (distance === 3) section.classList.add("behind-3");
+        else if (distance > 3) section.classList.add("behind-deep");
+        else if (distance === -1) section.classList.add("ahead-1");
+        else if (distance === -2) section.classList.add("ahead-2");
+        else section.classList.add("ahead-deep");
+    });
+}
+
+function updateRolodexNav(frontIdx, total) {
+    const prev = document.getElementById("rolodex-prev");
+    const next = document.getElementById("rolodex-next");
+    const indicator = document.getElementById("rolodex-indicator");
+    if (!prev || !next || !indicator) return;
+    if (!total) {
+        indicator.textContent = "0 / 0";
+        prev.disabled = true;
+        next.disabled = true;
+        return;
+    }
+    indicator.textContent = `${frontIdx + 1} / ${total}`;
+    prev.disabled = frontIdx <= 0;
+    next.disabled = frontIdx >= total - 1;
+}
+
+function rolodexStep(delta) {
+    const visibleCards = sortCards(currentCards.filter(card => !skippedStatuses.has(card.status)));
+    if (!visibleCards.length) return;
+    const next = Math.max(0, Math.min(visibleCards.length - 1, rolodexFrontIndex + delta));
+    if (next === rolodexFrontIndex) return;
+    rolodexFrontIndex = next;
+    // Suppress auto-rotate-on-status-change while the user is manually
+    // navigating — until the active card itself changes again.
+    _rolodexLastFrontCardId = visibleCards[next].id;
+    const container = document.getElementById("workflow-cards");
+    applyRolodexLayering(container, visibleCards);
+    updateRolodexNav(rolodexFrontIndex, visibleCards.length);
+}
+
+function setupRolodexNav() {
+    const prev = document.getElementById("rolodex-prev");
+    const next = document.getElementById("rolodex-next");
+    if (prev) prev.addEventListener("click", () => rolodexStep(-1));
+    if (next) next.addEventListener("click", () => rolodexStep(1));
+    // Arrow-key support when the cards container has focus / the stack is hovered.
+    document.addEventListener("keydown", (e) => {
+        const stack = document.getElementById("workflow-cards");
+        if (!stack) return;
+        const stackRect = stack.getBoundingClientRect();
+        const inside = stackRect && document.activeElement && stack.contains(document.activeElement);
+        // Only fire arrow-key nav when focus is somewhere in the cards area;
+        // otherwise typing in the project textarea would scroll the rolodex.
+        if (!inside) return;
+        if (e.key === "ArrowUp") { e.preventDefault(); rolodexStep(-1); }
+        else if (e.key === "ArrowDown") { e.preventDefault(); rolodexStep(1); }
+    });
 }
 
 function renderSkippedCards(cards) {
@@ -1604,12 +1703,23 @@ function setupStartPanelAutoCollapse() {
     }
 
     let collapsedOnce = false;
+    function collapseOnce(reason) {
+        if (collapsedOnce) return;
+        collapsedOnce = true;
+        collapsePanel();
+    }
+
     input.addEventListener("input", () => {
-        if (!collapsedOnce && input.value.trim().length > 0) {
-            collapsedOnce = true;
-            collapsePanel();
-        }
+        if (input.value.trim().length > 0) collapseOnce("project-input typed");
     });
+
+    // V1 — also auto-collapse the moment the user focuses the "Send to agent"
+    // textarea on the right column. Once they engage the chat, the Start
+    // panel is in the way; get it out automatically.
+    const messageInput = document.getElementById("session-message-input");
+    if (messageInput) {
+        messageInput.addEventListener("focus", () => collapseOnce("send-to-agent focused"));
+    }
 
     if (toggle) {
         toggle.addEventListener("click", () => {
@@ -1803,8 +1913,164 @@ function setupEventTerminal() {
     connect();
 }
 
+// ============================================================
+// V4 — Forge mascot: pixelated icons + rotating quips on the
+// terminal header. Inspired by OpenClaw / Hermes's "lil guy"
+// vibe — gives the running harness a small personality without
+// chatbot fluff.
+// ============================================================
+
+// Pixel-art SVG icons. Each is a tiny 16x16 design rendered with
+// `image-rendering: pixelated` for the chunky retro look.
+const FORGE_PIXEL_ICONS = [
+    // Anvil
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#fbbf24" d="M3 5h10v2h-2v2h2v1H3v-1h2V7H3z"/>
+        <path fill="#fbbf24" d="M5 10h6v2H5z"/>
+        <path fill="#92400e" d="M4 12h8v2H4z"/>
+    </svg>`,
+    // Hammer
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#fbbf24" d="M4 3h7v3H4z"/>
+        <path fill="#92400e" d="M7 6h2v8H7z"/>
+    </svg>`,
+    // Spark cluster
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#fbbf24" d="M7 2h2v2H7zM7 12h2v2H7zM2 7h2v2H2zM12 7h2v2H12z"/>
+        <path fill="#f97316" d="M4 4h2v2H4zM10 10h2v2h-2zM10 4h2v2h-2zM4 10h2v2H4z"/>
+        <path fill="#fbbf24" d="M6 6h4v4H6z"/>
+    </svg>`,
+    // Gear
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#a3a3a3" d="M7 1h2v2H7zM7 13h2v2H7zM1 7h2v2H1zM13 7h2v2h-2z"/>
+        <path fill="#a3a3a3" d="M3 3h2v2H3zM11 3h2v2h-2zM3 11h2v2H3zM11 11h2v2h-2z"/>
+        <path fill="#a3a3a3" d="M5 5h6v6H5z"/>
+        <path fill="#0b0f17" d="M7 7h2v2H7z"/>
+    </svg>`,
+    // Flame
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#fbbf24" d="M7 2h2v2H7z"/>
+        <path fill="#f97316" d="M6 4h4v2H6zM5 6h6v3H5z"/>
+        <path fill="#dc2626" d="M5 9h6v4H5z"/>
+        <path fill="#fbbf24" d="M7 10h2v2H7z"/>
+    </svg>`,
+    // Bolt
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#fbbf24" d="M9 1h3v6H9zM4 7h7v2H4zM4 9h3v6H4z"/>
+    </svg>`,
+    // Cube (rendered "stack")
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#60a5fa" d="M3 3h10v3H3z"/>
+        <path fill="#3b82f6" d="M3 6h10v4H3z"/>
+        <path fill="#1d4ed8" d="M3 10h10v3H3z"/>
+    </svg>`,
+    // Tiny robot face (the "lil guy")
+    `<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">
+        <path fill="#a78bfa" d="M3 4h10v8H3z"/>
+        <path fill="#0b0f17" d="M5 6h2v2H5zM9 6h2v2H9z"/>
+        <path fill="#fbbf24" d="M5 10h6v1H5z"/>
+        <path fill="#a78bfa" d="M6 12h4v2H6z"/>
+    </svg>`,
+];
+
+// Quips. Forge-themed, terse, occasionally cheeky. Picked at random,
+// shuffled in batches so the same one doesn't repeat back-to-back.
+const FORGE_QUIPS = [
+    "Heating the forge…",
+    "Sparks are flying.",
+    "Hammer down.",
+    "Striking while it's hot.",
+    "Cooling the steel.",
+    "Tempering the blade.",
+    "Quenching the bits.",
+    "The anvil sings.",
+    "Bellows wide open.",
+    "Local model, real heat.",
+    "Bending tokens into shape.",
+    "Making something that didn't exist a minute ago.",
+    "Gemma's at the bench.",
+    "No clouds. No chatbots. Just work.",
+    "Pixels are the new pig iron.",
+    "Don't blink, this is the fun part.",
+    "Forge first. Polish later.",
+    "Iron sharpens iron.",
+    "Honest tools, honest output.",
+    "If it ships, it ships hot.",
+    "Cold beam, warm core.",
+    "On the bench, off the cloud.",
+    "Hand-forged, not factory-pressed.",
+    "Small model. Big swing.",
+    "Iron's hot — go.",
+    "Sleeves up.",
+    "Listening for the ring.",
+    "Reading the heat colors.",
+    "Locking the workpiece.",
+    "Slag's coming off.",
+    "Eyes on the chain.",
+    "Watch the spark trail.",
+    "Tongs ready.",
+    "Strike, fold, repeat.",
+    "Brought my own anvil.",
+    "Annealing the rough edges.",
+    "Quench tank's hot.",
+    "Counting hammer strokes.",
+    "Setting the hardy.",
+    "Don't squeeze the bellows too hard.",
+    "Quietly excellent.",
+];
+
+let _forgeQuipBag = [];
+let _forgeQuipTimer = null;
+
+function _refillQuipBag() {
+    _forgeQuipBag = FORGE_QUIPS.slice();
+    // Fisher-Yates so each batch sees a different order.
+    for (let i = _forgeQuipBag.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [_forgeQuipBag[i], _forgeQuipBag[j]] = [_forgeQuipBag[j], _forgeQuipBag[i]];
+    }
+}
+
+function _nextQuip() {
+    if (_forgeQuipBag.length === 0) _refillQuipBag();
+    return _forgeQuipBag.pop();
+}
+
+function _renderForgeMascot(initial = false) {
+    const mascot = document.getElementById("forge-mascot");
+    const iconEl = document.getElementById("forge-mascot-icon");
+    const quipEl = document.getElementById("forge-mascot-quip");
+    if (!mascot || !iconEl || !quipEl) return;
+
+    const newIcon = FORGE_PIXEL_ICONS[Math.floor(Math.random() * FORGE_PIXEL_ICONS.length)];
+    const newQuip = _nextQuip();
+
+    if (initial) {
+        iconEl.innerHTML = newIcon;
+        quipEl.textContent = newQuip;
+        return;
+    }
+    // Fade out → swap → fade in for the gentle rotation effect.
+    mascot.classList.add("is-fading");
+    setTimeout(() => {
+        iconEl.innerHTML = newIcon;
+        quipEl.textContent = newQuip;
+        mascot.classList.remove("is-fading");
+    }, 280);
+}
+
+function setupForgeMascot() {
+    _refillQuipBag();
+    _renderForgeMascot(true);
+    // Rotate every ~14s — slow enough to read, fast enough to keep
+    // the harness feeling alive while a card is grinding.
+    _forgeQuipTimer = setInterval(() => _renderForgeMascot(false), 14000);
+}
+
 window.addEventListener("load", () => {
     loadWorkspace();
     setupStartPanelAutoCollapse();
     setupEventTerminal();
+    setupRolodexNav();
+    setupForgeMascot();
 });

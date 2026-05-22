@@ -184,7 +184,17 @@
                         </div>
                     </div>
                     <div class="cards-panel-body">
-                        <div id="workflow-cards" class="workflow-cards"></div>
+                        <!-- V3 rolodex stack: arrows on top, then a z-layered
+                             card deck. The active card sits on top; cards
+                             beneath peek by ~6-10px each like a deck. -->
+                        <div class="cards-rolodex">
+                            <div class="rolodex-nav" aria-label="Navigate protocol cards">
+                                <button class="rolodex-arrow" id="rolodex-prev" type="button" title="Previous card" aria-label="Previous card">▲</button>
+                                <div class="rolodex-indicator" id="rolodex-indicator">1 / 8</div>
+                                <button class="rolodex-arrow" id="rolodex-next" type="button" title="Next card" aria-label="Next card">▼</button>
+                            </div>
+                            <div id="workflow-cards" class="workflow-cards rolodex-stack"></div>
+                        </div>
                         <details id="skipped-protocols" class="skipped-protocols hidden">
                             <summary>Skipped protocols</summary>
                             <div id="skipped-cards" class="skipped-cards"></div>
@@ -206,6 +216,12 @@
                     <div class="event-terminal-title">
                         <span class="event-terminal-dot"></span>
                         <span>Activity stream</span>
+                    </div>
+                    <!-- V4 — mascot + quip strip; hidden on narrow viewports
+                         to preserve the controls on the right. -->
+                    <div class="forge-mascot" id="forge-mascot" aria-hidden="true">
+                        <span class="forge-mascot-icon" id="forge-mascot-icon" title="Gemma Forge"></span>
+                        <span class="forge-mascot-quip" id="forge-mascot-quip">Heating the forge…</span>
                     </div>
                     <div class="event-terminal-actions">
                         <span id="event-terminal-status" class="event-terminal-status">connecting</span>
