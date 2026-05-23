@@ -1379,6 +1379,53 @@ def parse_forge_file_payload(text):
     }
 
 
+WORKER_ACTION_BEGIN = "<<<GFORGE_WORKER_ACTION>>>"
+WORKER_ACTION_END = "<<<END_GFORGE_WORKER_ACTION>>>"
+WORKER_ACTION_PATTERN = re.compile(
+    rf"{re.escape(WORKER_ACTION_BEGIN)}\s*(.*?)\s*{re.escape(WORKER_ACTION_END)}",
+    flags=re.DOTALL,
+)
+WORKER_ACTION_CARDS = {"intake", "forge-flow", "gsd", "execution", "socraticode", "axon", "verification", "handoff"}
+
+
+def parse_worker_action_requests(text):
+    """
+    Extract bounded chat-to-worker requests.
+
+    The model can ask the browser harness to run the existing card flow, but it
+    cannot invent arbitrary tools or endpoints. The client decides when to call
+    the normal /cards/<id>/run or Full Forge flow from this structured request.
+    """
+    if not text:
+        return []
+
+    actions = []
+    for match in WORKER_ACTION_PATTERN.finditer(text):
+        fields = {}
+        for raw_line in match.group(1).splitlines():
+            if ":" not in raw_line:
+                continue
+            key, value = raw_line.split(":", 1)
+            fields[key.strip().lower()] = value.strip()
+
+        action = re.sub(r"[\s-]+", "_", fields.get("action", "").strip().lower())
+        card = fields.get("card", "").lower()
+        reason = truncate_text(fields.get("reason", ""), 220)
+
+        if action == "full_forge":
+            actions.append({"action": "full_forge", "reason": reason})
+        elif action == "run_card" and card in WORKER_ACTION_CARDS:
+            actions.append({"action": "run_card", "card": card, "reason": reason})
+
+    return actions[:1]
+
+
+def strip_worker_action_blocks(text):
+    if not text:
+        return ""
+    return WORKER_ACTION_PATTERN.sub("", text).strip()
+
+
 def parse_text_section(text, heading, next_heading):
     pattern = rf"^{re.escape(heading)}:\s*(.*?)(?=^{re.escape(next_heading)}:|<<<GFORGE_FILE:|\Z)"
     match = re.search(pattern, text, flags=re.DOTALL | re.MULTILINE)
@@ -1413,7 +1460,7 @@ def load_sessions():
             return json.load(f)
     return {}
 
-def save_sessions(sessions, create_keys=None):
+def save_sessions(sessions, create_keys=None, update_keys=None):
     """Race-safe save.
 
     The bug this prevents: a long-running request (card run, chat
@@ -1424,14 +1471,18 @@ def save_sessions(sessions, create_keys=None):
         save_sessions(sessions)         # writes the whole in-memory dict
     The naive write resurrects X because the snapshot still has it.
 
-    This version re-reads disk RIGHT before writing. For each key
-    currently on disk, it uses our in-memory update if we have one,
-    else keeps the disk version. Keys that vanished from disk while
-    the request ran (i.e. were deleted) are NOT resurrected.
+    This version re-reads disk RIGHT before writing. Callers should pass
+    `update_keys` for the project records they actually mutated; other
+    on-disk records are kept as-is so parallel project runs cannot roll
+    each other backward with stale snapshots. Keys that vanished from disk
+    while the request ran (i.e. were deleted) are NOT resurrected.
 
     `create_keys`: iterable of session_ids that are legitimately NEW
     creates (passed by create_session). Those bypass the on-disk
     intersection and get written even though disk doesn't know them.
+    `update_keys`: iterable of existing session_ids this request changed.
+    If omitted, save_sessions preserves the previous broad merge behavior
+    for compatibility, but request handlers should be explicit.
 
     For deletes, use `write_sessions_full(sessions)` from the
     delete_session endpoint — that's the one place where the
@@ -1439,6 +1490,7 @@ def save_sessions(sessions, create_keys=None):
     """
     ensure_storage()
     create_keys = set(create_keys or [])
+    update_keys = None if update_keys is None else set(update_keys or [])
     on_disk = {}
     if os.path.exists(SESSIONS_FILE):
         try:
@@ -1448,14 +1500,20 @@ def save_sessions(sessions, create_keys=None):
             on_disk = {}
     merged = {}
     for sid, disk_record in on_disk.items():
-        # Disk is authoritative for existence. Our in-memory update wins
-        # for content if we have one.
-        merged[sid] = sessions.get(sid, disk_record)
+        # Disk is authoritative for existence. Explicitly updated records
+        # win; untouched records stay as the latest on-disk version.
+        if update_keys is None:
+            merged[sid] = sessions.get(sid, disk_record)
+        elif sid in update_keys and sid in sessions:
+            merged[sid] = sessions[sid]
+        else:
+            merged[sid] = disk_record
     for sid in create_keys:
         if sid in sessions:
             merged[sid] = sessions[sid]
     with open(SESSIONS_FILE, "w") as f:
         json.dump(merged, f, indent=4)
+    return merged
 
 
 def write_sessions_full(sessions):
@@ -1781,7 +1839,7 @@ def update_session_model(session_id):
         return jsonify({"error": "model or fallbackModel is required."}), 400
 
     write_session_context(session_id, sessions[session_id])
-    save_sessions(sessions)
+    save_sessions(sessions, update_keys={session_id})
     return jsonify({"session": sessions[session_id]})
 
 
@@ -1874,11 +1932,11 @@ def archive_session(session_id):
         })
 
     write_session_context(session_id, session)
-    save_sessions(sessions)
+    sessions = save_sessions(sessions, update_keys={session_id})
     return jsonify({
         "session_id": session_id,
         "archived": should_archive,
-        "session": session,
+        "session": sessions.get(session_id, session),
         "sessions": sessions,
     })
 
@@ -1932,7 +1990,7 @@ def link_sessions():
         write_session_context(sid, sessions[sid])
 
     write_session_context(primary, sessions[primary])
-    save_sessions(sessions)
+    save_sessions(sessions, update_keys=session_ids)
     return jsonify({"bridgeId": bridge_id, "primaryPath": primary_path, "shortcuts": shortcuts})
 
 @app.route('/api/chat', methods=['POST'])
@@ -2012,7 +2070,7 @@ def save_and_respond(session_id, user_msg, assistant_reply):
         sessions[session_id].setdefault("messages", [])
         sessions[session_id]["messages"].append({"role": "user", "content": user_msg})
         sessions[session_id]["messages"].append({"role": "agent", "content": assistant_reply})
-    save_sessions(sessions)
+    save_sessions(sessions, update_keys={session_id})
     return jsonify({"reply": assistant_reply})
 
 @app.route('/api/sessions/<session_id>/messages', methods=['POST'])
@@ -2039,14 +2097,21 @@ def session_message(session_id):
     # called inside (ollama call, chat-write, etc.) so they only route to
     # this session's terminal subscriber.
     with event_session_scope(session_id):
-        reply = call_ollama(model, build_session_prompt(session, message))
+        workspace_dir = (session.get("projectDirectory") or "").strip()
+        skill_context = None
+        if workspace_dir and os.path.isdir(workspace_dir):
+            skill_context = prepare_workspace_skill_context(workspace_dir, session)
+
+        reply = call_ollama(model, build_session_prompt(session, message, skill_context))
+        worker_actions = parse_worker_action_requests(reply)
+        if worker_actions:
+            reply = strip_worker_action_blocks(reply)
 
         # Chat replies can now materialize files into the project workspace
         # using the same GFORGE_FILE pipeline as the Execution card. The model
         # is told in the prompt that it can emit blocks; here we parse + write
         # them if the project has a workspace on disk.
         materialization_summary = ""
-        workspace_dir = (session.get("projectDirectory") or "").strip()
         if workspace_dir and os.path.isdir(workspace_dir):
             payload = parse_forge_file_payload(reply)
             if isinstance(payload, dict) and payload.get("files"):
@@ -2100,11 +2165,22 @@ def session_message(session_id):
 
     if materialization_summary:
         reply = reply + materialization_summary
+    if worker_actions:
+        action = worker_actions[0]
+        if action.get("action") == "full_forge":
+            action_label = "Full Forge"
+        else:
+            action_label = f"Forge Section `{action.get('card')}`"
+        reply = (
+            reply.rstrip()
+            + "\n\n---\n"
+            + f"**Harness queued worker action:** {action_label}."
+        )
 
     session["messages"].append({"role": "agent", "content": reply})
     write_session_context(session_id, session)
-    save_sessions(sessions)
-    return jsonify({"reply": reply, "session": session})
+    save_sessions(sessions, update_keys={session_id})
+    return jsonify({"reply": reply, "session": session, "workerActions": worker_actions})
 
 @app.route('/api/sessions/<session_id>/cards/<card_id>/run', methods=['POST'])
 def run_session_card(session_id, card_id):
@@ -2152,7 +2228,7 @@ def run_session_card(session_id, card_id):
         "content": f"[{result['title']}] {result['summary']}\n\n{result['details']}",
     })
     write_session_context(session_id, session)
-    save_sessions(sessions)
+    save_sessions(sessions, update_keys={session_id})
     return jsonify({"result": result, "session": session})
 
 @app.route('/api/sessions/<session_id>/cards/<card_id>/verify', methods=['POST'])
@@ -2211,7 +2287,7 @@ def verify_session_card(session_id, card_id):
         return jsonify({"error": "Unsupported checkpoint status."}), 400
 
     write_session_context(session_id, session)
-    save_sessions(sessions)
+    save_sessions(sessions, update_keys={session_id})
     return jsonify({"session": session, "card": card})
 
 @app.route('/api/plan', methods=['POST'])
@@ -2251,7 +2327,7 @@ def plan():
         sessions[session_id].setdefault("messages", [])
         sessions[session_id]["messages"].append({"role": "agent", "content": reply})
         write_session_context(session_id, sessions[session_id])
-        save_sessions(sessions)
+        save_sessions(sessions, update_keys={session_id})
 
     cards = default_cards(session_for_prompt.get("projectMode", "unknown"))
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
@@ -2499,7 +2575,7 @@ Then explain:
 """
 
 
-def build_session_prompt(session, message):
+def build_session_prompt(session, message, skill_context=None):
     resource_state = scan_workspace()
     capacity = resource_state.get("agentCapacity", {})
     linked = session.get("bridges", [])
@@ -2562,6 +2638,35 @@ Project Execution card first to create one. For now, answer the user's
 question in plain text — file emission is disabled until the workspace
 exists."""
 
+    skill_block = (skill_context or {}).get("prompt") or (
+        "No Gemma Forge skills are staged for this chat turn."
+    )
+    worker_action_block = f"""
+
+Worker handoff:
+- You are the conversational project agent. The protocol-card worker is the
+  only layer that actually runs Forge Flow, GSD, Project Execution,
+  SocratiCode, Axon, Verification, and Handoff.
+- If the user explicitly asks you to continue, rerun, fix, verify, audit with a
+  tool card, or run a specific Forge Section, you may ask the harness to trigger
+  the existing worker flow. Do not claim it has run yet; say the harness will
+  run it.
+- Emit at most one worker action block, and only one of these forms:
+
+{WORKER_ACTION_BEGIN}
+action: full_forge
+reason: short reason
+{WORKER_ACTION_END}
+
+{WORKER_ACTION_BEGIN}
+action: run_card
+card: intake|forge-flow|gsd|execution|socraticode|axon|verification|handoff
+reason: short reason
+{WORKER_ACTION_END}
+
+- Do not use this block for ordinary questions. Do not invent card names or
+  arbitrary shell/tool actions."""
+
     return f"""You are the Gemma Forge work-harness agent for one self-contained project.
 
 {forge_context}
@@ -2581,9 +2686,13 @@ Small-model completion policy: when the active model is {SMALL_MODEL_REVIEW_MAX_
 Available protocol cards:
 {json.dumps(session.get('cards', default_cards()), indent=2)}
 
+Gemma Forge skill context for this chat turn:
+{skill_block}
+
 Recent project context:
 {chr(10).join(history_lines)}
 {file_emission_block}
+{worker_action_block}
 
 User request:
 {message}

@@ -143,9 +143,48 @@ const skippedStatuses = new Set(["inactive", "pending"]);
 const planRunnableStatuses = new Set(["active", "conditional", "needs-attention"]);
 
 let currentCards = defaultCards;
-let planRunning = false;
-let planPaused = false;
-let runningCardId = null;
+const sessionRunControllers = {};
+
+function runController(sessionId) {
+    if (!sessionId) {
+        return { planRunning: false, planPaused: false, runningCardId: null, humanVerify: null };
+    }
+    if (!sessionRunControllers[sessionId]) {
+        sessionRunControllers[sessionId] = {
+            planRunning: false,
+            planPaused: false,
+            runningCardId: null,
+            humanVerify: null
+        };
+    }
+    return sessionRunControllers[sessionId];
+}
+
+function selectedRunController() {
+    return runController(currentSessionId);
+}
+
+function isSelectedSession(sessionId) {
+    return Boolean(sessionId && sessionId === currentSessionId);
+}
+
+function cardsForSession(sessionId) {
+    if (isSelectedSession(sessionId)) {
+        return currentCards;
+    }
+    return sessionsCache[sessionId]?.cards || defaultCards;
+}
+
+function stopSessionRun(sessionId) {
+    const controller = runController(sessionId);
+    controller.planRunning = false;
+    controller.planPaused = false;
+    controller.runningCardId = null;
+    if (isSelectedSession(sessionId)) {
+        renderWorkflowCards(currentCards);
+        refreshRunPlanButton();
+    }
+}
 
 function directoryModeIsExisting() {
     return document.querySelector('input[name="project-directory-mode"]:checked')?.value === "yes";
@@ -535,6 +574,11 @@ function currentSessionArchived() {
     return isArchivedSession(session);
 }
 
+function sessionArchived(sessionId) {
+    const session = sessionsCache[sessionId];
+    return isArchivedSession(session);
+}
+
 async function setSessionArchive(id, session, archived) {
     const output = document.getElementById("agent-output");
     const title = sessionTitleText(id, session);
@@ -555,8 +599,7 @@ async function setSessionArchive(id, session, archived) {
         sessionsCache = data.sessions || {};
         if (currentSessionId === id) {
             if (archived) {
-                planRunning = false;
-                planPaused = false;
+                stopSessionRun(id);
             }
             renderSessionMessages(data.session.messages || []);
             renderWorkflowCards(data.session.cards || defaultCards);
@@ -590,8 +633,7 @@ async function deleteSession(id, session) {
         sessionsCache = data.sessions || {};
         if (currentSessionId === id) {
             currentSessionId = null;
-            planRunning = false;
-            planPaused = false;
+            stopSessionRun(id);
             document.getElementById("project-input").value = "";
             document.getElementById("project-directory-input").value = "";
             document.querySelector('input[name="project-directory-mode"][value="no"]').checked = true;
@@ -617,7 +659,8 @@ function getSessionState(id, session) {
         return { name: "archived", label: "Archive", title: "Project is archived" };
     }
 
-    if (id === currentSessionId && planRunning && !planPaused) {
+    const controller = runController(id);
+    if (controller.planRunning && !controller.planPaused) {
         return { name: "running", label: "Running", title: "Gemma Forge is running this project" };
     }
 
@@ -645,8 +688,6 @@ function getSessionState(id, session) {
 
 function selectSession(id, session) {
     currentSessionId = id;
-    planRunning = false;
-    planPaused = false;
     renderSessionsList(sessionsCache);
     // V8 — per-session terminal isolation. Switching sessions clears the
     // terminal display and resubscribes the SSE feed to only this session's
@@ -951,7 +992,7 @@ function renderWorkflowCards(cards) {
         const checkpointOpen = lastRun && card.status === "awaiting-human";
         const globalHumanVerify = document.getElementById("global-human-verify").checked;
         const archived = currentSessionArchived();
-        const isRunning = runningCardId === card.id;
+        const isRunning = selectedRunController().runningCardId === card.id;
         const runDisabled = archived || isRunning || card.status === "complete" || card.status === "awaiting-human";
         const section = document.createElement("section");
         section.className = `workflow-card ${card.status}${isRunning ? " running" : ""}`;
@@ -1036,9 +1077,13 @@ function renderWorkflowCards(cards) {
     refreshRunPlanButton();
 }
 
-function setRunningCard(cardId) {
-    runningCardId = cardId || null;
-    renderWorkflowCards(currentCards);
+function setRunningCard(cardId, sessionId = currentSessionId) {
+    runController(sessionId).runningCardId = cardId || null;
+    if (isSelectedSession(sessionId)) {
+        renderWorkflowCards(currentCards);
+    } else {
+        renderSessionsList(sessionsCache);
+    }
 }
 
 function applyRolodexLayering(container, visibleCards) {
@@ -1189,147 +1234,184 @@ function refreshRunPlanButton() {
         return;
     }
 
-    button.disabled = !currentSessionId || currentSessionArchived() || (planRunning && !planPaused);
+    const controller = selectedRunController();
+    button.disabled = !currentSessionId || currentSessionArchived() || (controller.planRunning && !controller.planPaused);
     button.textContent = "Full Forge";
 }
 
-function nextRunnableCard() {
-    return sortCards(currentCards).find(card => planRunnableStatuses.has(card.status));
+function nextRunnableCard(cards = currentCards) {
+    return sortCards(cards).find(card => planRunnableStatuses.has(card.status));
 }
 
-function awaitingHumanCard() {
-    return sortCards(currentCards).find(card => card.status === "awaiting-human");
+function awaitingHumanCard(cards = currentCards) {
+    return sortCards(cards).find(card => card.status === "awaiting-human");
 }
 
-async function runCardSection(cardId, options = {}) {
+async function runCardSection(cardId, options = {}, sessionId = currentSessionId) {
     const output = document.getElementById("agent-output");
-    if (!currentSessionId) {
-        output.textContent = "Start or select a project before running a Gemma Forge card.";
+    if (!sessionId) {
+        if (!currentSessionId) output.textContent = "Start or select a project before running a Gemma Forge card.";
         return null;
     }
 
-    if (currentSessionArchived()) {
-        output.textContent = "Restore this archived project before running Forge work.";
+    if (sessionArchived(sessionId)) {
+        if (isSelectedSession(sessionId)) output.textContent = "Restore this archived project before running Forge work.";
         return null;
     }
 
-    const section = document.querySelector(`.workflow-card[data-card-id="${cardId}"]`);
+    const controller = runController(sessionId);
+    const section = isSelectedSession(sessionId)
+        ? document.querySelector(`.workflow-card[data-card-id="${cardId}"]`)
+        : null;
     const toggle = section?.querySelector(`[data-mode="${cardId}"]`);
-    const humanVerify = options.humanVerify ?? toggle?.checked ?? document.getElementById("global-human-verify").checked;
+    const humanVerify = options.humanVerify
+        ?? toggle?.checked
+        ?? controller.humanVerify
+        ?? document.getElementById("global-human-verify").checked;
 
-    setRunningCard(cardId);
-    output.textContent = `Gemma Forge is running ${cardId}.`;
+    setRunningCard(cardId, sessionId);
+    if (isSelectedSession(sessionId)) {
+        output.textContent = `Gemma Forge is running ${cardId}.`;
+    }
 
     try {
-        const res = await fetch(`${API_URL}/sessions/${currentSessionId}/cards/${cardId}/run`, {
+        const res = await fetch(`${API_URL}/sessions/${sessionId}/cards/${cardId}/run`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                model: selectedModel,
+                model: sessionsCache[sessionId]?.model || selectedModel,
                 humanVerify,
                 note: options.note || ""
             })
         });
         const data = await res.json();
         if (data.error) {
-            output.textContent = data.error;
+            if (isSelectedSession(sessionId)) output.textContent = data.error;
             return data;
         }
 
+        if (data.session) {
+            sessionsCache[sessionId] = data.session;
+        }
         const result = data.result;
-        output.textContent = `${result.title}: ${result.summary}`;
-        await refreshModelRouteStatus();
-        renderSessionMessages(data.session.messages || []);
-        if (data.session?.cards) {
+        if (isSelectedSession(sessionId)) {
+            output.textContent = `${result.title}: ${result.summary}`;
+            await refreshModelRouteStatus();
+            renderSessionMessages(data.session.messages || []);
+        }
+        if (isSelectedSession(sessionId) && data.session?.cards) {
             renderWorkflowCards(data.session.cards);
         }
 
         await fetchSessions();
         return data;
     } catch (error) {
-        output.textContent = "Card action failed. Confirm the harness server and local model are running.";
+        if (isSelectedSession(sessionId)) {
+            output.textContent = "Card action failed. Confirm the harness server and local model are running.";
+        }
         return null;
     } finally {
-        setRunningCard(null);
-        refreshRunPlanButton();
+        setRunningCard(null, sessionId);
+        if (isSelectedSession(sessionId)) refreshRunPlanButton();
     }
 }
 
-async function runPlan() {
+async function runPlan(sessionId = currentSessionId, options = {}) {
     const output = document.getElementById("agent-output");
-    if (!currentSessionId) {
-        output.textContent = "Start or select a project before running a plan.";
-        setPlanStatus("Start a project to run active cards.");
+    if (!sessionId) {
+        if (!currentSessionId) {
+            output.textContent = "Start or select a project before running a plan.";
+            setPlanStatus("Start a project to run active cards.");
+        }
         return;
     }
 
-    if (currentSessionArchived()) {
-        output.textContent = "Restore this archived project before running Full Forge.";
-        setPlanStatus("Project archived. Restore it before running work.");
+    if (sessionArchived(sessionId)) {
+        if (isSelectedSession(sessionId)) {
+            output.textContent = "Restore this archived project before running Full Forge.";
+            setPlanStatus("Project archived. Restore it before running work.");
+        }
         return;
     }
 
-    if (planRunning && !planPaused) {
+    const controller = runController(sessionId);
+    if (controller.planRunning && !controller.planPaused) {
         return;
     }
 
-    planRunning = true;
-    planPaused = false;
+    controller.planRunning = true;
+    controller.planPaused = false;
+    controller.humanVerify = options.humanVerify ?? document.getElementById("global-human-verify").checked;
     renderSessionsList(sessionsCache);
-    refreshRunPlanButton();
+    if (isSelectedSession(sessionId)) refreshRunPlanButton();
 
-    while (planRunning) {
-        const waiting = awaitingHumanCard();
+    while (controller.planRunning) {
+        const cards = cardsForSession(sessionId);
+        const waiting = awaitingHumanCard(cards);
         if (waiting) {
-            planPaused = true;
-            setPlanStatus(`Paused for ${waiting.title}. Mark the checkpoint Verified to continue.`);
+            controller.planPaused = true;
+            if (isSelectedSession(sessionId)) {
+                setPlanStatus(`Paused for ${waiting.title}. Mark the checkpoint Verified to continue.`);
+            }
             renderSessionsList(sessionsCache);
-            refreshRunPlanButton();
+            if (isSelectedSession(sessionId)) refreshRunPlanButton();
             return;
         }
 
-        const next = nextRunnableCard();
+        const next = nextRunnableCard(cards);
         if (!next) {
-            planRunning = false;
-            planPaused = false;
-            setPlanStatus("Plan run complete. Active protocol cards are done.");
+            controller.planRunning = false;
+            controller.planPaused = false;
+            if (isSelectedSession(sessionId)) {
+                setPlanStatus("Plan run complete. Active protocol cards are done.");
+            }
             renderSessionsList(sessionsCache);
-            refreshRunPlanButton();
+            if (isSelectedSession(sessionId)) refreshRunPlanButton();
             return;
         }
 
-        setPlanStatus(`Running ${next.title}.`);
-        const shouldVerify = cardHumanVerify(next.id);
-        const data = await runCardSection(next.id, { humanVerify: shouldVerify });
+        if (isSelectedSession(sessionId)) setPlanStatus(`Running ${next.title}.`);
+        const shouldVerify = isSelectedSession(sessionId)
+            ? cardHumanVerify(next.id)
+            : controller.humanVerify;
+        const data = await runCardSection(next.id, { humanVerify: shouldVerify }, sessionId);
         if (!data || data.error) {
-            planRunning = false;
-            planPaused = false;
-            setPlanStatus("Plan run stopped. Resolve the visible issue before continuing.");
+            controller.planRunning = false;
+            controller.planPaused = false;
+            if (isSelectedSession(sessionId)) {
+                setPlanStatus("Plan run stopped. Resolve the visible issue before continuing.");
+            }
             renderSessionsList(sessionsCache);
-            refreshRunPlanButton();
+            if (isSelectedSession(sessionId)) refreshRunPlanButton();
             return;
         }
 
-        const updatedCard = (data.session?.cards || currentCards).find(card => card.id === next.id);
+        const updatedCard = (data.session?.cards || cardsForSession(sessionId)).find(card => card.id === next.id);
         if (updatedCard?.status === "needs-attention") {
-            planRunning = false;
-            planPaused = false;
-            setPlanStatus(`${updatedCard.title} needs attention before Full Forge can continue.`);
+            controller.planRunning = false;
+            controller.planPaused = false;
+            if (isSelectedSession(sessionId)) {
+                setPlanStatus(`${updatedCard.title} needs attention before Full Forge can continue.`);
+            }
             renderSessionsList(sessionsCache);
-            refreshRunPlanButton();
+            if (isSelectedSession(sessionId)) refreshRunPlanButton();
             return;
         }
         if (shouldVerify && updatedCard?.status === "awaiting-human") {
-            planPaused = true;
-            setPlanStatus(`Paused for ${updatedCard.title}. Mark Verified to continue.`);
+            controller.planPaused = true;
+            if (isSelectedSession(sessionId)) {
+                setPlanStatus(`Paused for ${updatedCard.title}. Mark Verified to continue.`);
+            }
             renderSessionsList(sessionsCache);
-            refreshRunPlanButton();
+            if (isSelectedSession(sessionId)) refreshRunPlanButton();
             return;
         }
     }
 }
 
 async function handleCheckpoint(action, cardId) {
+    const sessionId = currentSessionId;
+    const controller = runController(sessionId);
     const section = document.querySelector(`.workflow-card[data-card-id="${cardId}"]`);
     const dialog = section?.querySelector(".checkpoint-dialog");
     if (!dialog) {
@@ -1339,13 +1421,13 @@ async function handleCheckpoint(action, cardId) {
     dialog.classList.remove("hidden");
 
     if (action === "verified") {
-        const data = await updateCheckpointStatus(cardId, "verified");
+        const data = await updateCheckpointStatus(cardId, "verified", "", sessionId);
         if (!data) {
             return;
         }
         if (data.card?.status === "needs-attention") {
-            planRunning = false;
-            planPaused = false;
+            controller.planRunning = false;
+            controller.planPaused = false;
             setPlanStatus("Small-model review still flags this card. Use Resolve or override manually.");
             renderSessionsList(sessionsCache);
             refreshRunPlanButton();
@@ -1357,10 +1439,10 @@ async function handleCheckpoint(action, cardId) {
         // so the chain never resumed after the user explicitly approved a
         // card. The user clicking Verified always means "approve + advance".
         setPlanStatus("Checkpoint verified. Continuing to the next active card.");
-        planPaused = false;
-        planRunning = false;
+        controller.planPaused = false;
+        controller.planRunning = false;
         renderSessionsList(sessionsCache);
-        window.setTimeout(() => runPlan(), 80);
+        window.setTimeout(() => runPlan(sessionId), 80);
         return;
     }
 
@@ -1373,15 +1455,15 @@ async function handleCheckpoint(action, cardId) {
         const textarea = dialog.querySelector("textarea");
         const button = dialog.querySelector("button");
         button.addEventListener("click", async () => {
-            planPaused = true;
+            controller.planPaused = true;
             renderSessionsList(sessionsCache);
             const note = textarea.value.trim();
-            const data = await updateCheckpointStatus(cardId, "not-verified", note);
+            const data = await updateCheckpointStatus(cardId, "not-verified", note, sessionId);
             if (!data) {
                 return;
             }
             setPlanStatus("Checkpoint marked Not Verified. Rerunning this section with the issue note.");
-            const rerun = await runCardSection(cardId, { humanVerify: true, note });
+            const rerun = await runCardSection(cardId, { humanVerify: true, note }, sessionId);
             if (!rerun || rerun.error) {
                 // runCardSection already surfaced the error; leave the chain
                 // paused so the user can decide.
@@ -1389,8 +1471,8 @@ async function handleCheckpoint(action, cardId) {
             }
             const updatedCard = (rerun.session?.cards || currentCards).find(card => card.id === cardId);
             if (updatedCard?.status === "needs-attention") {
-                planRunning = false;
-                planPaused = false;
+                controller.planRunning = false;
+                controller.planPaused = false;
                 setPlanStatus(`${updatedCard.title} still needs attention. Use Resolve again or fix manually.`);
                 renderSessionsList(sessionsCache);
                 refreshRunPlanButton();
@@ -1400,8 +1482,8 @@ async function handleCheckpoint(action, cardId) {
                 // The rerun re-tripped human verify. Leave the chain paused
                 // so the user can mark Verified (which will continue) or
                 // Resolve again.
-                planRunning = false;
-                planPaused = true;
+                controller.planRunning = false;
+                controller.planPaused = true;
                 setPlanStatus(`${updatedCard.title} re-ran and is awaiting your verification.`);
                 renderSessionsList(sessionsCache);
                 refreshRunPlanButton();
@@ -1414,11 +1496,11 @@ async function handleCheckpoint(action, cardId) {
             // place. Resolve clicked = "fix and advance"; restart runPlan
             // unconditionally and let it find the next runnable card (often
             // handoff after a verification fix).
-            planPaused = false;
-            planRunning = false;
+            controller.planPaused = false;
+            controller.planRunning = false;
             setPlanStatus("Issue resolved. Continuing to the next active card.");
             renderSessionsList(sessionsCache);
-            window.setTimeout(() => runPlan(), 80);
+            window.setTimeout(() => runPlan(sessionId), 80);
         });
         return;
     }
@@ -1433,28 +1515,35 @@ async function handleCheckpoint(action, cardId) {
     button.addEventListener("click", () => requestCheckpointHelp(cardId, textarea.value.trim()));
 }
 
-async function updateCheckpointStatus(cardId, status, note = "") {
+async function updateCheckpointStatus(cardId, status, note = "", sessionId = currentSessionId) {
     const output = document.getElementById("agent-output");
     try {
-        const res = await fetch(`${API_URL}/sessions/${currentSessionId}/cards/${cardId}/verify`, {
+        const res = await fetch(`${API_URL}/sessions/${sessionId}/cards/${cardId}/verify`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status, note, model: selectedModel })
+            body: JSON.stringify({ status, note, model: sessionsCache[sessionId]?.model || selectedModel })
         });
         const data = await res.json();
         if (data.error) {
-            output.textContent = data.error;
+            if (isSelectedSession(sessionId)) output.textContent = data.error;
             return null;
         }
-        renderWorkflowCards(data.session.cards || currentCards);
-        renderSessionMessages(data.session.messages || []);
+        if (data.session) {
+            sessionsCache[sessionId] = data.session;
+        }
+        if (isSelectedSession(sessionId)) {
+            renderWorkflowCards(data.session.cards || currentCards);
+            renderSessionMessages(data.session.messages || []);
+        }
         await fetchSessions();
-        output.textContent = data.card?.status === "needs-attention"
-            ? "Small-model review found an issue before completion."
-            : (status === "verified" ? "Checkpoint verified." : "Checkpoint needs attention.");
+        if (isSelectedSession(sessionId)) {
+            output.textContent = data.card?.status === "needs-attention"
+                ? "Small-model review found an issue before completion."
+                : (status === "verified" ? "Checkpoint verified." : "Checkpoint needs attention.");
+        }
         return data;
     } catch (error) {
-        output.textContent = "Checkpoint update failed. Confirm the harness server is running.";
+        if (isSelectedSession(sessionId)) output.textContent = "Checkpoint update failed. Confirm the harness server is running.";
         return null;
     }
 }
@@ -1491,6 +1580,7 @@ async function startPlanning() {
 
     output.textContent = "Planning agent is mapping the project and activating protocol cards.";
 
+    let planningSessionId = null;
     try {
         const createRes = await fetch(`${API_URL}/sessions`, {
             method: "POST",
@@ -1504,6 +1594,7 @@ async function startPlanning() {
             return;
         }
         currentSessionId = created.session_id;
+        sessionsCache[currentSessionId] = created.session;
         if (typeof window.reconnectTerminalToSession === "function") {
             window.reconnectTerminalToSession(currentSessionId);
         }
@@ -1514,34 +1605,54 @@ async function startPlanning() {
             setRunningCard("intake");
         }
 
+        planningSessionId = currentSessionId;
         const planRes = await fetch(`${API_URL}/plan`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-                session_id: currentSessionId,
+                session_id: planningSessionId,
                 project,
                 model: selectedModel,
                 checkpointMode: humanVerify ? "human verification" : "auto run"
             })
         });
         const data = await planRes.json();
-        output.textContent = data.reply || "Plan created.";
-        await refreshModelRouteStatus();
-        renderWorkflowCards(data.cards || defaultCards);
-        setAllHumanVerify(humanVerify);
-        if (data.reply) {
-            renderSessionMessages([...(created.session.messages || []), { role: "agent", content: data.reply }]);
+        if (sessionsCache[planningSessionId]) {
+            sessionsCache[planningSessionId].cards = data.cards || sessionsCache[planningSessionId].cards || defaultCards;
+            if (data.reply) {
+                sessionsCache[planningSessionId].messages = [
+                    ...(created.session.messages || []),
+                    { role: "agent", content: data.reply }
+                ];
+            }
+        }
+        if (isSelectedSession(planningSessionId)) {
+            output.textContent = data.reply || "Plan created.";
+            await refreshModelRouteStatus();
+            renderWorkflowCards(data.cards || defaultCards);
+            setAllHumanVerify(humanVerify);
+            if (data.reply) {
+                renderSessionMessages([...(created.session.messages || []), { role: "agent", content: data.reply }]);
+            }
         }
         await fetchSessions();
+        if (!isSelectedSession(planningSessionId)) {
+            if (!humanVerify) {
+                await runPlan(planningSessionId, { humanVerify });
+            }
+            return;
+        }
         if (humanVerify) {
             setPlanStatus("Plan ready. Full Forge will pause at each human checkpoint.");
         } else {
             setPlanStatus("Auto-run enabled. Running active protocol cards.");
-            await runPlan();
+            await runPlan(planningSessionId, { humanVerify });
         }
     } catch (error) {
-        setRunningCard(null);
-        output.textContent = "Planning failed. Confirm Ollama and the local server are running.";
+        setRunningCard(null, planningSessionId || currentSessionId);
+        if (!planningSessionId || isSelectedSession(planningSessionId)) {
+            output.textContent = "Planning failed. Confirm Ollama and the local server are running.";
+        }
     }
 }
 
@@ -1551,8 +1662,10 @@ async function sendSessionMessage() {
     const sendBtn = document.getElementById("send-session-message-btn");
     const thinking = document.getElementById("chat-thinking-indicator");
     const message = input.value.trim();
+    const sessionId = currentSessionId;
+    const requestModel = selectedModel;
 
-    if (!currentSessionId) {
+    if (!sessionId) {
         output.textContent = "Start or select a project first.";
         return;
     }
@@ -1563,7 +1676,9 @@ async function sendSessionMessage() {
     }
 
     input.value = "";
-    output.textContent = "Agent is working inside this project.";
+    if (isSelectedSession(sessionId)) {
+        output.textContent = "Agent is working inside this project.";
+    }
 
     // Show the thinking indicator + disable the send button so the user
     // gets clear feedback that the model is running. The model call can
@@ -1577,22 +1692,30 @@ async function sendSessionMessage() {
     }
 
     try {
-        const res = await fetch(`${API_URL}/sessions/${currentSessionId}/messages`, {
+        const res = await fetch(`${API_URL}/sessions/${sessionId}/messages`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ message, model: selectedModel })
+            body: JSON.stringify({ message, model: requestModel })
         });
         const data = await res.json();
         if (data.error) {
-            output.textContent = data.error;
+            if (isSelectedSession(sessionId)) output.textContent = data.error;
             return;
         }
-        output.textContent = data.reply || "Agent response saved to this project.";
-        await refreshModelRouteStatus();
-        renderSessionMessages(data.session.messages || []);
+        if (data.session) {
+            sessionsCache[sessionId] = data.session;
+        }
+        if (isSelectedSession(sessionId)) {
+            output.textContent = data.reply || "Agent response saved to this project.";
+            await refreshModelRouteStatus();
+            renderSessionMessages(data.session.messages || []);
+        }
         await fetchSessions();
+        await handleChatWorkerActions(data.workerActions || [], sessionId);
     } catch (error) {
-        output.textContent = "Agent request failed. Confirm Ollama and the local harness server are running.";
+        if (isSelectedSession(sessionId)) {
+            output.textContent = "Agent request failed. Confirm Ollama and the local harness server are running.";
+        }
     } finally {
         if (thinking) thinking.classList.add("hidden");
         if (sendBtn) {
@@ -1602,6 +1725,29 @@ async function sendSessionMessage() {
                 delete sendBtn.dataset._origText;
             }
         }
+    }
+}
+
+async function handleChatWorkerActions(actions, sessionId) {
+    if (!Array.isArray(actions) || !actions.length || sessionArchived(sessionId)) {
+        return;
+    }
+
+    const action = actions[0];
+    const humanVerify = document.getElementById("global-human-verify").checked;
+    if (action.action === "full_forge") {
+        if (isSelectedSession(sessionId)) {
+            setPlanStatus("Agent requested Full Forge. Running active cards.");
+        }
+        await runPlan(sessionId, { humanVerify });
+        return;
+    }
+
+    if (action.action === "run_card" && action.card) {
+        if (isSelectedSession(sessionId)) {
+            setPlanStatus(`Agent requested ${action.card}. Running that Forge Section.`);
+        }
+        await runCardSection(action.card, { humanVerify }, sessionId);
     }
 }
 
@@ -1763,7 +1909,7 @@ document.getElementById("start-planning-btn").addEventListener("click", startPla
 document.getElementById("send-session-message-btn").addEventListener("click", sendSessionMessage);
 document.getElementById("import-models-btn").addEventListener("click", () => importInstalledModels(true));
 document.getElementById("provision-model-btn").addEventListener("click", provisionModel);
-document.getElementById("run-plan-btn").addEventListener("click", runPlan);
+document.getElementById("run-plan-btn").addEventListener("click", () => runPlan());
 // Legacy <select id="active-model-select"> was replaced by the pill UI.
 // Guarded in case a custom template still mounts the old element.
 {
@@ -1815,8 +1961,6 @@ document.getElementById("link-sessions-btn").addEventListener("click", async () 
 document.getElementById("lock-sessions-btn").addEventListener("click", lockSelectedSessions);
 document.getElementById("new-session-btn").addEventListener("click", () => {
     currentSessionId = null;
-    planRunning = false;
-    planPaused = false;
     if (typeof window.reconnectTerminalToSession === "function") {
         window.reconnectTerminalToSession(null);
     }

@@ -188,6 +188,91 @@ class ModelRouteTest(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("Archived projects are read-only", response.get_json()["error"])
 
+    def test_worker_action_parser_allows_only_known_worker_flow(self):
+        text = """
+Ready to rerun execution.
+<<<GFORGE_WORKER_ACTION>>>
+action: run_card
+card: execution
+reason: Repair the generated page with the latest chat instruction.
+<<<END_GFORGE_WORKER_ACTION>>>
+<<<GFORGE_WORKER_ACTION>>>
+action: shell_exec
+card: deploy
+reason: no
+<<<END_GFORGE_WORKER_ACTION>>>
+"""
+
+        self.assertEqual(
+            server.parse_worker_action_requests(text),
+            [{
+                "action": "run_card",
+                "card": "execution",
+                "reason": "Repair the generated page with the latest chat instruction.",
+            }],
+        )
+
+    def test_session_message_returns_worker_action_request(self):
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            "Build a landing page.",
+            "gemma-4",
+            requested_id="worker-action-message-test",
+            has_project_directory=False,
+        )
+        server.save_sessions(sessions, create_keys={session_id})
+        reply = """
+I will hand this back to the worker.
+<<<GFORGE_WORKER_ACTION>>>
+action: full_forge
+reason: Continue the active Forge flow.
+<<<END_GFORGE_WORKER_ACTION>>>
+"""
+
+        with patch.object(server, "call_ollama", return_value=reply):
+            response = server.app.test_client().post(
+                f"/api/sessions/{session_id}/messages",
+                json={"message": "keep going", "model": "gemma-4"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["workerActions"], [{"action": "full_forge", "reason": "Continue the active Forge flow."}])
+        self.assertNotIn("GFORGE_WORKER_ACTION", payload["reply"])
+        self.assertIn("Harness queued worker action", payload["reply"])
+
+    def test_save_sessions_update_keys_preserve_parallel_session_updates(self):
+        sessions = {}
+        first = server.create_session_record(
+            sessions,
+            "First parallel project.",
+            "gemma-4",
+            requested_id="parallel-first",
+            has_project_directory=False,
+        )
+        second = server.create_session_record(
+            sessions,
+            "Second parallel project.",
+            "gemma-4",
+            requested_id="parallel-second",
+            has_project_directory=False,
+        )
+        server.save_sessions(sessions, create_keys={first, second})
+
+        first_snapshot = server.load_sessions()
+        second_snapshot = server.load_sessions()
+
+        first_snapshot[first]["cards"][0]["status"] = "complete"
+        server.save_sessions(first_snapshot, update_keys={first})
+
+        second_snapshot[second]["cards"][0]["status"] = "complete"
+        server.save_sessions(second_snapshot, update_keys={second})
+
+        on_disk = server.load_sessions()
+        self.assertEqual(on_disk[first]["cards"][0]["status"], "complete")
+        self.assertEqual(on_disk[second]["cards"][0]["status"], "complete")
+
     def test_archived_session_card_run_does_not_call_model(self):
         sessions = {}
         session_id = server.create_session_record(

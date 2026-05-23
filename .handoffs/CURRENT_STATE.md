@@ -1,14 +1,14 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-23 (UTC) — runtime noise cleanup + backup alignment.
+Last updated: 2026-05-23 (UTC) — verified full-state backup + GitHub alignment.
 
 ## Verified ground truth
 
 - Project root: `/Users/webot/Projects/gemma-forge`
-- Branch: `main` tracking `origin/main`; working tree contains the
-  uncommitted Project Context skill-assignment fix from this session.
-  No commit requested.
-- Harness Flask server source: `chat/server.py` (7,224 lines).
+- Branch: `main` tracking `origin/main`; current branch head is the
+  installable repo state for this backup pass once pushed to GitHub.
+  Runtime/generated/private harness state remains local/SSD-only.
+- Harness Flask server source: `chat/server.py` (7,333 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Project Context skill assignment + content count enforcement + skill usage guidance + continuation repair + runtime noise cleanup shipped locally; backup/GitHub alignment requested this turn.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, and full-state backup/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -84,21 +84,49 @@ the contest demo path works end-to-end.** Driving doc:
   - Archived projects are now read-only at the API boundary. Session
     chat messages, card runs, checkpoint updates, and `/api/plan` calls
     return HTTP `409` before any model/tool call can run.
+  - Browser-side Full Forge / Forge Section run state is now keyed per
+    project record. Switching to another project no longer clears the
+    first project's in-flight run controller, and stale async responses
+    update their own project cache before repainting only if that project
+    is still selected.
+  - The bottom-right agent chat now receives staged skill context when
+    the project has a workspace. It can emit one bounded
+    `GFORGE_WORKER_ACTION` request for `full_forge` or a known protocol
+    card; the browser then invokes the existing card/Full Forge flow
+    rather than granting arbitrary tool execution inside chat.
+  - The local harness server was restarted through the existing launchd
+    keep-alive path so the backend worker-action route is live
+    (latest restart old PID `49704`, new PID `63603` listening on
+    `127.0.0.1:5005`).
+  - `save_sessions()` now supports explicit `update_keys` so a long
+    request only writes the project record it actually mutated. This
+    prevents parallel card runs from rolling another project backward
+    with an older in-memory snapshot.
+  - User-observed incident from the parallel Just Art / Just Music run
+    was confirmed: both jobs reached `handoff`, but the Just Art project
+    record was rolled back by a concurrent save. The Just Art session
+    (`session_1779570042369`) was repaired from its own
+    `terminal-events.jsonl` and artifacts without rerunning Ollama; all
+    cards now read `complete`.
   - Runtime project noise was cleared: all nine active demo/test project
     records from the current tuning runs were archived, and orphan
     `session-data` test artifact directories were moved out of live
     harness state into the pre-cleanup backup.
 - Latest files touched for this accepted state:
-  `chat/server.py`, `chat/static/css/style.css`,
+  `chat/server.py`, `chat/static/js/chat.js`,
   `tests/model_route_test.py`, `.handoffs/CURRENT_STATE.md`,
   `project-map.md`.
-- Working tree note: current uncommitted changes are the pinpoint
-  skill-assignment fix and state-doc updates from this session. They
-  are treated as accepted project state unless Ian asks for a commit or
-  cleanup pass.
+- GitHub alignment note: the latest installable repo state on `main`
+  contains the chat worker-action, per-session runner isolation,
+  cross-session save race tests, and docs. Runtime/generated/private
+  state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T214346Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed)
   - `/Users/webot/Backups/gemma-forge/20260523T-skill-guidance-pre/`
   - `/Users/webot/Backups/gemma-forge/20260523T-continuation-repair-pre/`
+  - `/Users/webot/Backups/gemma-forge/20260523T204408Z-pre-session-run-controllers/`
+  - `/Users/webot/Backups/gemma-forge/20260523T211344Z-pre-save-session-race/`
+  - `/Users/webot/Backups/gemma-forge/20260523T211600Z-pre-runtime-session-state-repair/`
   - `/Users/webot/Backups/gemma-forge/20260523T194941Z-pre-noise-cleanup/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T195311Z-full-live-local-working-state/` (verified full live local working state with restore archive)
   - `/Users/webot/Backups/gemma-forge/20260523T-content-counts-pre/`
@@ -1194,6 +1222,88 @@ the contest demo path works end-to-end.** Driving doc:
     without creating new Ollama error-log entries.
   - Active session list is empty after cleanup; archived sessions remain
     restorable under Archived.
+
+- **2026-05-23 — Agent chat worker handoff + per-session run controllers.**
+  User asked to confirm the bottom-right agent chat is skill/tool aware,
+  align it so chat can trigger worker flow runs through staged skills,
+  and make parallel sessions independent when switching between them.
+
+  Fix:
+  - `chat/static/js/chat.js`: Full Forge / Forge Section run controllers
+    and stale-response guards are now scoped by project id instead of one
+    global browser controller. A response from one project updates that
+    project's cached record, and only repaints the visible cards/messages
+    if the project is still selected.
+  - `chat/server.py`: project chat now stages selected skill context when
+    a workspace exists, then parses one bounded `GFORGE_WORKER_ACTION`
+    block from the chat reply. Accepted actions are `full_forge` or a
+    known protocol card id only; unknown card ids and malformed actions
+    are ignored.
+  - The browser converts an accepted worker action into the existing
+    card/Full Forge runner flow, so chat can ask the worker to continue
+    without receiving arbitrary direct tool execution.
+
+  Verified:
+  - Focused unit coverage added for worker-action parsing, chat route
+    response shaping, and invalid worker-action rejection.
+  - User live-tested two sessions in parallel and reported they ran
+    independently and completed the requested jobs.
+
+- **2026-05-23 — Cross-session save race fixed and runtime state repaired.**
+  User reported one of two parallel runs did the work successfully but
+  did not finish the visible verification/status process.
+
+  Root cause:
+  - `save_sessions()` merged the caller's entire in-memory session
+    snapshot. A long request could save its own completed project while
+    also writing an older copy of another concurrently running project,
+    rolling that other project record backward.
+
+  Fix:
+  - `chat/server.py`: `save_sessions()` now accepts explicit
+    `update_keys`, matching the existing `create_keys` discipline.
+    Mutating routes pass the project ids they actually changed instead
+    of writing a stale whole-file snapshot.
+  - Added regression coverage proving one session update cannot roll
+    back another parallel session's newer card state.
+  - Runtime repair: `session_1779570042369` was restored from its own
+    `terminal-events.jsonl` and artifacts without rerunning Ollama. The
+    Just Art and Just Music projects now both show all cards complete.
+
+  Backups:
+  - `/Users/webot/Backups/gemma-forge/20260523T204408Z-pre-session-run-controllers/`
+  - `/Users/webot/Backups/gemma-forge/20260523T211344Z-pre-save-session-race/`
+  - `/Users/webot/Backups/gemma-forge/20260523T211600Z-pre-runtime-session-state-repair/`
+
+  Verified:
+  - `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+    passed.
+  - `npm run check` passed.
+  - Live harness restarted through launchd and responded on
+    `http://127.0.0.1:5005/`.
+
+- **2026-05-23 — Full live-state SSD backup + GitHub alignment.**
+  User asked to fully back up the smooth current state to SSD and
+  GitHub.
+
+  Backup:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260523T214346Z-full-live-local-working-state/`
+  contains the live repo working tree, the live `~/.gforge/harness`
+  runtime state, `BACKUP_MANIFEST.txt`, `restore-archive.tar.gz`, and
+  `restore-archive.tar.gz.sha256`.
+
+  Verified:
+  - External SSD `/Volumes/PHIXERO` was mounted and writable.
+  - The restore archive checksum passed with `/usr/bin/shasum -a 256 -c`.
+  - The archive opened with `tar -tzf`.
+  - Key copied files were present in the backup, including
+    `repo/chat/server.py`, `repo/chat/static/js/chat.js`,
+    `repo/tests/model_route_test.py`, `gforge-harness/sessions.json`,
+    and the repaired Just Art terminal log.
+  - Backup size: about 10G.
+  - GitHub alignment excludes local-only runtime data such as `.gforge/`,
+    `.axon/`, `chat/session-data/`, chat runtime JSON, caches, and
+    machine artifacts.
 
 ## Product philosophy (load-bearing)
 

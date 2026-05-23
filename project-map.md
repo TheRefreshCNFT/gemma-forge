@@ -85,7 +85,15 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Every model-backed harness call records the attempted model route.
 - Settings can import installed Ollama models, provision or skip models, show model route status, and open the error log.
 - Each project record stores project messages, cards, archive state, model selection, project directory state, and optional bridges.
+- Session persistence saves only the project records a request actually
+  changed. This prevents parallel long-running card requests from writing
+  stale snapshots over another project's newer card state.
 - Full Forge runs active protocol cards in order.
+- Full Forge and individual Forge Section run state is tracked per
+  project in the browser. Switching projects while one project is running
+  keeps the in-flight request scoped to its original project, updates that
+  project's cached record when it finishes, and only repaints the visible
+  cards/messages if that project is still selected.
 - The Protocol cards header no longer renders the old inline
   `plan-run-status` strip; status is shown through card state, buttons,
   sidebar project state, and the Forge Station activity stream.
@@ -116,6 +124,11 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Continuation repair prompts tell the model not to start over unless the human explicitly requested a restart, include reviewer/validator blockers, provide a bounded current-file snapshot from the workspace, and ask for only the complete repaired/added files needed to finish the original request.
 - Project Execution has no built-in task generator; it writes only file content returned by the selected Gemma model and records model-authored execution metadata for verification. It accepts strict JSON or the Forge file-block payload so small local models do not have to escape long HTML/CSS through JSON.
 - Project Execution stages installed Forge skills into the workspace under `.gforge/skills`, writes a skill manifest, injects requested skill instructions into the Gemma prompt, and reserves `.gforge/` so the model cannot overwrite harness support context.
+- Project chat stages the same selected skill context when a workspace
+  exists. The chat agent may request a worker handoff by emitting one
+  bounded `GFORGE_WORKER_ACTION` block for `full_forge` or a known
+  protocol card; the browser turns that into the existing card/Full Forge
+  flow instead of giving chat arbitrary tool execution.
 - Project Context / skill staging recognizes deterministic aliases for
   installed skills. For live scraping tasks, capability/task values such
   as `web_browse`, `web_fetch`, scrape/crawl, live news/headlines,
