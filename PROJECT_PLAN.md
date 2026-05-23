@@ -15,7 +15,7 @@ Ship Gemma Forge as a contest-ready local Gemma 4 work harness that makes free l
 - Full Forge and Forge Section execution paths.
 - Human verify checkpoints with Verified, Not Verified, and Help flows.
 - Active and Archived project groups.
-- Project link, lock, archive, restore, and delete controls.
+- Project archive, restore, and delete controls.
 - Harness-agent operating guide.
 - Project execution smoke test with validation, repair, retest, and delivery artifacts.
 

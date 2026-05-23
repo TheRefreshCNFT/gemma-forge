@@ -201,7 +201,6 @@ button {
 }
 
 .primary-action,
-.secondary-sidebar-action,
 .secondary-action,
 .section-run-btn,
 .checkpoint-actions button {
@@ -213,16 +212,6 @@ button {
 .compact-action {
     width: auto;
     min-height: 38px;
-}
-
-.secondary-sidebar-action {
-    width: 100%;
-    min-height: 40px;
-    margin-top: 10px;
-    padding: 0 12px;
-    background: transparent;
-    color: white;
-    border: 1px solid rgba(255, 255, 255, 0.24);
 }
 
 .primary-action {
@@ -288,31 +277,34 @@ button {
 
 .session-row {
     display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    grid-template-columns: minmax(0, 1fr) 28px;
     gap: 8px;
-    align-items: center;
+    align-items: stretch;
     min-width: 0;
-}
-
-.session-link-check {
-    width: 18px;
-    height: 18px;
 }
 
 .session-item {
     width: 100%;
     min-width: 0;
-    padding: 11px 12px;
+    min-height: 60px;
+    padding: 9px 12px;
     border: 1px solid rgba(255, 255, 255, 0.14);
     border-left: 4px solid transparent;
     border-radius: 6px;
     background: rgba(255, 255, 255, 0.06);
     color: white;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+    justify-content: center;
     text-align: left;
+}
+
+.session-row-actions {
+    display: grid;
+    gap: 4px;
+    align-content: center;
 }
 
 .session-archive-btn,
@@ -342,21 +334,31 @@ button {
 }
 
 .session-title {
+    width: 100%;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
     overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    font-size: 0.9rem;
+    font-weight: 800;
+    line-height: 1.15;
+    overflow-wrap: anywhere;
 }
 
 .session-state-label {
-    min-width: 54px;
-    padding: 2px 6px;
+    align-self: flex-start;
+    max-width: 100%;
+    padding: 1px 6px;
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.1);
     color: #d9e5e1;
-    font-size: 0.68rem;
+    font-size: 0.58rem;
     font-weight: 900;
+    line-height: 1.35;
     text-align: center;
     text-transform: uppercase;
+    letter-spacing: 0.08em;
 }
 
 .session-row.selected .session-item {

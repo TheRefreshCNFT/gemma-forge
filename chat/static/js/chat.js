@@ -1,4 +1,4 @@
-const API_URL = "http://localhost:5005/api";
+const API_URL = "/api";
 
 const checkpointInstructions = {
     "intake": "Confirm the project goal, deadline, target user, and definition of done are correct.",
@@ -74,8 +74,6 @@ let workspace = null;
 let currentSessionId = null;
 let selectedModel = "";
 let sessionsCache = {};
-let linkMode = false;
-let selectedSessionLinks = new Set();
 let pinnedHelpKey = null;
 let helpHideTimer = null;
 
@@ -522,19 +520,6 @@ function renderSessionRow(id, session) {
     row.className = `session-row session-status-${state.name}${id === currentSessionId ? " selected" : ""}`;
     row.title = state.title;
 
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.className = "session-link-check";
-    checkbox.checked = selectedSessionLinks.has(id);
-    checkbox.disabled = !linkMode || Array.isArray(session) || archived;
-    checkbox.addEventListener("change", () => {
-        if (checkbox.checked) {
-            selectedSessionLinks.add(id);
-        } else {
-            selectedSessionLinks.delete(id);
-        }
-    });
-
     const sessionTitle = sessionTitleText(id, session);
     const button = document.createElement("button");
     button.className = "session-item";
@@ -566,10 +551,13 @@ function renderSessionRow(id, session) {
         deleteSession(id, session);
     });
 
-    row.appendChild(checkbox);
+    const actions = document.createElement("div");
+    actions.className = "session-row-actions";
+    actions.appendChild(deleteButton);
+    actions.appendChild(archiveButton);
+
     row.appendChild(button);
-    row.appendChild(archiveButton);
-    row.appendChild(deleteButton);
+    row.appendChild(actions);
     return row;
 }
 
@@ -610,7 +598,6 @@ async function setSessionArchive(id, session, archived) {
             return;
         }
 
-        selectedSessionLinks.delete(id);
         sessionsCache = data.sessions || {};
         if (currentSessionId === id) {
             if (archived) {
@@ -644,7 +631,6 @@ async function deleteSession(id, session) {
             return;
         }
 
-        selectedSessionLinks.delete(id);
         sessionsCache = data.sessions || {};
         if (currentSessionId === id) {
             currentSessionId = null;
@@ -1793,35 +1779,6 @@ async function provisionModel() {
     }
 }
 
-async function lockSelectedSessions() {
-    const output = document.getElementById("agent-output");
-    const sessionIds = Array.from(selectedSessionLinks);
-    if (sessionIds.length < 2) {
-        output.textContent = "Select at least two projects to link.";
-        return;
-    }
-
-    try {
-        const res = await fetch(`${API_URL}/sessions/link`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ session_ids: sessionIds })
-        });
-        const data = await res.json();
-        if (data.error) {
-            output.textContent = data.error;
-            return;
-        }
-        output.textContent = `Projects linked through ${data.bridgeId}. Bridge files were created in the project data folder.`;
-        selectedSessionLinks.clear();
-        linkMode = false;
-        document.getElementById("lock-sessions-btn").classList.add("hidden");
-        await fetchSessions();
-    } catch (error) {
-        output.textContent = "Project linking failed.";
-    }
-}
-
 function initializeHelp() {
     document.querySelectorAll(".help-trigger").forEach(button => {
         const help = helpContent[button.dataset.helpKey];
@@ -1968,12 +1925,6 @@ document.querySelectorAll("[data-collapse-target]").forEach(button => {
         button.title = `${action} ${targetName}`;
     });
 });
-document.getElementById("link-sessions-btn").addEventListener("click", async () => {
-    linkMode = !linkMode;
-    document.getElementById("lock-sessions-btn").classList.toggle("hidden", !linkMode);
-    await fetchSessions();
-});
-document.getElementById("lock-sessions-btn").addEventListener("click", lockSelectedSessions);
 document.getElementById("new-session-btn").addEventListener("click", () => {
     currentSessionId = null;
     if (typeof window.reconnectTerminalToSession === "function") {

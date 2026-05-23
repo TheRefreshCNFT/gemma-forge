@@ -84,13 +84,20 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Forge Brain selection is sent to project creation, planning, card runs, and project messages.
 - Every model-backed harness call records the attempted model route.
 - Settings can import installed Ollama models, provision or skip models, show model route status, and open the error log.
-- Each project record stores project messages, cards, archive state, model selection, project directory state, and optional bridges.
+- Each project record stores project messages, cards, archive state, model
+  selection, and project directory state. Legacy bridge metadata may exist
+  on older records, but the contest UI no longer exposes project linking.
 - Session persistence saves only the project records a request actually
   changed. This prevents parallel long-running card requests from writing
   stale snapshots over another project's newer card state.
 - Full Forge runs active protocol cards in order.
 - The left project sidebar lists active projects newest-first and keeps
   archived projects in their own newest-first group.
+- The contest sidebar does not show project-link checkboxes, Link
+  projects, or Lock selected projects controls. Session titles are the
+  primary text with up to two visible lines; the state label sits smaller
+  underneath each title. Row actions are stacked in a narrow right rail
+  with delete (`X`) over archive/restore (`A`/`R`).
 - Full Forge and individual Forge Section run state is tracked per
   project in the browser. Switching projects while one project is running
   keeps the in-flight request scoped to its original project, updates that

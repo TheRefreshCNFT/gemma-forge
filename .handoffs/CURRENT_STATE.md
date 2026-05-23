@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-23 (UTC) — verified rolodex/session-order UI state + full-state backup/GitHub alignment.
+Last updated: 2026-05-23 (UTC) — verified sidebar action stack backup + GitHub alignment.
 
 ## Verified ground truth
 
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, and full-state backup/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, and full-state backup/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -42,6 +42,12 @@ the contest demo path works end-to-end.** Driving doc:
     stack fix: rotating cards stay stacked slightly downward and no
     longer drift up into the Protocol cards header.
   - The project/session list on the left is ordered newest-first.
+  - The contest sidebar no longer shows project-link checkboxes, Link
+    projects, or Lock selected projects controls. Session names are the
+    primary sidebar text, with Done/Active/Stopped/etc. shown smaller
+    underneath each title.
+  - Sidebar row actions are stacked with `X` over `A`/`R`, and session
+    titles can show up to two lines before truncating.
 - Locally verified current behavior:
   - Completed protocol cards show compact run facts on the card
     itself, e.g. Project Context shows format/path/count/skill/open
@@ -122,15 +128,31 @@ the contest demo path works end-to-end.** Driving doc:
   - Sidebar project groups sort by `createdAt` descending, with
     `updatedAt`, `archivedAt`, and `session_<timestamp>` id fallback for
     legacy records. Active and archived groups keep separate headings.
+  - Link controls were technically wired to `/api/sessions/link`: the
+    endpoint wrote bridge files, saved `bridges` metadata, and exposed
+    that metadata to chat prompts. It was not part of the core Full
+    Forge/card execution path, so the contest-facing UI and front-end
+    link-mode flow were removed while keeping existing legacy records safe.
+  - Sidebar assets now carry a small static version query and the browser
+    uses same-origin `/api` so local host aliases do not keep stale UI code
+    or cross-origin session fetches during contest demos.
+  - Session row actions now render inside a single narrow action rail with
+    delete above archive/restore, reclaiming horizontal space for the
+    session title. Titles use a two-line clamp and keep the state label
+    underneath.
 - Latest files touched for this accepted state:
   `chat/server.py`, `chat/static/js/chat.js`,
-  `chat/static/css/style.css`, `tests/model_route_test.py`,
-  `.handoffs/CURRENT_STATE.md`, `project-map.md`.
+  `chat/static/css/style.css`, `chat/templates/index.html`,
+  `tests/model_route_test.py`, `.handoffs/CURRENT_STATE.md`,
+  `project-map.md`, `PROJECT_PLAN.md`.
 - GitHub alignment note: the latest installable repo state on `main`
   contains the chat worker-action, per-session runner isolation,
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T224225Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed)
+  - `/Users/webot/Backups/gemma-forge/20260523T223722Z-pre-sidebar-action-stack/`
+  - `/Users/webot/Backups/gemma-forge/20260523T222213Z-pre-sidebar-session-simplify/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T221207Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed)
   - `/Users/webot/Backups/gemma-forge/20260523T215326Z-pre-ui-rolodex-session-order/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T214346Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed)
@@ -1350,6 +1372,101 @@ the contest demo path works end-to-end.** Driving doc:
     `repo/chat/static/css/style.css`, `repo/chat/static/js/chat.js`,
     `repo/.handoffs/CURRENT_STATE.md`, `repo/project-map.md`, and
     `gforge-harness/sessions.json`.
+  - GitHub alignment excludes local-only runtime data such as `.gforge/`,
+    `.axon/`, `chat/session-data/`, chat runtime JSON, caches, and
+    machine artifacts.
+
+- **2026-05-23 — Contest sidebar simplification.**
+  User asked for the session sidebar to remove project-link checkboxes,
+  remove Link projects / Lock selected projects controls, and make
+  project names visually primary with the state shown smaller underneath.
+
+  Notes:
+  - The link flow was partially wired: front-end link mode posted selected
+    project ids to `/api/sessions/link`; the server wrote bridge files,
+    saved `bridges` metadata, and included it in chat prompts. It was not
+    part of the Full Forge/card execution path and was removed from the
+    contest-facing sidebar UI/front-end flow.
+  - `chat/templates/index.html`: removed the Link projects and Lock
+    selected projects buttons; added static asset version queries for the
+    refreshed sidebar CSS/JS.
+  - `chat/static/js/chat.js`: removed link-mode state, session checkbox
+    rendering, lock action handler, and link button event listeners; switched
+    `API_URL` to same-origin `/api`.
+  - `chat/static/css/style.css`: removed session checkbox/link-button
+    styling and changed session rows so title is primary with the state
+    label below it.
+  - `PROJECT_PLAN.md`, `project-map.md`, and this handoff record the
+    accepted contest UI state.
+
+  Verification:
+  - Pre-edit backup:
+    `/Users/webot/Backups/gemma-forge/20260523T222213Z-pre-sidebar-session-simplify/`
+    (hashes matched originals).
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - Front-end identifier scan confirmed no remaining link/lock/sidebar
+    checkbox references in `chat/static/js/chat.js`,
+    `chat/templates/index.html`, or `chat/static/css/style.css`.
+  - Browser verification on `http://127.0.0.1:5005/`: 4 session rows
+    rendered; Link button count `0`; Lock button count `0`; session
+    checkbox count `0`; state label below title `true`; sidebar horizontal
+    overflow `false`; no console errors. Screenshot:
+    `/tmp/gemma-forge-sidebar-simplify-inapp-20260523T222213Z.png`.
+
+- **2026-05-23 — Sidebar action stack touch-up.**
+  User confirmed the sidebar simplification looked great and asked to
+  stack the row actions with `X` over `A`, letting session info use the
+  freed-up width and show a little more.
+
+  Changes:
+  - `chat/static/js/chat.js`: session row actions now render in
+    `.session-row-actions`, with delete (`X`) above archive/restore
+    (`A`/`R`).
+  - `chat/static/css/style.css`: session rows now have one content column
+    plus a 28px action rail, two-line clamped session titles, and no
+    horizontal overflow.
+  - `chat/templates/index.html`: asset version bumped so the refreshed
+    sidebar CSS/JS loads in the demo browser.
+  - `project-map.md` and this handoff record the accepted sidebar shape.
+
+  Verification:
+  - Pre-edit backup:
+    `/Users/webot/Backups/gemma-forge/20260523T223722Z-pre-sidebar-action-stack/`
+    (hashes matched originals).
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - Browser verification on `http://127.0.0.1:5005/`: 4 session rows
+    rendered; first row action texts were `["X", "A"]`; one action column;
+    state label below title `true`; two-line title height observed; sidebar
+    horizontal overflow `false`; no console errors. Screenshot:
+    `/tmp/gemma-forge-sidebar-action-stack-inapp-20260523T223722Z.png`.
+
+- **2026-05-23 — Full live-state SSD backup + GitHub alignment for sidebar action stack.**
+  User confirmed the final sidebar action stack looked amazing and asked
+  to back up the full state to SSD and align the live working version to
+  GitHub.
+
+  Backup:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260523T224225Z-full-live-local-working-state/`
+  contains the live repo working tree, the live `~/.gforge/harness`
+  runtime state, `BACKUP_MANIFEST.txt`, `restore-archive.tar.gz`, and
+  `restore-archive.tar.gz.sha256`.
+
+  Verified:
+  - Entry checks: branch `main`, harness HTTP `200`, Ollama up, PHIXERO
+    mounted/writable, and GitHub CLI authenticated as `TheRefreshCNFT`.
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - Browser verification from the previous accepted pass remains the
+    visual proof for this state:
+    `/tmp/gemma-forge-sidebar-action-stack-inapp-20260523T223722Z.png`.
+  - The restore archive checksum passed with `/usr/bin/shasum -a 256 -c`.
+  - The archive opened with `tar -tzf`.
+  - Key copied files were present in the backup, including
+    `repo/chat/static/css/style.css`, `repo/chat/static/js/chat.js`,
+    `repo/chat/templates/index.html`, `repo/.handoffs/CURRENT_STATE.md`,
+    `repo/project-map.md`, and `gforge-harness/sessions.json`.
   - GitHub alignment excludes local-only runtime data such as `.gforge/`,
     `.axon/`, `chat/session-data/`, chat runtime JSON, caches, and
     machine artifacts.
