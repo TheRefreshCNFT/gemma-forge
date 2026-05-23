@@ -100,7 +100,7 @@ the contest demo path works end-to-end.** Driving doc:
   - `/Users/webot/Backups/gemma-forge/20260523T-skill-guidance-pre/`
   - `/Users/webot/Backups/gemma-forge/20260523T-continuation-repair-pre/`
   - `/Users/webot/Backups/gemma-forge/20260523T194941Z-pre-noise-cleanup/`
-  - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T195311Z-full-live-local-working-state/` (pending final backup verification)
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T195311Z-full-live-local-working-state/` (verified full live local working state with restore archive)
   - `/Users/webot/Backups/gemma-forge/20260523T-content-counts-pre/`
   - `/Users/webot/Backups/gemma-forge/20260523T175448Z-pre-skill-assigner/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T172125Z-full-live-local-working-state/`
