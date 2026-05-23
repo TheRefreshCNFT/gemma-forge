@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-23 (UTC) — verified full-state backup + GitHub alignment.
+Last updated: 2026-05-23 (UTC) — verified rolodex/session-order UI state + full-state backup/GitHub alignment.
 
 ## Verified ground truth
 
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, and full-state backup/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, and full-state backup/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -38,6 +38,10 @@ the contest demo path works end-to-end.** Driving doc:
     border/glow plus disabled `Running` button.
   - Manual / Human Verify flow remains separate: cards still show
     `Forge Section` until manually run.
+  - Rolodex-style protocol cards look and run correctly after the visual
+    stack fix: rotating cards stay stacked slightly downward and no
+    longer drift up into the Protocol cards header.
+  - The project/session list on the left is ordered newest-first.
 - Locally verified current behavior:
   - Completed protocol cards show compact run facts on the card
     itself, e.g. Project Context shows format/path/count/skill/open
@@ -112,15 +116,23 @@ the contest demo path works end-to-end.** Driving doc:
     records from the current tuning runs were archived, and orphan
     `session-data` test artifact directories were moved out of live
     harness state into the pre-cleanup backup.
+  - Protocol card rolodex layering now uses small positive Y offsets for
+    both ahead/behind non-front cards, plus a little lower stack padding,
+    so rotating through cards keeps the deck below the header.
+  - Sidebar project groups sort by `createdAt` descending, with
+    `updatedAt`, `archivedAt`, and `session_<timestamp>` id fallback for
+    legacy records. Active and archived groups keep separate headings.
 - Latest files touched for this accepted state:
   `chat/server.py`, `chat/static/js/chat.js`,
-  `tests/model_route_test.py`, `.handoffs/CURRENT_STATE.md`,
-  `project-map.md`.
+  `chat/static/css/style.css`, `tests/model_route_test.py`,
+  `.handoffs/CURRENT_STATE.md`, `project-map.md`.
 - GitHub alignment note: the latest installable repo state on `main`
   contains the chat worker-action, per-session runner isolation,
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T221207Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed)
+  - `/Users/webot/Backups/gemma-forge/20260523T215326Z-pre-ui-rolodex-session-order/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T214346Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed)
   - `/Users/webot/Backups/gemma-forge/20260523T-skill-guidance-pre/`
   - `/Users/webot/Backups/gemma-forge/20260523T-continuation-repair-pre/`
@@ -1301,6 +1313,43 @@ the contest demo path works end-to-end.** Driving doc:
     `repo/tests/model_route_test.py`, `gforge-harness/sessions.json`,
     and the repaired Just Art terminal log.
   - Backup size: about 10G.
+  - GitHub alignment excludes local-only runtime data such as `.gforge/`,
+    `.axon/`, `chat/session-data/`, chat runtime JSON, caches, and
+    machine artifacts.
+
+- **2026-05-23 — Rolodex/session-order UI backup + GitHub alignment.**
+  User verified the interface was "looking and running perfect" after
+  the two visual fixes and asked for full SSD + GitHub backup.
+
+  UI changes:
+  - `chat/static/css/style.css`: protocol-card rolodex stack now uses
+    small downward offsets for ahead/behind cards and keeps extra lower
+    stack padding so rotation stays below the Protocol cards header.
+  - `chat/static/js/chat.js`: project groups sort newest-first by
+    `createdAt`, with `updatedAt`, `archivedAt`, and `session_<timestamp>`
+    fallback for older records.
+  - `project-map.md` and this handoff now record the accepted behavior.
+
+  Backup:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260523T221207Z-full-live-local-working-state/`
+  contains the live repo working tree, the live `~/.gforge/harness`
+  runtime state, `BACKUP_MANIFEST.txt`, `restore-archive.tar.gz`, and
+  `restore-archive.tar.gz.sha256`.
+
+  Verified:
+  - Entry checks: branch `main`, harness HTTP `200`, Ollama up, and
+    PHIXERO mounted/writable.
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - Browser check on `http://127.0.0.1:5005/`: after rotating to
+    card `3 / 8`, `overlapsHeader` was false and the active sidebar
+    order matched `/api/sessions` newest-first.
+  - The restore archive checksum passed with `/usr/bin/shasum -a 256 -c`.
+  - The archive opened with `tar -tzf`.
+  - Key copied files were present in the backup, including
+    `repo/chat/static/css/style.css`, `repo/chat/static/js/chat.js`,
+    `repo/.handoffs/CURRENT_STATE.md`, `repo/project-map.md`, and
+    `gforge-harness/sessions.json`.
   - GitHub alignment excludes local-only runtime data such as `.gforge/`,
     `.axon/`, `chat/session-data/`, chat runtime JSON, caches, and
     machine artifacts.

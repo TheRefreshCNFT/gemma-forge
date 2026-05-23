@@ -89,6 +89,8 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   changed. This prevents parallel long-running card requests from writing
   stale snapshots over another project's newer card state.
 - Full Forge runs active protocol cards in order.
+- The left project sidebar lists active projects newest-first and keeps
+  archived projects in their own newest-first group.
 - Full Forge and individual Forge Section run state is tracked per
   project in the browser. Switching projects while one project is running
   keeps the in-flight request scoped to its original project, updates that
@@ -106,6 +108,9 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   SocratiCode/Axon, plus review/research/artifact facts. The full raw
   card artifact stays available behind a "Full section artifact"
   disclosure.
+- The rolodex card stack stays below the Protocol cards header while
+  rotating. Non-front cards use small downward offsets for a neat deck
+  instead of sliding upward into the header text.
 - The Project Context section remains the chronological project feed;
   its scroll area is taller so card-specific facts can live on cards
   while the feed stays readable.

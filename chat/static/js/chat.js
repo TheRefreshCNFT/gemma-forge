@@ -473,12 +473,27 @@ function renderSessionsList(sessions) {
     const list = document.getElementById("sessions-list");
     list.innerHTML = "";
 
-    const entries = Object.entries(sessions);
+    const entries = Object.entries(sessions).sort(compareSessionsNewestFirst);
     const activeSessions = entries.filter(([, session]) => !isArchivedSession(session));
     const archivedSessions = entries.filter(([, session]) => isArchivedSession(session));
 
     renderSessionGroup(list, "Active", activeSessions, "No active projects yet.");
     renderSessionGroup(list, "Archived", archivedSessions, "No archived projects.");
+}
+
+function compareSessionsNewestFirst([idA, sessionA], [idB, sessionB]) {
+    const diff = sessionCreatedTimestamp(idB, sessionB) - sessionCreatedTimestamp(idA, sessionA);
+    if (diff !== 0) return diff;
+    return String(idB).localeCompare(String(idA));
+}
+
+function sessionCreatedTimestamp(id, session) {
+    if (!Array.isArray(session)) {
+        const parsed = Date.parse(session?.createdAt || session?.updatedAt || session?.archivedAt || "");
+        if (!Number.isNaN(parsed)) return parsed;
+    }
+    const fallback = String(id).match(/^session_(\d+)$/);
+    return fallback ? Number(fallback[1]) : 0;
 }
 
 function renderSessionGroup(list, label, entries, emptyText) {

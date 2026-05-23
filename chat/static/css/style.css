@@ -1133,9 +1133,10 @@ textarea {
 .workflow-cards.rolodex-stack {
     position: relative;
     /* Natural-height deck. Tall enough for the front card to be fully
-       readable; the peeking back edges sit in the padding-top area. */
-    min-height: 360px;
-    padding-top: 30px;
+       readable; the peeking back edges settle below the front card. */
+    min-height: 380px;
+    padding-top: 26px;
+    padding-bottom: 28px;
 }
 
 /* Each card absolutely positioned over the others. The active card has
@@ -1147,8 +1148,8 @@ textarea {
     position: absolute;
     left: 0;
     right: 0;
-    top: 30px;
-    bottom: 0;
+    top: 26px;
+    bottom: 28px;
     display: flex;
     flex-direction: column;
     transform-origin: top center;
@@ -1183,40 +1184,40 @@ textarea {
 /* Cards behind the front, in order. Up to ~4 visible peek-edges, the rest
    stack into the same slot at zero opacity. */
 .workflow-cards.rolodex-stack > .workflow-card.behind-1 {
-    transform: translateY(-10px) scale(0.985);
+    transform: translateY(8px) scale(0.985);
     opacity: 0.92;
     z-index: 40;
 }
 .workflow-cards.rolodex-stack > .workflow-card.behind-2 {
-    transform: translateY(-20px) scale(0.97);
+    transform: translateY(16px) scale(0.97);
     opacity: 0.78;
     z-index: 30;
 }
 .workflow-cards.rolodex-stack > .workflow-card.behind-3 {
-    transform: translateY(-28px) scale(0.955);
+    transform: translateY(24px) scale(0.955);
     opacity: 0.6;
     z-index: 20;
 }
 .workflow-cards.rolodex-stack > .workflow-card.behind-deep {
-    transform: translateY(-32px) scale(0.94);
+    transform: translateY(28px) scale(0.94);
     opacity: 0;
     z-index: 10;
     pointer-events: none;
 }
 
-/* Cards "above" the front (haven't been seen yet) tuck off the top edge. */
+/* Cards before the front card stay tucked into the same downward stack. */
 .workflow-cards.rolodex-stack > .workflow-card.ahead-1 {
-    transform: translateY(-44px) scale(0.985);
+    transform: translateY(6px) scale(0.985);
     opacity: 0.4;
     z-index: 40;
 }
 .workflow-cards.rolodex-stack > .workflow-card.ahead-2 {
-    transform: translateY(-56px) scale(0.97);
+    transform: translateY(14px) scale(0.97);
     opacity: 0.25;
     z-index: 30;
 }
 .workflow-cards.rolodex-stack > .workflow-card.ahead-deep {
-    transform: translateY(-64px) scale(0.94);
+    transform: translateY(22px) scale(0.94);
     opacity: 0;
     z-index: 10;
     pointer-events: none;
@@ -1238,11 +1239,13 @@ textarea {
 
 @media (max-width: 980px) {
     .workflow-cards.rolodex-stack {
-        min-height: 320px;
-        padding-top: 24px;
+        min-height: 340px;
+        padding-top: 22px;
+        padding-bottom: 24px;
     }
     .workflow-cards.rolodex-stack > .workflow-card {
-        top: 24px;
+        top: 22px;
+        bottom: 24px;
     }
 }
 
