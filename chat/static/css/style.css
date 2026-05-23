@@ -2221,6 +2221,7 @@ textarea {
 .event-row.kind-card-end .ev-kind { color: #34d399; }
 .event-row.kind-ollama .ev-kind { color: #f59e0b; }
 .event-row.kind-browse .ev-kind { color: #a78bfa; }
+.event-row.kind-skill .ev-kind { color: #22d3ee; }
 .event-row.kind-screenshot .ev-kind { color: #f472b6; }
 .event-row.kind-validation .ev-kind { color: #fbbf24; }
 .event-row.kind-error .ev-kind { color: #f87171; }

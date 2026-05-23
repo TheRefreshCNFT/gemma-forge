@@ -106,11 +106,35 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Conditional cards are runnable by Full Forge when visible; protocols that should not run are moved to inactive or pending.
 - New-project mode may include a desired directory path. Project Execution creates that directory if missing, while existing-directory mode requires the path to already exist.
 - Human verify pauses after card work; Verified continues, Not Verified captures the issue and reruns the section, Help asks the agent for guidance.
+- Archived projects are read-only at the API boundary. Project messages,
+  card runs, checkpoint updates, and `/api/plan` calls return `409`
+  before any model/tool call can run, so archived cleanup/test projects
+  cannot keep making calls from stale UI state.
 - Each Forge Section calculates a research-pass budget: up to 2 passes for small tasks, up to 4 for larger tasks, and records used passes on the card.
 - When the selected Forge Brain is 8B parameters or smaller, the server runs one extra independent review before any section can be marked complete.
-- Failed extra reviews trigger up to two post-review patch attempts, clear stale pre-repair research notes, then rerun the review; only still-failing sections move to `needs-attention`.
+- Failed extra reviews trigger up to two post-review continuation repair attempts, clear stale pre-repair research notes, then rerun the review; only still-failing sections move to `needs-attention`.
+- Continuation repair prompts tell the model not to start over unless the human explicitly requested a restart, include reviewer/validator blockers, provide a bounded current-file snapshot from the workspace, and ask for only the complete repaired/added files needed to finish the original request.
 - Project Execution has no built-in task generator; it writes only file content returned by the selected Gemma model and records model-authored execution metadata for verification. It accepts strict JSON or the Forge file-block payload so small local models do not have to escape long HTML/CSS through JSON.
 - Project Execution stages installed Forge skills into the workspace under `.gforge/skills`, writes a skill manifest, injects requested skill instructions into the Gemma prompt, and reserves `.gforge/` so the model cannot overwrite harness support context.
+- Project Context / skill staging recognizes deterministic aliases for
+  installed skills. For live scraping tasks, capability/task values such
+  as `web_browse`, `web_fetch`, scrape/crawl, live news/headlines,
+  article extraction, dynamic sites, Cloudflare/Turnstile, and CSS/XPath
+  selector language map to the bundled `scrapling-official` skill. The
+  saved Project Context is canonicalized to the real skill key, and the
+  Forge Station terminal emits visible `skill` events when skills are
+  selected or staged.
+- Project Context separates deliverable file count from repeated content
+  counts. `deliverable.count` remains "how many files"; raw user phrases
+  like "top 3 articles in each category" or "three design options" are
+  preserved as `content_requirements`, injected into Execution, and
+  enforced by deterministic validation for text-like deliverables.
+- Project Execution skill context starts with a concise usage plan before
+  raw skill manuals. For scraping + webpage tasks, `scrapling-official`
+  is identified as the scraping/extraction layer and `ui-ux-pro-max` as
+  the webpage/interface design layer. Skill selection ignores prior agent
+  messages so reruns do not stage unrelated support skills just because a
+  previous artifact mentioned them.
 - Axon and SocratiCode are support-tool cards; skipped, unavailable, and degraded states are shown explicitly and never claimed as successful tool runs.
 - Axon runs only when graphable source files exist. HTML-only work is reported as not Axon-indexable instead of triggering a false structural scan.
 - SocratiCode is installed under `~/.gforge/tools` when needed and is called through a real MCP stdio bridge from the Flask harness.

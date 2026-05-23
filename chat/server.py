@@ -466,6 +466,45 @@ def parse_skill_name(skill_file, fallback):
     return fallback
 
 
+def parse_skill_metadata(skill_file):
+    """Read optional description / keywords from SKILL.md frontmatter or skill.json."""
+    metadata = {"description": "", "keywords": []}
+    try:
+        if skill_file.endswith(".json"):
+            with open(skill_file, "r") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return metadata
+            description = data.get("description")
+            if isinstance(description, str):
+                metadata["description"] = description.strip()
+            keywords = data.get("keywords", [])
+            if isinstance(keywords, list):
+                metadata["keywords"] = [str(item).strip() for item in keywords if str(item).strip()]
+            return metadata
+
+        with open(skill_file, "r") as f:
+            content = f.read(12000)
+        if not content.startswith("---"):
+            return metadata
+        end = content.find("\n---", 3)
+        if end == -1:
+            return metadata
+        frontmatter = content[3:end].strip()
+        data = yaml.safe_load(frontmatter)
+        if not isinstance(data, dict):
+            return metadata
+        description = data.get("description")
+        if isinstance(description, str):
+            metadata["description"] = description.strip()
+        keywords = data.get("keywords", [])
+        if isinstance(keywords, list):
+            metadata["keywords"] = [str(item).strip() for item in keywords if str(item).strip()]
+    except (OSError, json.JSONDecodeError, yaml.YAMLError):
+        pass
+    return metadata
+
+
 def discover_installed_skills(max_depth=3):
     """Walk every skill install root and surface anything that LOOKS like a
     skill bundle. A skill is recognised if its directory contains EITHER:
@@ -494,6 +533,7 @@ def discover_installed_skills(max_depth=3):
                 continue
             directory_name = os.path.basename(current_root)
             skill_name = parse_skill_name(skill_file, directory_name)
+            skill_metadata = parse_skill_metadata(skill_file)
             key = normalize_skill_key(skill_name)
             if key not in skills:
                 skills[key] = {
@@ -502,6 +542,8 @@ def discover_installed_skills(max_depth=3):
                     "source": source,
                     "directory": current_root,
                     "skillFile": skill_file,
+                    "description": skill_metadata.get("description", ""),
+                    "keywords": skill_metadata.get("keywords", []),
                 }
     return skills
 
@@ -510,9 +552,202 @@ def normalize_skill_key(value):
     return re.sub(r"[^a-z0-9]+", "-", str(value).lower()).strip("-")
 
 
+def normalize_skill_phrase(value):
+    return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
+
+
+SKILL_SELECTION_ALIASES = {
+    "scrapling-official": [
+        "scrapling",
+        "web_browse",
+        "web browse",
+        "web browsing",
+        "browse web",
+        "browse the web",
+        "web_fetch",
+        "web fetch",
+        "fetch url",
+        "fetch urls",
+        "fetch page",
+        "fetch pages",
+        "download page",
+        "download pages",
+        "website content",
+        "site content",
+        "live web",
+        "live data",
+        "live scraping",
+        "live news",
+        "latest news",
+        "current news",
+        "news scraping",
+        "news articles",
+        "news headlines",
+        "headlines",
+        "article scraping",
+        "scrape",
+        "scraper",
+        "scraping",
+        "web scrape",
+        "web scraper",
+        "web scraping",
+        "crawl",
+        "crawler",
+        "crawling",
+        "web crawl",
+        "web crawling",
+        "extract data",
+        "extract website data",
+        "data extraction",
+        "web extraction",
+        "css selector",
+        "xpath",
+        "spider",
+        "spiders",
+        "spider framework",
+        "javascript rendering",
+        "js rendering",
+        "dynamic site",
+        "dynamic sites",
+        "dynamic website",
+        "dynamic websites",
+        "anti bot",
+        "anti-bot",
+        "bot bypass",
+        "cloudflare",
+        "turnstile",
+        "stealth",
+        "stealthy",
+        "stealth browser",
+        "browser fetch",
+        "research articles",
+        "research sources",
+        "research sites",
+        "research pages",
+    ],
+    "logo-generator": [
+        "logo",
+        "logos",
+        "brand mark",
+        "brandmark",
+        "icon",
+        "icons",
+        "svg logo",
+        "logo design",
+        "logo concepts",
+        "wordmark",
+        "showcase",
+        "brand identity",
+        "visual identity",
+    ],
+    "ui-ux-pro-max": [
+        "ui",
+        "ux",
+        "ui ux",
+        "ui/ux",
+        "interface",
+        "webpage",
+        "web page",
+        "webpage design",
+        "website design",
+        "responsive page",
+        "responsive webpage",
+        "responsive website",
+        "responsive",
+        "across devices",
+        "present nicely",
+        "modern page",
+        "modern webpage",
+        "frontend design",
+        "front-end design",
+        "design system",
+        "wireframe",
+        "layout",
+        "typography",
+        "color palette",
+        "accessibility",
+        "dashboard design",
+        "landing page design",
+    ],
+    "axon": [
+        "axon",
+        "knowledge graph",
+        "code graph",
+        "call graph",
+        "dead code",
+        "blast radius",
+        "impact analysis",
+        "circular dependencies",
+        "dependency graph",
+        "what calls this",
+        "code coupling",
+        "mcp server for code",
+    ],
+}
+
+
+def description_skill_aliases(description):
+    """Pull high-signal use-case phrases out of a skill description."""
+    if not description:
+        return []
+    aliases = []
+    for match in re.finditer(r"use when(?: asked to| the user wants to)?[:\s]+(.+)", description, re.IGNORECASE):
+        use_when = match.group(1).split(".", 1)[0]
+        for part in re.split(r";|,|\bor\b|\band\b|\(|\)|\d+\.", use_when):
+            phrase = normalize_skill_phrase(part)
+            if len(phrase) >= 4:
+                aliases.append(phrase)
+    return aliases
+
+
+def skill_aliases(info):
+    aliases = set()
+    key = info.get("key") or normalize_skill_key(info.get("name", ""))
+    name = str(info.get("name", "")).strip()
+    for value in (key, name, name.replace("-", " "), name.replace("_", " ")):
+        if str(value).strip():
+            aliases.add(str(value).strip())
+    aliases.update(SKILL_SELECTION_ALIASES.get(key, []))
+    aliases.update(str(item).strip() for item in info.get("keywords", []) if str(item).strip())
+    aliases.update(description_skill_aliases(str(info.get("description", ""))))
+    return sorted(aliases, key=lambda item: (normalize_skill_phrase(item), len(item)))
+
+
+def skill_alias_matches_text(text, alias):
+    phrase = normalize_skill_phrase(alias)
+    if not phrase:
+        return False
+    normalized_text = normalize_skill_phrase(text)
+    if not normalized_text:
+        return False
+    pattern = r"(?<![a-z0-9])" + re.escape(phrase).replace(r"\ ", r"\s+") + r"(?![a-z0-9])"
+    return bool(re.search(pattern, normalized_text))
+
+
+def resolve_skill_reference(value, skills):
+    raw = str(value or "").strip()
+    if not raw:
+        return None, None
+    normalized = normalize_skill_key(raw)
+    if normalized in skills:
+        return normalized, "exact"
+    raw_phrase = normalize_skill_phrase(raw)
+    for key, info in skills.items():
+        for alias in skill_aliases(info):
+            if normalize_skill_phrase(alias) == raw_phrase:
+                return key, "alias"
+    return None, None
+
+
 def session_skill_text(session):
     parts = [session.get("project", "")]
     for message in session.get("messages", []) if isinstance(session, dict) else []:
+        # Only user text should drive skill selection. Agent messages include
+        # prior artifacts and staged-skill manifests, which caused reruns to
+        # self-poison by selecting support skills merely because a previous
+        # agent mentioned them.
+        if str(message.get("role", "")).lower() != "user":
+            continue
         parts.append(str(message.get("content", "")))
     return "\n".join(parts).lower()
 
@@ -521,41 +756,19 @@ def requested_skill_keys(session, skills):
     """Scan project text + chat history for skill matches. Matches by:
       1. Explicit `$skill-name` or `skill <name>` mentions.
       2. The skill's literal name (`logo-generator` or `logo generator`).
-      3. Any keyword listed in the bundle's `skill.json` `keywords` array
-         (so `ui-ux-pro-max` picks up "ui", "ux", "design", "color",
-         "typography", etc. without the user naming the skill explicitly).
+      3. Built-in aliases for bundled harness skills.
+      4. Any keywords / use-case phrases declared by the bundle metadata.
     Returns a sorted list of keys."""
     text = session_skill_text(session)
     requested = set()
     for match in re.findall(r"(?:\$|skill\s+)([a-z0-9_.-]+)", text):
-        key = normalize_skill_key(match)
+        key, _reason = resolve_skill_reference(match, skills)
         if key in skills:
             requested.add(key)
     for key, info in skills.items():
-        name = info["name"].lower()
-        spaced = name.replace("-", " ")
-        if name in text or spaced in text:
+        if any(skill_alias_matches_text(text, alias) for alias in skill_aliases(info)):
             requested.add(key)
             continue
-        # Keyword match via the bundle's skill.json keywords. Only kicks in
-        # for bundles that ship a skill.json with a keywords list. Each
-        # keyword has to appear as a whole word in the text so "ui" doesn't
-        # match "build" or "guide".
-        skill_file = info.get("skillFile", "")
-        if skill_file.endswith("skill.json"):
-            try:
-                with open(skill_file, "r") as f:
-                    data = json.load(f)
-                kws = data.get("keywords", []) if isinstance(data, dict) else []
-                for kw in kws:
-                    if not isinstance(kw, str) or not kw.strip():
-                        continue
-                    pat = r"\b" + re.escape(kw.strip().lower()) + r"\b"
-                    if re.search(pat, text):
-                        requested.add(key)
-                        break
-            except (OSError, json.JSONDecodeError):
-                pass
     return sorted(requested)
 
 
@@ -593,6 +806,12 @@ def prepare_workspace_skill_context(workspace_dir, session):
     os.makedirs(staged_root, exist_ok=True)
 
     selected_keys = resolve_skill_selection(session, skills)
+    emit_event(
+        "skill",
+        "skill call selection: " + (", ".join(selected_keys) if selected_keys else "none"),
+        selected=selected_keys,
+        available=len(skills),
+    )
     prune_workspace_skill_dirs(staged_root, selected_keys)
     for key in selected_keys:
         skill = skills.get(key)
@@ -600,11 +819,20 @@ def prepare_workspace_skill_context(workspace_dir, session):
             continue
         try:
             destination = copy_skill_to_workspace(skill, workspace_dir)
+            relative_destination = os.path.relpath(destination, workspace_dir).replace(os.sep, "/")
+            emit_event(
+                "skill",
+                f"skill call {skill['name']} -> {relative_destination}",
+                skill=key,
+                source=skill["source"],
+            )
             staged.append({
                 "name": skill["name"],
                 "key": key,
                 "source": skill["source"],
-                "path": os.path.relpath(destination, workspace_dir).replace(os.sep, "/"),
+                "path": relative_destination,
+                "description": skill.get("description", ""),
+                "keywords": skill.get("keywords", []),
                 "requested": True,
             })
         except (OSError, ValueError) as error:
@@ -647,8 +875,9 @@ def resolve_skill_selection(session, skills):
 
     Priority order:
       1. projectContext.skill.use (set by the Project Context Writer).
-         - Real installed skill name → use ONLY that one.
-         - "none" / "n/a" → respect, stage nothing.
+         - Real installed skill name / alias → include it first.
+         - "none" / "n/a" → respect only when the deterministic matcher
+           does not see a skill need in the user's text.
          - Garbage (capability name, hallucinated value) → log + fall
            through to the keyword matcher rather than staging nothing.
       2. Keyword matcher: scan project text + chat history for skill
@@ -659,6 +888,7 @@ def resolve_skill_selection(session, skills):
         return []
 
     context_pick = None
+    context_none = False
     context = session.get("projectContext")
     if isinstance(context, dict):
         skill_info = context.get("skill") if isinstance(context.get("skill"), dict) else None
@@ -667,10 +897,19 @@ def resolve_skill_selection(session, skills):
             raw_use = str(skill_info.get("use", "")).strip()
         normalized = normalize_skill_key(raw_use) if raw_use else ""
         if normalized in {"none", "n-a", "na"}:
-            return []
-        if normalized and normalized in skills:
-            context_pick = normalized
-        elif normalized:
+            context_none = True
+        resolved_key, resolved_reason = resolve_skill_reference(raw_use, skills)
+        if resolved_key:
+            context_pick = resolved_key
+            if normalized and normalized != resolved_key:
+                emit_event(
+                    "skill",
+                    f"Project Context skill.use {raw_use!r} resolved to {skills[resolved_key]['name']}",
+                    requested=raw_use,
+                    skill=resolved_key,
+                    reason=resolved_reason,
+                )
+        elif normalized and not context_none:
             log_error(
                 "skill-staging",
                 f"Project Context named a skill that is not installed: {raw_use!r} "
@@ -684,6 +923,17 @@ def resolve_skill_selection(session, skills):
     # Writer's pick was invalid or empty. Project text "use any skills
     # you have to help" or "ui/ux design" etc. drives this.
     keyword_picks = list(requested_skill_keys(session, skills))
+
+    if context_none:
+        if keyword_picks:
+            emit_event(
+                "skill",
+                "Project Context skill.use 'none' overridden by request keywords: "
+                + ", ".join(keyword_picks),
+                selected=keyword_picks,
+            )
+            return keyword_picks
+        return []
 
     if context_pick:
         # Combine Context Writer's deliberate pick with keyword picks,
@@ -715,6 +965,82 @@ def write_skill_manifest(workspace_dir, staged):
     write_workspace_support_file(workspace_dir, os.path.join(WORKSPACE_SKILLS_ROOT, "MANIFEST.md"), "\n".join(lines))
 
 
+SKILL_ROLE_GUIDANCE = {
+    "scrapling-official": {
+        "role": "web scraping and extraction",
+        "guidance": [
+            "Use this when the request asks to scrape, crawl, browse, fetch, research live pages, extract headlines/articles, or handle dynamic/anti-bot sites.",
+            "The harness can fetch URLs with Scrapling before execution and will list fetched `research/*.md` artifacts later in this prompt; treat those artifacts as available source material.",
+            "Do not say live scraping is impossible when `web_browse`/`web_fetch` is in CAN do or when research artifacts are listed. Build from the fetched artifacts and cite their workspace paths.",
+        ],
+    },
+    "ui-ux-pro-max": {
+        "role": "webpage and interface design",
+        "guidance": [
+            "Use this when the deliverable is a webpage, landing page, dashboard, UI, visual layout, responsive design, typography, color, spacing, or accessibility work.",
+            "Apply its guidance directly inside the generated HTML/CSS/JS deliverable; do not produce a separate design plan unless the contract asks for one.",
+            "For a news/page request, this skill is the design layer: structure, layout, visual hierarchy, responsive behavior, and polished presentation.",
+        ],
+    },
+    "logo-generator": {
+        "role": "SVG logo and icon generation",
+        "guidance": [
+            "Use this when the request asks for a logo, icon, brand mark, wordmark, or SVG design variants.",
+            "Generate actual SVG markup in GFORGE_FILE blocks; do not redirect to an external image generator.",
+        ],
+    },
+    "axon": {
+        "role": "code graph analysis",
+        "guidance": [
+            "Use only when the task asks for code structure, dead code, call graph, dependency graph, impact analysis, or knowledge graph work.",
+            "Do not apply this to ordinary webpage/content generation unless the user explicitly asks for codebase analysis.",
+        ],
+    },
+    "socraticode": {
+        "role": "semantic codebase search",
+        "guidance": [
+            "Use only when the task asks to inspect or understand an existing codebase with semantic search or dependency context.",
+            "Do not apply this to ordinary webpage/content generation unless the user explicitly asks for codebase exploration.",
+        ],
+    },
+    "gsd": {
+        "role": "project planning workflow",
+        "guidance": [
+            "Use only when the task asks for GSD, phase planning, roadmap work, or a planning workflow.",
+            "Do not turn an execution deliverable into a plan unless the Project Context contract says the deliverable is a plan.",
+        ],
+    },
+}
+
+
+def skill_role_guidance(skill_key):
+    return SKILL_ROLE_GUIDANCE.get(skill_key, {
+        "role": "supporting instructions",
+        "guidance": [
+            "Use only the parts of this staged skill that directly support the current Project Context contract.",
+            "If it does not apply to the deliverable, ignore it rather than discussing it.",
+        ],
+    })
+
+
+def build_skill_usage_plan(staged):
+    if not staged:
+        return []
+    lines = [
+        "Skill Usage Plan (read before the manuals):",
+        "- These staged skills are local instructions and harness capabilities selected for this project. They are not inaccessible `/Users/...` paths.",
+        "- Use each skill for its named role below. If a staged skill does not fit the Project Context contract, ignore it quietly.",
+        "- Do not claim a command, scraper, screenshot, API, or deployment ran unless the harness event/research/screenshot artifacts show that it ran.",
+    ]
+    for skill in staged:
+        key = skill.get("key", "")
+        role = skill_role_guidance(key)
+        lines.append(f"- `{skill.get('name', key)}` → {role.get('role', 'supporting instructions')}.")
+        for item in role.get("guidance", []):
+            lines.append(f"  * {item}")
+    return lines
+
+
 def build_skill_context_prompt(workspace_dir, staged):
     if not staged:
         return "No Gemma Forge skills are staged for this workspace."
@@ -726,6 +1052,8 @@ def build_skill_context_prompt(workspace_dir, staged):
         "- Do not report `/Users/...` skill paths as inaccessible when a matching staged skill is listed here.",
         "- Do not claim a script, API, or external model ran unless the harness actually runs it later; list needed commands instead.",
         "- When you generate deliverables from staged skill instructions, say you used the staged skill instructions. Do not describe that as simulated skill execution.",
+        "",
+        *build_skill_usage_plan(staged),
         "",
         "Staged skills:",
     ]
@@ -1457,6 +1785,16 @@ def update_session_model(session_id):
     return jsonify({"session": sessions[session_id]})
 
 
+def session_is_archived(session):
+    return bool(isinstance(session, dict) and session.get("archivedAt"))
+
+
+def archived_session_response():
+    return jsonify({
+        "error": "Archived projects are read-only. Restore the project before running cards or sending messages.",
+    }), 409
+
+
 @app.route('/api/sessions/<session_id>', methods=['DELETE'])
 def delete_session(session_id):
     sessions = load_sessions()
@@ -1689,6 +2027,9 @@ def session_message(session_id):
         return jsonify({"error": "Unknown work-harness project"}), 404
 
     session = sessions[session_id]
+    if session_is_archived(session):
+        return archived_session_response()
+
     model = data.get("model") or session.get("model", DEFAULT_MODEL)
     session["model"] = model
     session.setdefault("messages", [])
@@ -1773,6 +2114,9 @@ def run_session_card(session_id, card_id):
         return jsonify({"error": "Start or select a project first."}), 404
 
     session = sessions[session_id]
+    if session_is_archived(session):
+        return archived_session_response()
+
     model = data.get("model") or session.get("model", DEFAULT_MODEL)
     session["model"] = model
     human_verify = bool(data.get("humanVerify", True))
@@ -1821,6 +2165,9 @@ def verify_session_card(session_id, card_id):
         return jsonify({"error": "Start or select a project first."}), 404
 
     session = sessions[session_id]
+    if session_is_archived(session):
+        return archived_session_response()
+
     model = data.get("model") or session.get("model", DEFAULT_MODEL)
     session["model"] = model
     card = find_card(session, card_id)
@@ -1878,13 +2225,17 @@ def plan():
     if not project:
         return jsonify({"error": "Project is required"}), 400
 
+    sessions = load_sessions()
+    if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
+        if session_is_archived(sessions[session_id]):
+            return archived_session_response()
+
     resource_state = scan_workspace()
     session_for_prompt = {
         "project": project,
         "projectMode": "unknown",
         "projectDirectory": "",
     }
-    sessions = load_sessions()
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
         session_for_prompt = sessions[session_id]
         session_for_prompt["model"] = model
@@ -2474,7 +2825,7 @@ def repair_execution_after_review(session_id, session, model, result, review, at
     execution = execute_model_authored_project(session_id, session, model, workspace_dir, review)
     activate_post_execution_cards(session)
 
-    result["summary"] = "Post-review patch reran model-authored execution and verification packaging."
+    result["summary"] = "Post-review continuation repair updated model-authored execution and verification packaging."
     result["details"] = build_model_execution_report(workspace_dir, execution)
     result["checkpoint"] = "Open the repaired delivery artifacts and confirm the generated project meets the requested outcome."
     result["artifact"] = write_artifact(session_id, "execution.md", result["details"])
@@ -2484,7 +2835,7 @@ def repair_execution_after_review(session_id, session, model, result, review, at
         "attempt": attempt,
         "card": "execution",
         "changed": True,
-        "action": "Reran execution with model-authored file outputs and repackaged validation.",
+        "action": "Ran continuation repair with current workspace context, reviewer blockers, and validation packaging.",
         "reviewSummary": review.get("summary", ""),
         "artifact": result["artifact"],
         "validation": result["validation"],
@@ -2519,7 +2870,7 @@ def repair_verification_after_review(session_id, session, result, review, attemp
     result["validation"] = validation
     action = "Rebuilt verification from the actual workspace files, validation artifact, and original user request."
     if upstream_artifact:
-        action = "Reran model-authored execution, then rebuilt verification and reran deterministic checks."
+        action = "Ran continuation repair, then rebuilt verification and reran deterministic checks."
     return {
         "attempt": attempt,
         "card": "verification",
@@ -3080,6 +3431,11 @@ CAPABILITY_KEYWORDS = {
         r"\bresearch\s+\d+\s+(sites?|pages?|articles?|sources?)\b",
         r"\bvisit\s+(the\s+)?(url|site|page|website)\b",
         r"\bgo\s+to\s+\w+\.(com|net|org|io|dev)\b",
+        r"\b(scrape|scraping|crawl|crawling)\s+(the\s+)?(web|internet|sites?|websites?|pages?|articles?|sources?|news|headlines|data)\b",
+        r"\bextract\s+(data|content|articles?|headlines?)\s+from\s+(the\s+)?(web|internet|sites?|websites?|pages?|urls?)\b",
+        r"\b(live|latest|current|real[-\s]?time)\s+(news|headlines|articles?|web\s+data|site\s+data)\b",
+        r"\bnews\s+(feed|ticker|headlines?|articles?)\b",
+        r"\b(headlines?|articles?)\s+from\s+(the\s+)?(web|internet|sites?|websites?|urls?)\b",
     ],
     "shell_exec": [
         r"\brun\s+(this\s+|that\s+)?(command|script|shell|terminal)\b",
@@ -3140,6 +3496,203 @@ def detect_required_capabilities(text):
 def missing_capabilities(required):
     _, cannot = harness_capabilities()
     return [c for c in required if c in cannot]
+
+
+NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "dozen": 12,
+}
+
+CONTENT_QUANTITY_ITEMS = (
+    "articles?", "headlines?", "stories?", "cards?", "options?", "variants?",
+    "concepts?", "sections?", "categories?", "topics?", "images?",
+    "screenshots?", "logos?", "icons?", "features?", "examples?",
+    "products?", "items?", "entries?", "slides?", "charts?", "tables?",
+    "rows?",
+)
+CONTENT_QUANTITY_ITEM_PATTERN = "|".join(CONTENT_QUANTITY_ITEMS)
+COUNT_TOKEN_PATTERN = r"\d+|" + "|".join(NUMBER_WORDS.keys())
+
+
+def parse_positive_int(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text.isdigit():
+        parsed = int(text)
+        return parsed if parsed > 0 else None
+    return NUMBER_WORDS.get(text)
+
+
+def normalize_quantity_item(item):
+    text = re.sub(r"[^a-z0-9]+", " ", str(item or "").lower()).strip()
+    singular_aliases = {
+        "articles": "article",
+        "headlines": "headline",
+        "stories": "story",
+        "cards": "card",
+        "options": "option",
+        "variants": "variant",
+        "concepts": "concept",
+        "sections": "section",
+        "categories": "category",
+        "topics": "topic",
+        "images": "image",
+        "screenshots": "screenshot",
+        "logos": "logo",
+        "icons": "icon",
+        "features": "feature",
+        "examples": "example",
+        "products": "product",
+        "items": "item",
+        "entries": "entry",
+        "slides": "slide",
+        "charts": "chart",
+        "tables": "table",
+        "rows": "row",
+    }
+    if text in singular_aliases:
+        return singular_aliases[text]
+    if text.endswith("ies"):
+        return text[:-3] + "y"
+    if text.endswith("es") and len(text) > 3:
+        return text[:-2]
+    if text.endswith("s") and len(text) > 3:
+        return text[:-1]
+    return text
+
+
+def content_quantity_scope(tail):
+    tail = re.split(r"[.;\n]", str(tail or ""), maxsplit=1)[0]
+    tail = re.split(r"\b(?:take|use|make|create|build|write|add|include|page needs|needs to)\b", tail, maxsplit=1, flags=re.IGNORECASE)[0]
+    match = re.search(
+        r"\b(?:in|for|under|per)\s+(?:each|every|all)?\s*(?:[a-z0-9-]+\s+){0,3}"
+        r"(?:category|categories|topic|topics|section|sections|group|groups|type|types|page|pages)\b",
+        tail,
+        re.IGNORECASE,
+    )
+    if match:
+        return re.sub(r"\s+", " ", match.group(0)).strip(" ,")
+    return "whole deliverable"
+
+
+def add_content_requirement(requirements, seen, count, item, source, tail):
+    parsed_count = parse_positive_int(count)
+    if not parsed_count or parsed_count <= 1:
+        return
+    item_clean = re.sub(r"\s+", " ", str(item or "").lower()).strip()
+    source_clean = re.sub(r"\s+", " ", str(source or "")).strip(" ,")
+    scope = content_quantity_scope(tail)
+    key = (parsed_count, normalize_quantity_item(item_clean), scope.lower())
+    if key in seen:
+        return
+    seen.add(key)
+    requirements.append({
+        "count": parsed_count,
+        "item": item_clean,
+        "scope": scope,
+        "source": source_clean,
+        "minimum_total": parsed_count,
+    })
+
+
+def detect_content_quantity_requirements(text):
+    """Extract repeated content-item counts from raw user text.
+
+    `deliverable.count` remains file count. This detects counts inside the
+    deliverable, such as "top 3 articles in each category" or "three design
+    options", so the model and validator can treat them as binding content
+    requirements.
+    """
+    if not text:
+        return []
+
+    source_text = str(text)
+    requirements = []
+    seen = set()
+    patterns = [
+        re.compile(
+            rf"\b(?:top|first|latest|best|pick|choose|select|show|display|include|"
+            rf"create|generate|make|build|write|produce|add)\s+(?:the\s+)?"
+            rf"(?P<count>{COUNT_TOKEN_PATTERN})\s+(?P<item>{CONTENT_QUANTITY_ITEM_PATTERN})\b"
+            rf"(?P<tail>[^.!?\n]{{0,120}})",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"\b(?P<count>{COUNT_TOKEN_PATTERN})\s+(?P<item>{CONTENT_QUANTITY_ITEM_PATTERN})\b"
+            rf"(?P<tail>\s+(?:in|for|under|per)\s+[^.!?\n]{{1,100}})?",
+            re.IGNORECASE,
+        ),
+    ]
+
+    for pattern in patterns:
+        for match in pattern.finditer(source_text):
+            tail = match.group("tail") or ""
+            full_source = (match.group(0) or "").split(",", 1)[0]
+            add_content_requirement(
+                requirements,
+                seen,
+                match.group("count"),
+                match.group("item"),
+                full_source,
+                tail,
+            )
+
+    return requirements
+
+
+def content_requirement_line(requirement):
+    count = parse_positive_int(requirement.get("count")) or parse_positive_int(requirement.get("minimum_total"))
+    item = str(requirement.get("item", "items")).strip() or "items"
+    scope = str(requirement.get("scope", "whole deliverable")).strip() or "whole deliverable"
+    source = str(requirement.get("source", "")).strip()
+    suffix = f" Source: {source}" if source else ""
+    return f"At least {count} {item} inside the deliverable ({scope}).{suffix}"
+
+
+def merge_content_quantity_requirements(existing, detected):
+    merged = []
+    seen = set()
+    for item in listify(existing) + listify(detected):
+        if not isinstance(item, dict):
+            continue
+        count = parse_positive_int(item.get("count")) or parse_positive_int(item.get("minimum_total"))
+        item_name = str(item.get("item", "")).strip().lower()
+        if not count or count <= 1 or not item_name:
+            continue
+        requirement = {
+            "count": count,
+            "item": item_name,
+            "scope": str(item.get("scope", "whole deliverable")).strip() or "whole deliverable",
+            "source": str(item.get("source", "")).strip(),
+            "minimum_total": parse_positive_int(item.get("minimum_total")) or count,
+        }
+        key = (
+            requirement["count"],
+            normalize_quantity_item(requirement["item"]),
+            requirement["scope"].lower(),
+            requirement["source"].lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(requirement)
+    return merged
 
 
 # Anti-deflection lines per deliverable format. The Context Writer uses these
@@ -3254,13 +3807,39 @@ def anti_deflection_text_for(fmt):
     return ANTI_DEFLECTION_REGISTRY.get(canonical, "")
 
 
+def skill_prompt_alias_preview(skill, limit=14):
+    aliases = []
+    seen = set()
+    canonical_names = {
+        normalize_skill_phrase(skill.get("key", "")),
+        normalize_skill_phrase(skill.get("name", "")),
+        normalize_skill_phrase(str(skill.get("name", "")).replace("-", " ")),
+    }
+    for alias in skill_aliases(skill):
+        phrase = normalize_skill_phrase(alias)
+        if not phrase or phrase in seen or phrase in canonical_names:
+            continue
+        seen.add(phrase)
+        aliases.append(alias)
+        if len(aliases) >= limit:
+            break
+    return aliases
+
+
 def build_project_context_prompt(project, mode, staged_skills, previous_attempt=None, validation_errors=None):
     skills_block = "(none staged)"
     if staged_skills:
-        skills_block = "\n".join(
-            f"  - {skill['name']} (key: {skill['key']}; path: {skill['path']})"
-            for skill in staged_skills
-        )
+        lines = []
+        for skill in staged_skills:
+            description = truncate_text(skill.get("description", ""), 220) if skill.get("description") else ""
+            aliases = skill_prompt_alias_preview(skill)
+            alias_text = f"; aliases: {', '.join(aliases)}" if aliases else ""
+            use_when = f"; use when: {description}" if description else ""
+            lines.append(
+                f"  - {skill['name']} (key: {skill['key']}; path: {skill['path']}"
+                f"{alias_text}{use_when})"
+            )
+        skills_block = "\n".join(lines)
 
     detected = detect_required_capabilities(project)
     detected_missing = missing_capabilities(detected)
@@ -3331,6 +3910,12 @@ Take a moment. Reason carefully through six steps in order:
      - "output/a.svg, output/b.svg, output/c.svg"     (comma list)
      - "various .svg files in output/"                (vague)
    Use ONE pattern; the count field handles "how many".
+5c. SEPARATE file count from content-item count.
+   - deliverable.count means number of FILES to write.
+   - User phrases like "top 3 articles", "three design options", "6 feature cards",
+     or "2 screenshots per category" are CONTENT requirements inside the deliverable.
+   - Preserve those phrases in content_requirements, constraints.hard_requirements,
+     and acceptance. Do NOT collapse them into vague wording like "structured content".
 6. EMIT the YAML between the markers. Output a one-paragraph rationale BEFORE the begin marker, then the YAML between markers, then nothing else.
 
 CRITICAL: `deliverable.partial: true` is ONLY for capability gaps. If the user lists multiple steps and the harness CAN do them all, partial is FALSE — the harness will execute the prep steps internally and then produce the primary deliverable in one Execution pass. Multi-step requests are normal; they are NOT partial.
@@ -3368,6 +3953,11 @@ deliverable:
   anti_deflection: |
     <The harness will overwrite this with a canonical anti-deflection paragraph per
     deliverable.format. Write a one-line stub here; the registry value wins.>
+content_requirements:
+  - count: <integer content-item count from the user, e.g. 3>
+    item: <thing repeated inside the deliverable, e.g. articles, options, feature cards>
+    scope: <where it applies, e.g. each category or whole deliverable>
+    source: <verbatim user phrase that created this requirement>
 capabilities_required:
   - <one entry per capability the request actually needs, e.g. "emit_files" or "git_clone".
     If the request only needs in-workspace file authoring, this is just ["emit_files"].>
@@ -3391,6 +3981,8 @@ open_questions: <empty list, OR one blocking question per missing capability>
 Rules:
 - Quote the user verbatim in intent.surface_ask, in double-quotes.
 - deliverable.format must be one concrete canonical value from the list above.
+- deliverable.count is FILE count only. Put repeated content counts in content_requirements.
+- Preserve every user-stated quantity above 1 in content_requirements and acceptance.
 - capabilities_required must list every capability the user's request implies.
   If any of those are in the harness CANNOT list, you MUST set partial: true,
   populate open_questions, and shrink scope to the partial deliverable.
@@ -3441,6 +4033,56 @@ def dump_project_context_yaml(parsed):
         return yaml.safe_dump(parsed, sort_keys=False).strip()
 
 
+def reconcile_project_context_skill(parsed, project_text):
+    """
+    Canonicalize Project Context's single skill.use field against the real
+    installed skill keys. This repairs capability aliases like `web_browse`
+    and deterministic keyword matches when the model writes `none`.
+    """
+    if not isinstance(parsed, dict):
+        return
+    skill_info = parsed.get("skill")
+    if not isinstance(skill_info, dict):
+        skill_info = {}
+        parsed["skill"] = skill_info
+
+    skills = discover_installed_skills()
+    if not skills:
+        skill_info["use"] = "none"
+        skill_info["staged_path"] = "n/a"
+        return
+
+    selected = resolve_skill_selection({
+        "project": project_text or "",
+        "messages": [],
+        "projectContext": parsed,
+    }, skills)
+
+    if selected:
+        primary = selected[0]
+        skill_info["use"] = primary
+        skill_info["staged_path"] = f"{WORKSPACE_SKILLS_ROOT}/{primary}"
+    else:
+        skill_info["use"] = "none"
+        skill_info["staged_path"] = "n/a"
+    parsed["skill_plan"] = build_project_context_skill_plan(selected, skills)
+
+
+def build_project_context_skill_plan(selected_keys, skills):
+    plan = []
+    for key in selected_keys or []:
+        skill = skills.get(key, {"name": key, "key": key})
+        role = skill_role_guidance(key)
+        plan.append({
+            "skill": key,
+            "name": skill.get("name", key),
+            "staged_path": f"{WORKSPACE_SKILLS_ROOT}/{key}",
+            "role": role.get("role", "supporting instructions"),
+            "guidance": role.get("guidance", []),
+        })
+    return plan
+
+
 def enrich_project_context(parsed, project_text):
     """
     Post-process a freshly-parsed Project Context to guarantee correctness:
@@ -3486,6 +4128,29 @@ def enrich_project_context(parsed, project_text):
 
     union = sorted(union)
     parsed["capabilities_required"] = union
+    reconcile_project_context_skill(parsed, project_text)
+
+    content_requirements = merge_content_quantity_requirements(
+        parsed.get("content_requirements"),
+        detect_content_quantity_requirements(project_text or ""),
+    )
+    parsed["content_requirements"] = content_requirements
+    if content_requirements:
+        constraints = parsed.get("constraints") if isinstance(parsed.get("constraints"), dict) else {}
+        hard_requirements = constraints.get("hard_requirements") if isinstance(constraints.get("hard_requirements"), list) else []
+        hard_requirements = [str(item).strip() for item in hard_requirements if str(item).strip()]
+        acceptance = parsed.get("acceptance") if isinstance(parsed.get("acceptance"), list) else []
+        acceptance = [str(item).strip() for item in acceptance if str(item).strip()]
+        for requirement in content_requirements:
+            line = content_requirement_line(requirement)
+            if not any(str(requirement.get("source", "")).strip() and str(requirement.get("source", "")).strip() in item for item in hard_requirements):
+                hard_requirements.append(line)
+            acceptance_line = "Deterministic validation confirms " + line[0].lower() + line[1:]
+            if not any(normalize_quantity_item(requirement.get("item", "")) in normalize_quantity_item(item) and str(requirement.get("count")) in item for item in acceptance):
+                acceptance.append(acceptance_line)
+        constraints["hard_requirements"] = hard_requirements
+        parsed["constraints"] = constraints
+        parsed["acceptance"] = acceptance
 
     missing = missing_capabilities(union)
     open_questions = parsed.get("open_questions") if isinstance(parsed.get("open_questions"), list) else []
@@ -3583,6 +4248,8 @@ def render_project_context_artifact(parsed, raw_yaml, transport, repaired):
     intent = parsed.get("intent") if isinstance(parsed, dict) and isinstance(parsed.get("intent"), dict) else {}
     surface_ask = str(intent.get("surface_ask", "")).strip().strip('"')
     deliverable = parsed.get("deliverable") if isinstance(parsed, dict) and isinstance(parsed.get("deliverable"), dict) else {}
+    content_requirements = parsed.get("content_requirements") if isinstance(parsed, dict) and isinstance(parsed.get("content_requirements"), list) else []
+    skill_plan = parsed.get("skill_plan") if isinstance(parsed, dict) and isinstance(parsed.get("skill_plan"), list) else []
     open_questions = parsed.get("open_questions") if isinstance(parsed, dict) else []
     if not isinstance(open_questions, list):
         open_questions = []
@@ -3612,8 +4279,21 @@ def render_project_context_artifact(parsed, raw_yaml, transport, repaired):
         "",
         f"- Deliverable format: `{deliverable.get('format', 'unknown')}`",
         f"- Path pattern: `{deliverable.get('path_pattern', 'unknown')}`",
-        f"- Count: `{deliverable.get('count', 'unknown')}`",
+        f"- File count: `{deliverable.get('count', 'unknown')}`",
         f"- Encoding: `{deliverable.get('encoding', 'unknown')}`",
+        f"- Content counts: `{len(content_requirements)}`",
+        "",
+        "## Content quantity requirements",
+        "",
+        "\n".join(f"- {content_requirement_line(item)}" for item in content_requirements) if content_requirements else "- None.",
+        "",
+        "## Skill usage plan",
+        "",
+        "\n".join(
+            f"- `{item.get('skill')}`: {item.get('role')}. " + " ".join(listify(item.get("guidance"))[:2])
+            for item in skill_plan
+            if isinstance(item, dict)
+        ) if skill_plan else "- None.",
         "",
         "## Anti-deflection anchor for downstream cards",
         "",
@@ -3752,6 +4432,7 @@ def build_pre_execution_orientation(session, workspace, project_directory):
     """Pre-Execution readiness summary for new-project mode."""
     context = session.get("projectContext") if isinstance(session.get("projectContext"), dict) else None
     deliverable = (context or {}).get("deliverable") if isinstance((context or {}).get("deliverable"), dict) else {}
+    content_requirements = (context or {}).get("content_requirements") if isinstance((context or {}).get("content_requirements"), list) else []
     capabilities = (context or {}).get("capabilities_required") if isinstance((context or {}).get("capabilities_required"), list) else []
     can_now, cannot_now = harness_capabilities()
 
@@ -3774,6 +4455,7 @@ def build_pre_execution_orientation(session, workspace, project_directory):
         f"- Deliverable format: `{deliverable.get('format', 'unknown')}`",
         f"- Deliverable count: `{deliverable.get('count', 'unknown')}`",
         f"- Path pattern: `{deliverable.get('path_pattern', 'unknown')}`",
+        f"- Content count requirements: `{len(content_requirements)}`",
         f"- Partial scope: `{bool(deliverable.get('partial'))}`",
         "",
         "## Capabilities",
@@ -3784,6 +4466,9 @@ def build_pre_execution_orientation(session, workspace, project_directory):
     ]
     if project_directory:
         lines.extend(["", f"- Requested directory: `{project_directory}`"])
+    if content_requirements:
+        lines.extend(["", "## Content quantity requirements", ""])
+        lines.extend(f"- {content_requirement_line(item)}" for item in content_requirements)
     return "\n".join(lines)
 
 
@@ -3794,6 +4479,7 @@ def build_workspace_orientation(target_directory, session, workspace, mode):
     fmt = str(deliverable.get("format", "")).strip().lower()
     path_pattern = str(deliverable.get("path_pattern", "")).strip()
     expected_count = deliverable.get("count")
+    content_requirements = (context or {}).get("content_requirements") if isinstance((context or {}).get("content_requirements"), list) else []
     project_type = (context or {}).get("project", {}).get("type", "") if isinstance((context or {}).get("project"), dict) else ""
 
     lines = [
@@ -3835,6 +4521,7 @@ def build_workspace_orientation(target_directory, session, workspace, mode):
         f"- Path pattern: `{path_pattern or '(no contract)'}`",
         f"- Expected count: `{expected_count if expected_count is not None else 'unknown'}`",
         f"- Files present: `{len(actual_deliverable_files)}`",
+        f"- Content count requirements: `{len(content_requirements)}`",
     ])
     if actual_deliverable_files:
         lines.append("- Listing:")
@@ -3842,6 +4529,9 @@ def build_workspace_orientation(target_directory, session, workspace, mode):
             lines.append(f"  - `{filename}`")
         if len(actual_deliverable_files) > 25:
             lines.append(f"  - ...and {len(actual_deliverable_files) - 25} more")
+    if content_requirements:
+        lines.extend(["", "## Content quantity requirements", ""])
+        lines.extend(f"- {content_requirement_line(item)}" for item in content_requirements)
 
     # Research artifacts (scrapling pre-fetch).
     research_dir = os.path.join(target_directory, "research")
@@ -3919,7 +4609,7 @@ def run_execution_card(session_id, session, model, mode, correction=None):
     session["projectDirectory"] = workspace_dir
     # User-driven Resolve: feed the prior reviewer findings + user note to the
     # model via the existing `review` channel that build_model_execution_prompt
-    # already renders into a "Previous review failed:" block.
+    # renders into continuation repair guidance.
     execution = execute_model_authored_project(
         session_id, session, model, workspace_dir, review=correction,
     )
@@ -5156,6 +5846,7 @@ def build_execution_context_block(session):
     path_pattern = str(deliverable.get("path_pattern", "")).strip()
     count = deliverable.get("count")
     acceptance = context.get("acceptance") if isinstance(context.get("acceptance"), list) else []
+    content_requirements = context.get("content_requirements") if isinstance(context.get("content_requirements"), list) else []
 
     example_path = path_pattern or "output/file.txt"
     if count and isinstance(count, int) and count > 1 and "NN" in example_path:
@@ -5174,6 +5865,15 @@ def build_execution_context_block(session):
     ]
     if count:
         parts.append(f"- deliverable.count = `{count}` — write exactly this many files of the format.")
+    if content_requirements:
+        parts.extend([
+            "",
+            "CONTENT QUANTITY REQUIREMENTS (binding counts inside the deliverable):",
+            "- These are NOT file counts. They are repeated content units the user asked for.",
+            "- If a requirement says each/per category, repeat that count for every category you include.",
+        ])
+        for requirement in content_requirements:
+            parts.append(f"- {content_requirement_line(requirement)}")
 
     parts.extend([
         "",
@@ -5245,33 +5945,152 @@ def build_execution_context_block(session):
     return "\n".join(parts)
 
 
-def build_model_execution_prompt(session, workspace_dir, review=None, skill_context=None, research=None):
-    review_block = ""
-    if review:
-        review_payload = {
-            "summary": review.get("summary", ""),
-            "findings": listify(review.get("findings")),
-            "fixesNeeded": listify(review.get("fixesNeeded")),
-        }
-        validation_failures = listify(review.get("validationFailures"))
-        if validation_failures:
-            review_payload["validationFailures"] = validation_failures
-        user_note = str(review.get("userNote", "")).strip()
-        user_note_section = ""
-        if user_note:
-            user_note_section = f"""
+REPAIR_SNAPSHOT_TEXT_EXTENSIONS = {
+    ".css",
+    ".html",
+    ".htm",
+    ".js",
+    ".json",
+    ".md",
+    ".mjs",
+    ".py",
+    ".svg",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+REPAIR_SNAPSHOT_PRIORITY_PATHS = (
+    "artifacts/validation.json",
+    "artifacts/model-execution.json",
+)
 
-USER CORRECTION (the human ran Not Verified and typed this — treat it as the authoritative steer):
+
+def repair_snapshot_readable_path(relative_path):
+    safe_path = safe_workspace_relative_path(relative_path)
+    if not safe_path:
+        return None
+    filename = os.path.basename(safe_path)
+    extension = os.path.splitext(filename)[1].lower()
+    if extension in REPAIR_SNAPSHOT_TEXT_EXTENSIONS:
+        return safe_path
+    if filename in {"Dockerfile", "Makefile"}:
+        return safe_path
+    return None
+
+
+def add_repair_snapshot_file(items, seen, workspace_dir, relative_path, per_file_limit):
+    safe_path = repair_snapshot_readable_path(relative_path)
+    if not safe_path or safe_path in seen:
+        return False
+    full_path = os.path.join(workspace_dir, safe_path)
+    if not os.path.isfile(full_path):
+        return False
+    try:
+        size = os.path.getsize(full_path)
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(per_file_limit + 1)
+    except OSError:
+        return False
+    if "\x00" in content[:200]:
+        return False
+    seen.add(safe_path)
+    items.append({
+        "path": safe_path,
+        "bytes": size,
+        "content": truncate_text(content, per_file_limit),
+    })
+    return True
+
+
+def build_workspace_repair_snapshot(session, workspace_dir, max_files=12, per_file_limit=1600, total_limit=12000):
+    if not workspace_dir or not os.path.isdir(workspace_dir):
+        return "Harness file-inspection output: no existing workspace directory was found."
+
+    items = []
+    seen = set()
+
+    for relative_path in list(REPAIR_SNAPSHOT_PRIORITY_PATHS) + derive_verification_paths(session, workspace_dir):
+        if len(items) >= max_files:
+            break
+        add_repair_snapshot_file(items, seen, workspace_dir, relative_path, per_file_limit)
+
+    omitted = 0
+    root_path = os.path.abspath(workspace_dir)
+    for root, dirs, files in os.walk(root_path):
+        dirs[:] = [name for name in dirs if name not in IGNORED_CODE_DIRS]
+        for filename in sorted(files):
+            relative_path = os.path.relpath(os.path.join(root, filename), root_path).replace(os.sep, "/")
+            if relative_path in seen:
+                continue
+            if len(items) >= max_files:
+                if repair_snapshot_readable_path(relative_path):
+                    omitted += 1
+                continue
+            add_repair_snapshot_file(items, seen, workspace_dir, relative_path, per_file_limit)
+
+    if not items:
+        return "Harness file-inspection output: workspace exists, but no readable text deliverables were found yet."
+
+    lines = ["Harness file-inspection output (read this before deciding what to write):"]
+    for item in items:
+        lines.extend([
+            "",
+            f"--- {item['path']} ({item['bytes']} bytes) ---",
+            item["content"],
+        ])
+    if omitted:
+        lines.append(f"\n... {omitted} additional readable file(s) omitted from this bounded snapshot.")
+    return truncate_text("\n".join(lines), total_limit)
+
+
+def build_repair_continuation_block(session, workspace_dir, review):
+    if not review:
+        return ""
+
+    review_payload = {
+        "summary": review.get("summary", ""),
+        "findings": listify(review.get("findings")),
+        "fixesNeeded": listify(review.get("fixesNeeded")),
+    }
+    validation_failures = listify(review.get("validationFailures"))
+    if validation_failures:
+        review_payload["validationFailures"] = validation_failures
+
+    user_note = str(review.get("userNote", "")).strip()
+    user_note_section = ""
+    if user_note:
+        user_note_section = f"""
+
+USER CORRECTION (authoritative human steer):
 > {user_note}
 """
-        review_block = f"""
-Previous review failed. You are re-running this section to fix the issues below.
+
+    snapshot = build_workspace_repair_snapshot(session, workspace_dir)
+    return f"""
+CONTINUATION REPAIR MODE (binding on this retry):
+
+The prior attempt failed review or deterministic validation. Do not start over,
+discard useful work, or pivot to a fresh plan. Starting over is allowed only if
+the human explicitly asks for a restart.
+
+Your job:
+- Treat the harness file-inspection output below as the current-file check for this workspace.
+- Fix the exact blockers in findings, fixesNeeded, validationFailures, and any human correction.
+- Preserve working structure and content that already satisfies the request.
+- Re-emit complete file blocks only for files that must be repaired or added; when updating a file, include the entire corrected file content.
+- Proceed from the existing workspace and complete the rest of the original request for delivery.
 
 Reviewer findings (structured):
 {json.dumps(review_payload, indent=2)}
 {user_note_section}
-Address every item in fixesNeeded AND the user's correction. Do NOT repeat the previous output verbatim — produce a new payload that satisfies the original contract AND the corrections above.
+{snapshot}
 """
+
+
+def build_model_execution_prompt(session, workspace_dir, review=None, skill_context=None, research=None):
+    review_block = build_repair_continuation_block(session, workspace_dir, review)
     skill_block = (skill_context or {}).get("prompt", "No Gemma Forge skills are staged for this workspace.")
 
     context_block = build_execution_context_block(session)
@@ -5756,6 +6575,199 @@ def validate_local_link_targets(workspace_dir, files):
     return failures
 
 
+DELIVERABLE_FORMAT_EXTENSIONS = {
+    "html": {".html", ".htm"},
+    "css": {".css"},
+    "javascript": {".js", ".mjs", ".cjs"},
+    "typescript": {".ts", ".tsx"},
+    "python": {".py"},
+    "svg": {".svg"},
+    "json": {".json"},
+    "yaml": {".yaml", ".yml"},
+    "markdown": {".md", ".markdown"},
+    "shell": {".sh", ".bash", ".zsh"},
+    "sql": {".sql"},
+    "dockerfile": {"", ".dockerfile"},
+    "mermaid": {".mmd", ".mermaid"},
+    "txt": {".txt"},
+}
+
+TEXT_CONTENT_EXTENSIONS = {
+    ".html", ".htm", ".css", ".js", ".mjs", ".cjs", ".ts", ".tsx",
+    ".py", ".svg", ".json", ".yaml", ".yml", ".md", ".markdown",
+    ".sh", ".bash", ".zsh", ".sql", ".txt",
+}
+
+
+def path_pattern_parts(deliverable):
+    path_pattern = str((deliverable or {}).get("path_pattern", "")).strip()
+    fmt = str((deliverable or {}).get("format", "")).strip().lower()
+    first_path_token = path_pattern
+    if path_pattern:
+        for token in re.split(r"\s+|,", path_pattern):
+            if "/" in token or (fmt and token.lower().endswith("." + fmt)):
+                first_path_token = token
+                break
+    pattern_dir = os.path.dirname(first_path_token) if first_path_token else ""
+    pattern_ext = os.path.splitext(os.path.basename(first_path_token))[1].lower()
+    if not pattern_ext and fmt in DELIVERABLE_FORMAT_EXTENSIONS:
+        exts = [ext for ext in DELIVERABLE_FORMAT_EXTENSIONS[fmt] if ext]
+        pattern_ext = exts[0] if exts else ""
+    return path_pattern, pattern_dir, pattern_ext
+
+
+def file_matches_deliverable(relative_path, deliverable):
+    fmt = str((deliverable or {}).get("format", "")).strip().lower()
+    path_pattern, pattern_dir, pattern_ext = path_pattern_parts(deliverable)
+    relative_path = str(relative_path or "").replace(os.sep, "/")
+    ext = os.path.splitext(relative_path)[1].lower()
+    allowed_exts = DELIVERABLE_FORMAT_EXTENSIONS.get(fmt, set())
+    if allowed_exts and ext not in allowed_exts:
+        return False
+    if pattern_ext and ext != pattern_ext:
+        return False
+    if pattern_dir:
+        normalized_dir = pattern_dir.replace(os.sep, "/").strip("/")
+        if normalized_dir and not relative_path.startswith(normalized_dir + "/"):
+            return False
+    return bool(relative_path and not relative_path.startswith(".gforge/"))
+
+
+def validate_deliverable_file_count(files, project_context):
+    if not isinstance(project_context, dict):
+        return []
+    deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+    expected = parse_positive_int(deliverable.get("count"))
+    if not expected or expected <= 1:
+        return []
+    matching = [
+        item for item in files
+        if isinstance(item, dict) and file_matches_deliverable(item.get("path", ""), deliverable)
+    ]
+    if len(matching) >= expected:
+        return []
+    path_pattern = str(deliverable.get("path_pattern", "")).strip() or "(no path_pattern)"
+    fmt = str(deliverable.get("format", "")).strip() or "file"
+    return [
+        f"deliverable.count expected at least {expected} `{fmt}` file(s) matching `{path_pattern}`, "
+        f"but the model wrote {len(matching)}."
+    ]
+
+
+def read_validation_text_files(workspace_dir, files):
+    chunks = []
+    for item in files:
+        relative_path = item.get("path", "") if isinstance(item, dict) else ""
+        safe_path = safe_workspace_relative_path(relative_path)
+        if not safe_path:
+            continue
+        ext = os.path.splitext(safe_path)[1].lower()
+        if ext not in TEXT_CONTENT_EXTENSIONS:
+            continue
+        path = os.path.join(workspace_dir, safe_path)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                chunks.append(f"\n<!-- {safe_path} -->\n" + f.read())
+        except OSError:
+            continue
+    return "\n".join(chunks)
+
+
+def regex_count(pattern, text):
+    return len(re.findall(pattern, text or "", re.IGNORECASE | re.MULTILINE | re.DOTALL))
+
+
+def count_content_units(text, item):
+    normalized_item = normalize_quantity_item(item)
+    if not text:
+        return 0
+
+    if normalized_item in {"article", "headline", "story", "topic"}:
+        candidates = [
+            regex_count(r"<article\b", text),
+            regex_count(r"<(?:div|section|li)\b[^>]*(?:article|story|headline|news-card|news-item|article-card|story-card|topic-card)[^>]*>", text),
+            regex_count(r"\b(?:article|headline|story)\s*(?:#|no\.?|number)?\s*\d+\b", text),
+            regex_count(r"\b(?:title|headline)\s*[:=]\s*['\"]", text),
+        ]
+        return max(candidates)
+
+    if normalized_item in {"option", "variant", "concept"}:
+        labels = set(re.findall(r"\b(?:option|variant|concept)\s*(?:#|no\.?|number)?\s*(\d+)\b", text, re.IGNORECASE))
+        candidates = [
+            len(labels),
+            regex_count(r"<(?:div|section|li)\b[^>]*(?:option|variant|concept|design-option)[^>]*>", text),
+        ]
+        return max(candidates)
+
+    if normalized_item in {"card", "feature", "product", "item", "entry", "example"}:
+        keyword = re.escape(normalized_item)
+        candidates = [
+            regex_count(rf"<(?:div|section|li|article)\b[^>]*(?:{keyword}|card|item|entry)[^>]*>", text),
+            regex_count(rf"\b{keyword}\s*(?:#|no\.?|number)?\s*\d+\b", text),
+        ]
+        return max(candidates)
+
+    if normalized_item in {"image", "screenshot"}:
+        return max(
+            regex_count(r"<img\b", text),
+            regex_count(r"\b(?:image|screenshot)\s*(?:#|no\.?|number)?\s*\d+\b", text),
+            regex_count(r"background(?:-image)?\s*:\s*url\(", text),
+        )
+
+    if normalized_item in {"logo", "icon"}:
+        return max(
+            regex_count(r"<svg\b", text),
+            regex_count(r"<img\b", text),
+            regex_count(rf"\b{re.escape(normalized_item)}\s*(?:#|no\.?|number)?\s*\d+\b", text),
+        )
+
+    if normalized_item in {"section", "category"}:
+        return max(
+            regex_count(r"<section\b", text),
+            regex_count(rf"\b{re.escape(normalized_item)}\s*(?:#|no\.?|number)?\s*\d+\b", text),
+        )
+
+    return max(
+        regex_count(rf"\b{re.escape(normalized_item)}s?\s*(?:#|no\.?|number)?\s*\d+\b", text),
+        regex_count(rf"\b{re.escape(normalized_item)}s?\b", text),
+    )
+
+
+def validate_content_quantity_requirements(workspace_dir, files, project_context):
+    requirements = merge_content_quantity_requirements(
+        project_context.get("content_requirements") if isinstance(project_context, dict) else [],
+        [],
+    )
+    if not requirements:
+        return [], []
+
+    combined_text = read_validation_text_files(workspace_dir, files)
+    results = []
+    failures = []
+    for requirement in requirements:
+        expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
+        if not expected or expected <= 1:
+            continue
+        actual = count_content_units(combined_text, requirement.get("item", "items"))
+        result = {
+            "item": requirement.get("item", "items"),
+            "expected": expected,
+            "actual": actual,
+            "scope": requirement.get("scope", "whole deliverable"),
+            "source": requirement.get("source", ""),
+        }
+        results.append(result)
+        if actual < expected:
+            failures.append(
+                f"content requirement expected at least {expected} `{requirement.get('item', 'items')}` "
+                f"inside the deliverable ({requirement.get('scope', 'whole deliverable')}), "
+                f"but deterministic validation found {actual}. Source: {requirement.get('source', '')}"
+            )
+    return failures, results
+
+
 def validate_model_authored_workspace(workspace_dir, metadata, session):
     failures = []
     files = metadata.get("files", []) if isinstance(metadata, dict) else []
@@ -5777,12 +6789,18 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
     claim_failures = validate_claims_against_disk(claim_text, capabilities_required, workspace_dir=workspace_dir)
     failures.extend(claim_failures)
 
+    file_count_failures = validate_deliverable_file_count(files, project_context)
+    failures.extend(file_count_failures)
+
     # Catch hallucinated local-relative href/src/url() targets in any
     # HTML / CSS / Markdown deliverable. Small models often fabricate
     # links to "results/option_A.html", "assets/main.css", etc., even
     # when only the index file was actually emitted.
     link_failures = validate_local_link_targets(workspace_dir, files)
     failures.extend(link_failures)
+
+    content_failures, content_results = validate_content_quantity_requirements(workspace_dir, files, project_context)
+    failures.extend(content_failures)
 
     for item in files:
         relative_path = item.get("path", "")
@@ -5813,6 +6831,7 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
         "failures": failures,
         "authenticity": authenticity,
         "fileCount": len(files),
+        "contentRequirements": content_results,
         "transport": transport if isinstance(transport, dict) else None,
         "checkedAt": utc_now(),
     }
@@ -5882,6 +6901,15 @@ def build_model_execution_report(workspace_dir, execution):
             ms = shot.get("elapsed_ms") or 0
             screenshot_lines.append(f"- [{ok}] of `{of}` → `{path}` ({size} bytes, {ms} ms)")
 
+    content_requirement_lines = []
+    for item in validation.get("contentRequirements", []) if isinstance(validation, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        content_requirement_lines.append(
+            f"- `{item.get('item', 'items')}`: expected `{item.get('expected')}`, "
+            f"found `{item.get('actual')}` ({item.get('scope', 'whole deliverable')})"
+        )
+
     return "\n".join([
         "# Project Execution",
         "",
@@ -5905,6 +6933,10 @@ def build_model_execution_report(workspace_dir, execution):
         "",
         "\n".join([f"- `{item.get('path')}`: {item.get('reason')}" for item in execution.get("rejectedFiles", [])]) or "- None.",
         *screenshot_lines,
+        "",
+        "## Content Quantity Checks",
+        "",
+        "\n".join(content_requirement_lines) or "- None.",
         "",
         "## Verification Suggested By Gemma",
         "",

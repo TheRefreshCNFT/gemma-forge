@@ -1,13 +1,14 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-23 (UTC) — external backup + GitHub alignment in progress.
+Last updated: 2026-05-23 (UTC) — runtime noise cleanup + backup alignment.
 
 ## Verified ground truth
 
 - Project root: `/Users/webot/Projects/gemma-forge`
-- Branch: `main` tracking `origin/main`; working tree intentionally
-  contains uncommitted current-state changes. No commit requested.
-- Harness Flask server source: `chat/server.py` (3,395 lines).
+- Branch: `main` tracking `origin/main`; working tree contains the
+  uncommitted Project Context skill-assignment fix from this session.
+  No commit requested.
+- Harness Flask server source: `chat/server.py` (7,224 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -27,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **External backup completed; GitHub installable-state alignment in progress.**
+- Phase: **Project Context skill assignment + content count enforcement + skill usage guidance + continuation repair + runtime noise cleanup shipped locally; backup/GitHub alignment requested this turn.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -45,15 +46,63 @@ the contest demo path works end-to-end.** Driving doc:
     a "Full section artifact" disclosure by default.
   - The right-side Project Context log keeps the chronological project
     feed and now has a taller scroll area.
+  - Project Context skill selection now maps capability/task aliases
+    such as `web_browse`, `web_fetch`, "live scraping", "news
+    headlines", "crawl", and "extract web data" to the installed
+    `scrapling-official` skill instead of treating `web_browse` as a
+    missing skill. If the model writes `skill.use: none` but the user
+    request clearly matches an installed skill, the deterministic
+    matcher overrides the `none`.
+  - The Forge Station terminal now emits `skill` events during skill
+    selection and staging, e.g. `skill call selection:
+    scrapling-official` and `skill call scrapling-official ->
+    .gforge/skills/scrapling-official`.
+  - User-stated content counts are now separated from deliverable file
+    count. Example: `deliverable.count: 1` can still mean one HTML
+    file, while `content_requirements` preserves "top 3 articles in
+    each category" as a binding requirement inside that file.
+  - Deterministic validation now fails when `deliverable.count > 1`
+    but the model writes too few matching files, or when a text-like
+    deliverable under-delivers extracted content counts such as
+    articles, headlines, options, variants, cards, images, logos,
+    sections, features, products, examples, slides, charts, or rows.
+  - Skill staging now puts a concise "Skill Usage Plan" before long
+    skill manuals. For scraping + page tasks, it tells the model:
+    `scrapling-official` is the web scraping/extraction layer and
+    `ui-ux-pro-max` is the webpage/interface design layer.
+  - Skill selection only scans the original project text and user
+    messages now. Prior agent messages / manifests no longer self-poison
+    reruns into staging unrelated support skills like Axon/GSD/SocratiCode
+    just because a previous agent mentioned them.
+  - Failed-review execution retries now enter a generic "continuation
+    repair mode." The retry prompt tells the model not to start over
+    unless the human explicitly requested a restart, names the exact
+    reviewer/validator blockers to fix, includes a bounded current-file
+    snapshot from the workspace, and instructs it to repair/add only the
+    needed complete files while finishing the rest of the original
+    request for delivery.
+  - Archived projects are now read-only at the API boundary. Session
+    chat messages, card runs, checkpoint updates, and `/api/plan` calls
+    return HTTP `409` before any model/tool call can run.
+  - Runtime project noise was cleared: all nine active demo/test project
+    records from the current tuning runs were archived, and orphan
+    `session-data` test artifact directories were moved out of live
+    harness state into the pre-cleanup backup.
 - Latest files touched for this accepted state:
-  `chat/templates/index.html`, `chat/static/js/chat.js`,
-  `chat/static/css/style.css`, `.handoffs/CURRENT_STATE.md`,
+  `chat/server.py`, `chat/static/css/style.css`,
+  `tests/model_route_test.py`, `.handoffs/CURRENT_STATE.md`,
   `project-map.md`.
-- Working tree note: other uncommitted current-state changes existed
-  before this handoff alignment (`chat/server.py`, `launch_forge.command`,
-  `skills/`, `tools/`, etc.). They are treated as accepted project state
-  unless Ian asks for a commit or cleanup pass.
+- Working tree note: current uncommitted changes are the pinpoint
+  skill-assignment fix and state-doc updates from this session. They
+  are treated as accepted project state unless Ian asks for a commit or
+  cleanup pass.
 - Latest backup locations:
+  - `/Users/webot/Backups/gemma-forge/20260523T-skill-guidance-pre/`
+  - `/Users/webot/Backups/gemma-forge/20260523T-continuation-repair-pre/`
+  - `/Users/webot/Backups/gemma-forge/20260523T194941Z-pre-noise-cleanup/`
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T195311Z-full-live-local-working-state/` (pending final backup verification)
+  - `/Users/webot/Backups/gemma-forge/20260523T-content-counts-pre/`
+  - `/Users/webot/Backups/gemma-forge/20260523T175448Z-pre-skill-assigner/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T172125Z-full-live-local-working-state/`
   - `/Users/webot/Backups/gemma-forge/20260523T160939Z-pre-remove-plan-status/`
   - `/Users/webot/Backups/gemma-forge/20260523T161535Z-pre-auto-intake-running/`
@@ -362,8 +411,8 @@ the contest demo path works end-to-end.** Driving doc:
     and `run_verification_card` (the two handlers that author
     deliverables vs. metadata).
   - `run_execution_card` passes `correction` as the existing
-    `review` parameter to `execute_model_authored_project`, which
-    already has a "Previous review failed:" prompt block.
+    `review` parameter to `execute_model_authored_project`, which now
+    renders continuation repair guidance.
   - `build_model_execution_prompt` extended: surfaces `userNote`
     as a "USER CORRECTION" callout AND `validationFailures` as a
     structured field so the model sees what failed deterministically.
@@ -905,6 +954,247 @@ the contest demo path works end-to-end.** Driving doc:
   clean-install tools, and bundled protocol skills. It must not include
   runtime/session/log/model/cache artifacts.
 
+- **2026-05-23 — Project Context skill assigner hardened.**
+  User reported the live-scraping flow where Project Context named
+  `web_browse` or skipped the `scrapling-official` skill, causing the
+  next agent to say live scraping was impossible and pivot to mock data.
+
+  Fix:
+  - `chat/server.py`: skill discovery now reads `description` and
+    `keywords` from both `SKILL.md` frontmatter and `skill.json`.
+  - Added deterministic alias matching for bundled protocol skills.
+    `scrapling-official` now matches many task/capability values:
+    `web_browse`, `web_fetch`, live scraping/news/headlines, scrape,
+    crawl, extract web data, CSS selector/XPath, dynamic sites,
+    Cloudflare/Turnstile, browser fetch, and related research phrases.
+  - `resolve_skill_selection()` now canonicalizes capability aliases to
+    real installed skill keys and no longer lets `skill.use: none`
+    suppress an obvious deterministic match from the user's request.
+  - `enrich_project_context()` rewrites the saved YAML contract so
+    `skill.use` becomes the real skill key, e.g. `scrapling-official`,
+    with staged path `.gforge/skills/scrapling-official`.
+  - Skill selection/staging emits Forge Station terminal events with
+    kind `skill`; CSS gives those events a distinct color.
+  - Added focused unit coverage for `web_browse` alias resolution and
+    `none` override on live-scraping/news requests.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T175448Z-pre-skill-assigner/`
+  (`chat/server.py`, `.handoffs/CURRENT_STATE.md`, `project-map.md`).
+
+  Verified:
+  - `npm run check` passed.
+  - Focused unittest via harness venv passed:
+    `test_skill_alias_resolves_web_browse_to_scrapling` and
+    `test_skill_none_is_overridden_by_scraping_request_keywords`.
+  - Selector smoke test with installed skills proved:
+    `skill.use: none` + "live scraping of article headlines" →
+    `scrapling-official`; `skill.use: web_browse` →
+    `scrapling-official`; parsed Project Context YAML rewrites
+    `skill.use` to `scrapling-official` and adds `web_browse` to
+    `capabilities_required`.
+  - Full `tests.model_route_test` still has pre-existing failures
+    unrelated to this selector patch (`call_ollama_execution_payload`
+    mocks returning two values where current code expects three, plus
+    older session endpoint 404 expectations). Do not treat the full
+    file as green until those tests are modernized.
+  - Local harness restarted: old listener PID `56130` replaced by
+    Python PID `92167`; `GET /` returned HTTP `200`;
+    `/api/events/recent` returned successfully; workspace status
+    responded; no new error-log entry was added.
+
+- **2026-05-23 — Content count requirements enforced.**
+  User reported that agents routinely produce "1 of everything" even
+  when the request names a count.
+
+  Fix:
+  - `chat/server.py`: Project Context prompt now explicitly separates
+    `deliverable.count` (file count) from repeated content-item counts
+    inside a deliverable.
+  - Added deterministic extraction of count phrases from the raw user
+    request, e.g. "top 3 articles in each category" and "three design
+    options". Extracted requirements are written to
+    `content_requirements`, added to `constraints.hard_requirements`,
+    and mirrored into `acceptance`.
+  - Execution prompt now renders a binding "CONTENT QUANTITY
+    REQUIREMENTS" block so the model sees the count as a deliverable
+    requirement, not as optional prose.
+  - Validation now enforces two count paths:
+    1. `deliverable.count > 1` must produce at least that many matching
+       files for the contracted format/path pattern.
+    2. Text-like deliverables are scanned for repeated content units
+       such as articles/headlines/stories, options/variants/concepts,
+       cards/items/features/products/examples, images/screenshots,
+       logos/icons, sections/categories, slides/charts/tables/rows.
+       Runs fail when deterministic validation finds fewer units than
+       the extracted count.
+  - Execution reports now include a "Content Quantity Checks" section.
+  - Added focused tests for extraction, Project Context enrichment,
+    under-delivered content counts, and under-delivered file counts.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T-content-counts-pre/`
+  (`chat/server.py`, `chat/static/css/style.css`,
+  `tests/model_route_test.py`, `.handoffs/CURRENT_STATE.md`,
+  `project-map.md`).
+
+  Verified:
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - Focused unittest via harness venv passed:
+    `test_detects_content_quantity_requirement_from_news_prompt`,
+    `test_project_context_enriches_content_quantity_requirements`,
+    `test_validation_fails_when_content_quantity_is_under_delivered`,
+    `test_validation_fails_when_deliverable_file_count_is_under_delivered`.
+  - Direct smoke confirmed `deliverable.count` remained `1` for a
+    single HTML file while `content_requirements` preserved count `3`
+    for `articles` scoped to `in each category`, and acceptance gained
+    the deterministic count check.
+  - Local harness restarted: old listener PID `92167` replaced by
+    Python PID `18003`; `GET /` returned HTTP `200`;
+    `/api/events/recent` returned successfully; no new error-log entry
+    was added.
+
+- **2026-05-23 — Skill usage guidance added before staged manuals.**
+  User clarified the problem was not only too many skills, but skills
+  dumped into the prompt without direction. The execution agent still
+  behaved as if it did not understand which tool/skill applied to which
+  part of the task.
+
+  Fix:
+  - `chat/server.py`: `build_skill_context_prompt()` now prepends a
+    concise "Skill Usage Plan" before the raw staged skill manuals.
+  - The plan assigns explicit roles:
+    - `scrapling-official` → web scraping and extraction. Use for
+      scrape/crawl/browse/fetch/live page research/headlines/articles;
+      treat harness-fetched `research/*.md` artifacts as available
+      source material and do not say live scraping is impossible when
+      `web_browse`/`web_fetch` is available or research artifacts are
+      listed.
+    - `ui-ux-pro-max` → webpage and interface design. Use for webpage,
+      landing page, dashboard, responsive design, typography, color,
+      spacing, visual hierarchy, and accessibility; apply it directly
+      in HTML/CSS/JS rather than producing a plan.
+  - Expanded `ui-ux-pro-max` aliases to catch webpage/page requests
+    phrased as responsive, across devices, present nicely, or modern
+    page/webpage.
+  - `session_skill_text()` now ignores prior agent messages and scans
+    only original project text plus user messages. This prevents reruns
+    from self-poisoning by selecting Axon/GSD/SocratiCode merely
+    because a previous agent response or manifest mentioned them.
+  - `skill_plan` is now added to the Project Context YAML so the
+    Execution card sees role guidance in the binding contract as well
+    as in the staged skill block.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T-skill-guidance-pre/`
+  (`chat/server.py`, `tests/model_route_test.py`,
+  `.handoffs/CURRENT_STATE.md`, `project-map.md`).
+
+  Verified:
+  - Direct resolver smoke on the Yahoo/news/page session now selects
+    `['scrapling-official', 'ui-ux-pro-max']` instead of
+    `['scrapling-official', 'axon', 'gsd', 'socraticode',
+    'ui-ux-pro-max']`.
+  - Prompt smoke confirmed "Skill Usage Plan" appears before "Staged
+    skills" and includes the explicit Scrapling + UI/UX roles.
+  - Focused unittest via harness venv passed:
+    `test_skill_selection_ignores_prior_agent_skill_manifests`,
+    `test_skill_context_prompt_gives_usage_plan_before_manuals`,
+    plus the existing scrapling alias tests.
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - Local harness restarted: old listener PID `18003` replaced by
+    Python PID `30973`; `GET /` returned HTTP `200`; no new error-log
+    entry was added.
+
+- **2026-05-23 — Failed execution retries now continue from current work.**
+  User reported that after a first failure, agents should be guided to
+  fix the specific blockers and finish the remaining delivery instead
+  of starting over. This should be generic for any project; a restart is
+  only valid when the human explicitly asks for one.
+
+  Fix:
+  - `chat/server.py`: `build_model_execution_prompt()` now renders a
+    "CONTINUATION REPAIR MODE" block whenever a failed review/correction
+    is passed into Project Execution.
+  - Added a bounded current-file snapshot for repair prompts. It
+    prioritizes `artifacts/validation.json`,
+    `artifacts/model-execution.json`, and contract-relevant files, then
+    includes readable workspace files while skipping reserved/runtime
+    folders such as `.gforge/`, `.git/`, caches, venvs, and
+    `node_modules/`.
+  - The repair prompt now tells the model to preserve useful existing
+    work, fix the exact reviewer/validator/human blockers, re-emit
+    complete file blocks only for files that need repair or creation,
+    and complete the rest of the original request for delivery.
+  - Post-review repair summary/action text now says "continuation
+    repair" instead of implying a full rerun.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T-continuation-repair-pre/`
+  (`chat/server.py`, `tests/model_route_test.py`,
+  `.handoffs/CURRENT_STATE.md`, `project-map.md`).
+
+  Verified:
+  - Killed the prior harness listener PID `30973` at Ian's request to
+    abort any in-flight task; launchd respawned PID `44290`, and `GET /`
+    returned HTTP `200`.
+  - After the code patch, restarted the harness again so live code loaded:
+    listener PID `44290` replaced by PID `47697`; `GET /` returned HTTP
+    `200`. Recent error-log tail only showed older entries.
+  - Focused unittest via harness venv passed:
+    `test_repair_prompt_continues_from_existing_workspace_snapshot`,
+    `test_initial_execution_prompt_omits_repair_mode`, and
+    `test_failed_review_can_be_repaired_before_completion`.
+  - Direct smoke confirmed the retry prompt includes
+    "CONTINUATION REPAIR MODE", "Do not start over", the current
+    `output/index.html` snippet, and the validator failure text.
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - At this point, full `tests.model_route_test` still had unrelated
+    pre-existing drift. That was cleared in the later noise-cleanup pass
+    below.
+
+- **2026-05-23 — Runtime noise cleared and archived calls blocked.**
+  User asked to clear noisy unused test items or stop them from making
+  calls, then back up the current version.
+
+  Fix:
+  - `chat/server.py`: archived projects are now read-only for routes
+    that can change state or call the model. `/messages`, card `/run`,
+    card `/verify`, and `/api/plan` return HTTP `409` before model/tool
+    work can start.
+  - `tests/model_route_test.py`: stale route/execution tests were
+    modernized so they use `save_sessions(..., create_keys={...})`,
+    mock the current three-value execution helper, and patch
+    `call_ollama_with_transport` for Forge file-block parsing. This
+    stops tests from accidentally making live Ollama calls.
+  - Added explicit regression tests proving archived session messages,
+    card runs, and planning requests do not call the model.
+  - Runtime cleanup: archived all nine active demo/test project records
+    in `~/.gforge/harness/sessions.json`, including the heavy
+    `gemma4:31b-max` Yahoo scrape run; moved orphan test artifact dirs
+    `axon-real-test`, `socraticode-real-test`, and
+    `session_1779475916178` into the pre-cleanup backup.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T194941Z-pre-noise-cleanup/`
+  contains the pre-edit source files, pre-cleanup `sessions.json`, and
+  the moved orphan test artifact directories.
+
+  Verified:
+  - Full route suite now passes: `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`.
+  - `npm run check` passed.
+  - `git diff --check` passed.
+  - Live harness restarted: old listener PID `47697` replaced by PID
+    `93316`; `GET /` returned HTTP `200`.
+  - Live archived-guard smoke confirmed archived `/messages`, card
+    `/run`, and `/api/plan` return "Archived projects are read-only"
+    without creating new Ollama error-log entries.
+  - Active session list is empty after cleanup; archived sessions remain
+    restorable under Archived.
+
 ## Product philosophy (load-bearing)
 
 Gemma Forge is an **execution machine, not a chatbot.** Small input →
@@ -964,6 +1254,8 @@ tail -5 /Users/webot/.gforge/harness/logs/errors.jsonl
 
 ## Next action
 
-Wait for user approval to execute the fix plan. When approved, start
-with P0.1 (`call_ollama` overhaul) — smallest blast radius, biggest
-single-step impact.
+Run a live intake/execution using a scraping/news/headlines webpage
+request and confirm the Project Context `skill_plan` and Execution
+skill block tell the model to use `scrapling-official` for scraping and
+`ui-ux-pro-max` for webpage/interface design, with no unrelated
+Axon/GSD/SocratiCode staging from prior agent messages.

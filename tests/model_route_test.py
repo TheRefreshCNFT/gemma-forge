@@ -126,7 +126,7 @@ class ModelRouteTest(unittest.TestCase):
             requested_id="model-switch-test",
             has_project_directory=False,
         )
-        server.save_sessions(sessions)
+        server.save_sessions(sessions, create_keys={session_id})
 
         client = server.app.test_client()
         response = client.patch(
@@ -147,7 +147,7 @@ class ModelRouteTest(unittest.TestCase):
             requested_id="model-card-test",
             has_project_directory=False,
         )
-        server.save_sessions(sessions)
+        server.save_sessions(sessions, create_keys={session_id})
         result = server.card_result(
             "Intake",
             "Project brief extracted.",
@@ -167,6 +167,69 @@ class ModelRouteTest(unittest.TestCase):
         self.assertEqual(response.get_json()["session"]["model"], "gemma4:31b-max")
         self.assertEqual(server.load_sessions()[session_id]["model"], "gemma4:31b-max")
 
+    def test_archived_session_message_does_not_call_model(self):
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            "Archived project.",
+            "gemma-4",
+            requested_id="archived-message-test",
+            has_project_directory=False,
+        )
+        sessions[session_id]["archivedAt"] = "2026-05-23T00:00:00+00:00"
+        server.save_sessions(sessions, create_keys={session_id})
+
+        with patch.object(server, "call_ollama", side_effect=AssertionError("model should not be called")):
+            response = server.app.test_client().post(
+                f"/api/sessions/{session_id}/messages",
+                json={"message": "Keep going", "model": "gemma-4"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Archived projects are read-only", response.get_json()["error"])
+
+    def test_archived_session_card_run_does_not_call_model(self):
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            "Archived project.",
+            "gemma-4",
+            requested_id="archived-card-test",
+            has_project_directory=False,
+        )
+        sessions[session_id]["archivedAt"] = "2026-05-23T00:00:00+00:00"
+        server.save_sessions(sessions, create_keys={session_id})
+
+        with patch.object(server, "run_card_action", side_effect=AssertionError("card should not run")):
+            response = server.app.test_client().post(
+                f"/api/sessions/{session_id}/cards/intake/run",
+                json={"model": "gemma-4", "humanVerify": False},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Archived projects are read-only", response.get_json()["error"])
+
+    def test_archived_session_plan_does_not_call_model(self):
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            "Archived project.",
+            "gemma-4",
+            requested_id="archived-plan-test",
+            has_project_directory=False,
+        )
+        sessions[session_id]["archivedAt"] = "2026-05-23T00:00:00+00:00"
+        server.save_sessions(sessions, create_keys={session_id})
+
+        with patch.object(server, "call_ollama", side_effect=AssertionError("model should not be called")):
+            response = server.app.test_client().post(
+                "/api/plan",
+                json={"session_id": session_id, "project": "Plan this", "model": "gemma-4"},
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("Archived projects are read-only", response.get_json()["error"])
+
     def test_auto_run_section_waits_when_small_model_review_fails(self):
         sessions = {}
         session_id = server.create_session_record(
@@ -176,9 +239,9 @@ class ModelRouteTest(unittest.TestCase):
             requested_id="review-gate-test",
             has_project_directory=False,
         )
-        server.save_sessions(sessions)
+        server.save_sessions(sessions, create_keys={session_id})
 
-        def fake_action(_session_id, _session, _card_id, _model, _mode):
+        def fake_action(_session_id, _session, _card_id, _model, _mode, correction=None):
             return server.card_result(
                 "Intake",
                 "Project brief extracted.",
@@ -270,7 +333,8 @@ class ModelRouteTest(unittest.TestCase):
             "verification": [],
         }
 
-        with patch.object(server, "call_ollama_execution_payload", return_value=(model_payload, json.dumps(model_payload))):
+        with patch.object(server, "call_ollama_execution_payload",
+                          return_value=(model_payload, json.dumps(model_payload), {"status": "ok"})):
             result = server.run_execution_card("desired-execution-test", session, "gemma-4", "auto")
 
         self.assertTrue(os.path.exists(os.path.join(desired_path, "index.html")))
@@ -298,7 +362,8 @@ class ModelRouteTest(unittest.TestCase):
             "verification": ["Open index.html."],
         }
 
-        with patch.object(server, "call_ollama_execution_payload", return_value=(model_payload, json.dumps(model_payload))):
+        with patch.object(server, "call_ollama_execution_payload",
+                          return_value=(model_payload, json.dumps(model_payload), {"status": "ok"})):
             execution = server.execute_model_authored_project(session_id, session, "gemma-4", workspace_dir)
 
         self.assertTrue(os.path.exists(os.path.join(workspace_dir, "index.html")))
@@ -339,7 +404,7 @@ VERIFICATION:
 - Confirm the title is visible.
 """
 
-        with patch.object(server, "call_ollama", return_value=raw):
+        with patch.object(server, "call_ollama_with_transport", return_value=(raw, {"status": "ok"})):
             execution = server.execute_model_authored_project(session_id, session, "gemma-4", workspace_dir)
 
         self.assertTrue(os.path.exists(os.path.join(workspace_dir, "index.html")))
@@ -376,7 +441,7 @@ VERIFICATION:
 
         def fake_call(_model, prompt, _fallback):
             captured["prompt"] = prompt
-            return model_payload, json.dumps(model_payload)
+            return model_payload, json.dumps(model_payload), {"status": "ok"}
 
         with patch.object(server, "skill_install_roots", return_value=[("harness", skill_root)]), \
                 patch.object(server, "call_ollama_execution_payload", side_effect=fake_call):
@@ -616,6 +681,301 @@ VERIFICATION:
         self.assertEqual(len(result["postReviewRepairs"]), 1)
         self.assertTrue(result["validation"]["passed"])
         self.assertTrue(result["validation"]["authenticity"]["modelAuthored"])
+
+    def test_repair_prompt_continues_from_existing_workspace_snapshot(self):
+        workspace_dir = os.path.join(self.tmp.name, "repair-workspace")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "output", "index.html"), "w") as f:
+            f.write("<!doctype html><article><h2>Existing Article</h2></article>")
+        with open(os.path.join(workspace_dir, "artifacts", "validation.json"), "w") as f:
+            json.dump({"passed": False, "failures": ["content requirement expected at least 3 articles"]}, f)
+
+        raw_yaml = """---
+project:
+  name: repair test
+  type: code
+deliverable:
+  format: html
+  count: 1
+  path_pattern: output/index.html
+acceptance:
+  - output/index.html contains three articles.
+---"""
+        session = {
+            "project": "Build a news page with the top 3 articles.",
+            "projectContext": {
+                "project": {"type": "code"},
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "output/index.html"},
+                "content_requirements": [
+                    {"count": 3, "item": "articles", "scope": "whole page", "source": "top 3 articles"}
+                ],
+                "acceptance": ["output/index.html contains three articles."],
+            },
+            "projectContextRaw": raw_yaml,
+        }
+        review = {
+            "summary": "The page under-delivered the requested article count.",
+            "findings": ["Only one article card was present."],
+            "fixesNeeded": ["Add two more article cards without replacing the useful page structure."],
+            "validationFailures": ["content requirement expected at least 3 articles"],
+            "userNote": "Keep the existing layout and finish the missing articles.",
+        }
+
+        prompt = server.build_model_execution_prompt(
+            session,
+            workspace_dir,
+            review=review,
+            skill_context={"prompt": ""},
+            research={},
+        )
+
+        self.assertIn("CONTINUATION REPAIR MODE", prompt)
+        self.assertIn("Do not start over", prompt)
+        self.assertIn("Starting over is allowed only if", prompt)
+        self.assertIn("complete the rest of the original request", prompt)
+        self.assertIn("Harness file-inspection output", prompt)
+        self.assertIn("output/index.html", prompt)
+        self.assertIn("Existing Article", prompt)
+        self.assertIn("content requirement expected at least 3 articles", prompt)
+        self.assertIn("Keep the existing layout", prompt)
+
+    def test_initial_execution_prompt_omits_repair_mode(self):
+        session = {
+            "project": "Create one HTML file.",
+            "projectContext": {
+                "project": {"type": "code"},
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "output/index.html"},
+                "acceptance": ["output/index.html exists."],
+            },
+            "projectContextRaw": """---
+project:
+  type: code
+deliverable:
+  format: html
+  count: 1
+  path_pattern: output/index.html
+acceptance:
+  - output/index.html exists.
+---""",
+        }
+
+        prompt = server.build_model_execution_prompt(
+            session,
+            self.tmp.name,
+            review=None,
+            skill_context={"prompt": ""},
+            research={},
+        )
+
+        self.assertNotIn("CONTINUATION REPAIR MODE", prompt)
+        self.assertNotIn("Harness file-inspection output", prompt)
+
+    def test_skill_alias_resolves_web_browse_to_scrapling(self):
+        skills = {
+            "scrapling-official": {
+                "name": "scrapling-official",
+                "key": "scrapling-official",
+                "description": "Scrape web pages using Scrapling.",
+                "keywords": [],
+                "skillFile": "/tmp/SKILL.md",
+            }
+        }
+        session = {
+            "project": "Build a page from live news headlines.",
+            "projectContext": {"skill": {"use": "web_browse"}},
+        }
+
+        self.assertEqual(server.resolve_skill_selection(session, skills), ["scrapling-official"])
+
+    def test_skill_none_is_overridden_by_scraping_request_keywords(self):
+        skills = {
+            "scrapling-official": {
+                "name": "scrapling-official",
+                "key": "scrapling-official",
+                "description": "Scrape web pages using Scrapling.",
+                "keywords": [],
+                "skillFile": "/tmp/SKILL.md",
+            }
+        }
+        session = {
+            "project": "Create an HTML news ticker using live scraping of article headlines.",
+            "projectContext": {"skill": {"use": "none"}},
+        }
+
+        self.assertEqual(server.resolve_skill_selection(session, skills), ["scrapling-official"])
+
+    def test_skill_selection_ignores_prior_agent_skill_manifests(self):
+        skills = {
+            "scrapling-official": {
+                "name": "scrapling-official",
+                "key": "scrapling-official",
+                "description": "Scrape web pages using Scrapling.",
+                "keywords": [],
+                "skillFile": "/tmp/SKILL.md",
+            },
+            "ui-ux-pro-max": {
+                "name": "ui-ux-pro-max",
+                "key": "ui-ux-pro-max",
+                "description": "Design responsive webpages.",
+                "keywords": [],
+                "skillFile": "/tmp/skill.json",
+            },
+            "axon": {
+                "name": "axon",
+                "key": "axon",
+                "description": "Code graph analysis.",
+                "keywords": [],
+                "skillFile": "/tmp/SKILL.md",
+            },
+            "gsd": {
+                "name": "gsd",
+                "key": "gsd",
+                "description": "Project planning workflow.",
+                "keywords": [],
+                "skillFile": "/tmp/SKILL.md",
+            },
+        }
+        session = {
+            "project": "Scrape news headlines and make a modern responsive page across devices.",
+            "projectContext": {"skill": {"use": "scrapling-official"}},
+            "messages": [
+                {"role": "agent", "content": "Staged skills: axon, gsd, socraticode"},
+            ],
+        }
+
+        self.assertEqual(server.resolve_skill_selection(session, skills), ["scrapling-official", "ui-ux-pro-max"])
+
+    def test_skill_context_prompt_gives_usage_plan_before_manuals(self):
+        staged = [
+            {"name": "scrapling-official", "key": "scrapling-official", "path": ".gforge/skills/scrapling-official", "requested": True},
+            {"name": "ui-ux-pro-max", "key": "ui-ux-pro-max", "path": ".gforge/skills/ui-ux-pro-max", "requested": True},
+        ]
+
+        prompt = server.build_skill_context_prompt(self.tmp.name, staged)
+
+        self.assertIn("Skill Usage Plan", prompt)
+        self.assertIn("scrapling-official` → web scraping and extraction", prompt)
+        self.assertIn("ui-ux-pro-max` → webpage and interface design", prompt)
+        self.assertLess(prompt.index("Skill Usage Plan"), prompt.index("Staged skills:"))
+
+    def test_detects_content_quantity_requirement_from_news_prompt(self):
+        requirements = server.detect_content_quantity_requirements(
+            "Pick the top 3 articles in each category and build a modern news page."
+        )
+
+        self.assertEqual(len(requirements), 1)
+        self.assertEqual(requirements[0]["count"], 3)
+        self.assertEqual(requirements[0]["item"], "articles")
+        self.assertEqual(requirements[0]["scope"], "in each category")
+
+    def test_project_context_enriches_content_quantity_requirements(self):
+        raw = """Rationale.
+<<<CONTEXT_BEGIN>>>
+---
+project:
+  name: news page
+  type: code
+  domain: news
+intent:
+  surface_ask: "Pick the top 3 articles in each category and build a page."
+  underlying_need: A page with repeated article cards.
+  success_means: The page contains the requested article count.
+deliverable:
+  format: html
+  count: 1
+  path_pattern: output/index.html
+  encoding: gforge_file_block
+  partial: false
+  scope: A single HTML page.
+  anti_deflection: stub
+capabilities_required:
+  - emit_files
+constraints:
+  hard_requirements:
+    - The page is responsive.
+  tone:
+    - modern
+skill:
+  use: none
+  staged_path: n/a
+acceptance:
+  - output/index.html exists.
+  - output/index.html is valid HTML.
+open_questions: []
+---
+<<<CONTEXT_END>>>
+"""
+        parsed, _yaml_text, errors = server.parse_project_context(
+            raw,
+            project_text="Pick the top 3 articles in each category and build a page.",
+        )
+
+        self.assertEqual(errors, [])
+        self.assertEqual(parsed["deliverable"]["count"], 1)
+        self.assertEqual(parsed["content_requirements"][0]["count"], 3)
+        self.assertIn("top 3 articles", parsed["content_requirements"][0]["source"].lower())
+        self.assertTrue(any("at least 3 articles" in item.lower() for item in parsed["acceptance"]))
+
+    def test_validation_fails_when_content_quantity_is_under_delivered(self):
+        workspace_dir = os.path.join(self.tmp.name, "content-under")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "output", "index.html"), "w") as f:
+            f.write("<!doctype html><article><h2>Only one story</h2></article>")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "output/index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 3,
+                        "item": "articles",
+                        "scope": "in each category",
+                        "source": "top 3 articles in each category",
+                    }
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "output/index.html"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 1)
+        self.assertTrue(any("content requirement expected at least 3" in item for item in validation["failures"]))
+
+    def test_validation_fails_when_deliverable_file_count_is_under_delivered(self):
+        workspace_dir = os.path.join(self.tmp.name, "file-count-under")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "output", "logo-01.svg"), "w") as f:
+            f.write("<svg></svg>")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "svg", "count": 3, "path_pattern": "output/logo-NN.svg"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "output/logo-01.svg"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("deliverable.count expected at least 3" in item for item in validation["failures"]))
 
 
 if __name__ == "__main__":
