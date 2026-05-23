@@ -24,6 +24,10 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - `SUBMISSION_DRAFT.md` - DEV Build With Gemma 4 submission draft.
 - `launch_forge.command` - macOS launcher that starts the Forge Harness.
 - `.planning/` - local planning artifacts for the contest sprint.
+- `skills/` - bundled protocol skills staged by the launcher into
+  `~/.gforge/harness/skills/` for one-package installs.
+- `tools/` - clean-install verification/orchestration scripts used to
+  prove a fresh clone can install and run the harness.
 - `.git/` - initialized local git metadata pointing at private GitHub repo `https://github.com/TheRefreshCNFT/gemma-forge`.
 
 ## Harness Code
@@ -67,6 +71,10 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Harness URL: `http://127.0.0.1:5005/`.
 - Initial recommended Forge Brain: `gemma-4`.
 - Current private repo: `https://github.com/TheRefreshCNFT/gemma-forge`.
+- Full-state external backups: `/Volumes/PHIXERO/Backups/gemma-forge/`.
+- Backup policy: a full backup/state-alignment request means the live
+  local working state is backed up to the external SSD and GitHub is
+  aligned with the installable repo state.
 
 ## Current Behavior
 
@@ -78,6 +86,23 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Settings can import installed Ollama models, provision or skip models, show model route status, and open the error log.
 - Each project record stores project messages, cards, archive state, model selection, project directory state, and optional bridges.
 - Full Forge runs active protocol cards in order.
+- The Protocol cards header no longer renders the old inline
+  `plan-run-status` strip; status is shown through card state, buttons,
+  sidebar project state, and the Forge Station activity stream.
+- Auto-run startup visually marks the Project Context / intake card as
+  running while the initial planning request is in flight: the card gets
+  the active running border/glow and its button reads `Running`.
+- Protocol cards now surface compact run facts on the card they apply
+  to: contract fields for Project Context, readiness fields for Forge
+  Flow, validation/transport/files for Execution, tool status for
+  SocratiCode/Axon, plus review/research/artifact facts. The full raw
+  card artifact stays available behind a "Full section artifact"
+  disclosure.
+- The Project Context section remains the chronological project feed;
+  its scroll area is taller so card-specific facts can live on cards
+  while the feed stays readable.
+- Manual / Human Verify remains separate: cards keep their manual
+  `Forge Section` button state until the user runs a section.
 - Conditional cards are runnable by Full Forge when visible; protocols that should not run are moved to inactive or pending.
 - New-project mode may include a desired directory path. Project Execution creates that directory if missing, while existing-directory mode requires the path to already exist.
 - Human verify pauses after card work; Verified continues, Not Verified captures the issue and reruns the section, Help asks the agent for guidance.
@@ -98,7 +123,6 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 ## Known Remaining Work
 
 - Record final demo video.
-- Run fresh clone install test.
 - Confirm no local project record, token, model, generated workspace, or log data enters the public repo.
 - Make the private repo public when submission materials are ready.
 - Broaden deterministic verification beyond file/authenticity checks without adding task-specific generators.

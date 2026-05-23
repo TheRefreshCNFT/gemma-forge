@@ -51,6 +51,22 @@ const helpContent = {
     "session-list": {
         title: "Projects",
         body: "Active projects are current work. Archive moves a project out of the active list without deleting files. X permanently deletes the selected project record and artifacts."
+    },
+    "start-panel": {
+        title: "Start a project",
+        body: "This top panel shows the local Environment (hardware, Ollama, model tools) on the left and the Forge Brain pills (Primary + Fallback model) on the right. It auto-collapses the moment you start typing a project — click the - / + button to toggle it manually."
+    },
+    "skipped-protocols": {
+        title: "Skipped protocols",
+        body: "Cards the planner decided are not needed for this project (e.g. Axon and SocratiCode for a single-SVG deliverable). They stay out of the main flow but you can expand this section to see what was skipped and why."
+    },
+    "project-context": {
+        title: "Project context",
+        body: "Persistent log of what the agent and the harness have written for this project — every card's summary, every Resolve note, and every chat reply. Scrolls independently. Switching projects swaps the log to that project's history."
+    },
+    "agent-chat": {
+        title: "Send to agent",
+        body: "Free-form chat with the model scoped to THIS project. The agent can answer questions about the project, manage the model, audit the current plan — AND emit GFORGE_FILE blocks the harness will materialize directly into the workspace. Same file pipeline as the Execution card."
     }
 };
 
@@ -129,6 +145,7 @@ const planRunnableStatuses = new Set(["active", "conditional", "needs-attention"
 let currentCards = defaultCards;
 let planRunning = false;
 let planPaused = false;
+let runningCardId = null;
 
 function directoryModeIsExisting() {
     return document.querySelector('input[name="project-directory-mode"]:checked')?.value === "yes";
@@ -631,6 +648,12 @@ function selectSession(id, session) {
     planRunning = false;
     planPaused = false;
     renderSessionsList(sessionsCache);
+    // V8 — per-session terminal isolation. Switching sessions clears the
+    // terminal display and resubscribes the SSE feed to only this session's
+    // events (plus harness-wide events that aren't session-scoped).
+    if (typeof window.reconnectTerminalToSession === "function") {
+        window.reconnectTerminalToSession(id);
+    }
     const output = document.getElementById("agent-output");
     if (Array.isArray(session)) {
         output.textContent = "Legacy chat record selected. Start a new project plan for the work harness.";
@@ -782,6 +805,111 @@ function renderToolExecution(toolExecution) {
     `;
 }
 
+function appendRunFact(facts, label, value, tone = "") {
+    const text = cleanRunFact(value);
+    if (!text || facts.some(fact => fact.label === label)) {
+        return;
+    }
+    facts.push({ label, value: text, tone });
+}
+
+function cleanRunFact(value) {
+    return String(value ?? "")
+        .replaceAll("`", "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function detailMatch(details, patterns) {
+    const source = String(details || "");
+    for (const pattern of patterns) {
+        const match = source.match(pattern);
+        if (match && match[1]) {
+            return cleanRunFact(match[1]);
+        }
+    }
+    return "";
+}
+
+function pathBasename(path) {
+    const text = cleanRunFact(path);
+    if (!text) return "";
+    const parts = text.replace(/\/+$/, "").split("/");
+    return parts[parts.length - 1] || text;
+}
+
+function elapsedLabel(ms) {
+    const number = Number(ms);
+    if (!Number.isFinite(number) || number <= 0) return "";
+    if (number < 1000) return `${number} ms`;
+    return `${(number / 1000).toFixed(number < 10000 ? 1 : 0)} s`;
+}
+
+function validationTone(validation) {
+    if (!validation || typeof validation !== "object") return "";
+    return validation.passed === false ? "attention" : "good";
+}
+
+function renderCardRunFacts(card, lastRun) {
+    if (!lastRun) {
+        return "";
+    }
+
+    const details = lastRun.details || "";
+    const facts = [];
+
+    if (card.id === "intake") {
+        const hasOpenQuestionsSection = /## Open questions/i.test(details);
+        appendRunFact(facts, "Format", detailMatch(details, [/Deliverable format:\s*`?([^`\n]+)/i, /\n\s*format:\s*([^\n]+)/i]));
+        appendRunFact(facts, "Path", detailMatch(details, [/Path pattern:\s*`?([^`\n]+)/i, /\n\s*path_pattern:\s*([^\n]+)/i]));
+        appendRunFact(facts, "Count", detailMatch(details, [/Count:\s*`?([^`\n]+)/i, /\n\s*count:\s*([^\n]+)/i]));
+        appendRunFact(facts, "Skill", detailMatch(details, [/\n\s*use:\s*([^\n]+)/i]));
+        appendRunFact(facts, "Questions", hasOpenQuestionsSection ? (/## Open questions[\s\S]*-\s*None\./i.test(details) ? "None" : "Needs answer") : "");
+    } else if (card.id === "forge-flow") {
+        appendRunFact(facts, "Model", detailMatch(details, [/Selected model:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Deliverable", detailMatch(details, [/Deliverable format:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Path", detailMatch(details, [/Path pattern:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Subagents", detailMatch(details, [/Subagent capacity:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Required", detailMatch(details, [/Required by request:\s*`?([^`\n]+)/i]));
+    } else if (card.id === "execution") {
+        const validation = lastRun.validation || {};
+        appendRunFact(facts, "Files", validation.fileCount ?? detailMatch(details, [/Model-authored files:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Validation", validation.passed === false ? "Needs attention" : "Passed", validationTone(validation));
+        appendRunFact(facts, "Transport", validation.transport?.status || detailMatch(details, [/Status:\s*`?([^`\n]+)/i]), validation.transport?.status === "ok" ? "good" : "");
+        appendRunFact(facts, "Elapsed", elapsedLabel(validation.transport?.elapsedMs) || detailMatch(details, [/Elapsed:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Workspace", pathBasename(lastRun.workspace));
+    } else if (card.id === "socraticode" || card.id === "axon") {
+        appendRunFact(facts, "Tool", lastRun.toolExecution?.status || detailMatch(details, [/Tool status:\s*`?([^`\n]+)/i]), lastRun.toolExecution?.requiresAttention ? "attention" : "good");
+        appendRunFact(facts, "Blocking", detailMatch(details, [/Blocking delivery:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Files", detailMatch(details, [/Semantic\/code-like files:\s*`?([^`\n]+)/i, /Axon-indexable files:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Directory", pathBasename(detailMatch(details, [/Project directory:\s*`?([^`\n]+)/i])));
+    } else if (card.id === "verification") {
+        const validation = lastRun.validation || {};
+        appendRunFact(facts, "Validation", validation.passed === false ? "Needs attention" : "Passed", validationTone(validation));
+        appendRunFact(facts, "Files", validation.fileCount ?? detailMatch(details, [/Files checked:\s*`?([^`\n]+)/i]));
+        appendRunFact(facts, "Workspace", pathBasename(detailMatch(details, [/Workspace:\s*`?([^`\n]+)/i])));
+    }
+
+    appendRunFact(facts, "Review", lastRun.extraReview?.required === false ? "" : (lastRun.extraReview?.passed === false ? "Needs attention" : (lastRun.extraReview?.confidence ? `${lastRun.extraReview.confidence} confidence` : "Passed")), lastRun.extraReview?.passed === false ? "attention" : "good");
+    appendRunFact(facts, "Research", lastRun.researchPasses ? `${lastRun.researchPasses.used || 0}/${lastRun.researchPasses.maxPasses || 0}` : "");
+    appendRunFact(facts, "Artifact", pathBasename(lastRun.artifact));
+
+    if (!facts.length) {
+        return "";
+    }
+
+    return `
+        <div class="card-run-facts" aria-label="${escapeHtml(card.title)} run facts">
+            ${facts.slice(0, 7).map(fact => `
+                <div class="card-run-fact ${fact.tone ? `is-${fact.tone}` : ""}">
+                    <span>${escapeHtml(fact.label)}</span>
+                    <strong>${escapeHtml(fact.value)}</strong>
+                </div>
+            `).join("")}
+        </div>
+    `;
+}
+
 // V3 rolodex state — index into the visible-cards array of the card
 // currently in the "front" slot. Auto-rotates when the active card changes.
 let rolodexFrontIndex = 0;
@@ -823,9 +951,10 @@ function renderWorkflowCards(cards) {
         const checkpointOpen = lastRun && card.status === "awaiting-human";
         const globalHumanVerify = document.getElementById("global-human-verify").checked;
         const archived = currentSessionArchived();
-        const runDisabled = archived || card.status === "complete" || card.status === "awaiting-human";
+        const isRunning = runningCardId === card.id;
+        const runDisabled = archived || isRunning || card.status === "complete" || card.status === "awaiting-human";
         const section = document.createElement("section");
-        section.className = `workflow-card ${card.status}`;
+        section.className = `workflow-card ${card.status}${isRunning ? " running" : ""}`;
         section.dataset.cardId = card.id;
         section.innerHTML = `
             <div class="card-topline">
@@ -840,12 +969,16 @@ function renderWorkflowCards(cards) {
             </div>
             <p>${escapeHtml(card.summary)}</p>
             <div class="card-action-row">
-                <button class="section-run-btn" ${runDisabled ? "disabled" : ""}>${archived ? "Archived" : runButtonLabel(card)}</button>
+                <button class="section-run-btn" ${runDisabled ? "disabled" : ""}>${isRunning ? "Running" : (archived ? "Archived" : runButtonLabel(card))}</button>
                 <div class="skill-pill">${escapeHtml(card.skill)}</div>
             </div>
             <div class="card-result ${lastRun ? "" : "hidden"}">
                 <strong>${lastRun ? escapeHtml(lastRun.summary) : ""}</strong>
-                <pre>${lastRun ? escapeHtml(lastRun.details || "") : ""}</pre>
+                ${lastRun ? renderCardRunFacts(card, lastRun) : ""}
+                <details class="card-artifact-details" ${card.status === "needs-attention" || card.status === "awaiting-human" ? "open" : ""}>
+                    <summary>Full section artifact</summary>
+                    <pre>${lastRun ? escapeHtml(lastRun.details || "") : ""}</pre>
+                </details>
                 <small>${lastRun?.artifact ? `Artifact: ${escapeHtml(lastRun.artifact)}` : ""}</small>
                 ${lastRun ? renderResearchPasses(lastRun.researchPasses) : ""}
                 ${lastRun ? renderToolExecution(lastRun.toolExecution) : ""}
@@ -901,6 +1034,11 @@ function renderWorkflowCards(cards) {
 
     renderSkippedCards(skippedCards);
     refreshRunPlanButton();
+}
+
+function setRunningCard(cardId) {
+    runningCardId = cardId || null;
+    renderWorkflowCards(currentCards);
 }
 
 function applyRolodexLayering(container, visibleCards) {
@@ -1077,14 +1215,9 @@ async function runCardSection(cardId, options = {}) {
 
     const section = document.querySelector(`.workflow-card[data-card-id="${cardId}"]`);
     const toggle = section?.querySelector(`[data-mode="${cardId}"]`);
-    const runButton = section?.querySelector(".section-run-btn");
     const humanVerify = options.humanVerify ?? toggle?.checked ?? document.getElementById("global-human-verify").checked;
 
-    if (runButton) {
-        runButton.disabled = true;
-        runButton.textContent = "Running";
-    }
-    section?.classList.add("running");
+    setRunningCard(cardId);
     output.textContent = `Gemma Forge is running ${cardId}.`;
 
     try {
@@ -1115,15 +1248,9 @@ async function runCardSection(cardId, options = {}) {
         return data;
     } catch (error) {
         output.textContent = "Card action failed. Confirm the harness server and local model are running.";
-        if (runButton) {
-            runButton.textContent = "Forge Section";
-        }
         return null;
     } finally {
-        section?.classList.remove("running");
-        if (runButton && runButton.textContent !== "Complete" && runButton.textContent !== "Awaiting verification") {
-            runButton.disabled = false;
-        }
+        setRunningCard(null);
         refreshRunPlanButton();
     }
 }
@@ -1377,7 +1504,15 @@ async function startPlanning() {
             return;
         }
         currentSessionId = created.session_id;
+        if (typeof window.reconnectTerminalToSession === "function") {
+            window.reconnectTerminalToSession(currentSessionId);
+        }
         renderSessionMessages(created.session.messages || []);
+        if (!humanVerify) {
+            renderWorkflowCards(created.session.cards || defaultCards);
+            setAllHumanVerify(false);
+            setRunningCard("intake");
+        }
 
         const planRes = await fetch(`${API_URL}/plan`, {
             method: "POST",
@@ -1405,6 +1540,7 @@ async function startPlanning() {
             await runPlan();
         }
     } catch (error) {
+        setRunningCard(null);
         output.textContent = "Planning failed. Confirm Ollama and the local server are running.";
     }
 }
@@ -1412,6 +1548,8 @@ async function startPlanning() {
 async function sendSessionMessage() {
     const input = document.getElementById("session-message-input");
     const output = document.getElementById("agent-output");
+    const sendBtn = document.getElementById("send-session-message-btn");
+    const thinking = document.getElementById("chat-thinking-indicator");
     const message = input.value.trim();
 
     if (!currentSessionId) {
@@ -1426,6 +1564,17 @@ async function sendSessionMessage() {
 
     input.value = "";
     output.textContent = "Agent is working inside this project.";
+
+    // Show the thinking indicator + disable the send button so the user
+    // gets clear feedback that the model is running. The model call can
+    // take 10-60s on a small Gemma; without an indicator the UI looks
+    // frozen.
+    if (thinking) thinking.classList.remove("hidden");
+    if (sendBtn) {
+        sendBtn.disabled = true;
+        sendBtn.dataset._origText = sendBtn.textContent;
+        sendBtn.textContent = "Working…";
+    }
 
     try {
         const res = await fetch(`${API_URL}/sessions/${currentSessionId}/messages`, {
@@ -1444,6 +1593,15 @@ async function sendSessionMessage() {
         await fetchSessions();
     } catch (error) {
         output.textContent = "Agent request failed. Confirm Ollama and the local harness server are running.";
+    } finally {
+        if (thinking) thinking.classList.add("hidden");
+        if (sendBtn) {
+            sendBtn.disabled = false;
+            if (sendBtn.dataset._origText) {
+                sendBtn.textContent = sendBtn.dataset._origText;
+                delete sendBtn.dataset._origText;
+            }
+        }
     }
 }
 
@@ -1510,7 +1668,10 @@ function initializeHelp() {
             return;
         }
 
-        button.title = `${help.title}: ${help.body}`;
+        // V8 — Removed `button.title = ...` because it caused the browser
+        // to render the native tooltip alongside our styled popover, which
+        // looked like a double / duplicate hover. The popover is the only
+        // hover output now. (aria-label is still on the button for a11y.)
         button.addEventListener("mouseenter", () => showHelp(button, false));
         button.addEventListener("focus", () => showHelp(button, false));
         button.addEventListener("mouseleave", () => scheduleHelpHide(button.dataset.helpKey));
@@ -1656,6 +1817,9 @@ document.getElementById("new-session-btn").addEventListener("click", () => {
     currentSessionId = null;
     planRunning = false;
     planPaused = false;
+    if (typeof window.reconnectTerminalToSession === "function") {
+        window.reconnectTerminalToSession(null);
+    }
     renderSessionsList(sessionsCache);
     document.getElementById("project-input").value = "";
     document.getElementById("project-directory-input").value = "";
@@ -1880,22 +2044,43 @@ function setupEventTerminal() {
         stream.scrollTop = stream.scrollHeight;
     }
 
+    // Inline SVG plug icon. Color is currentColor so the disconnected
+    // CSS state can recolor it via .event-terminal.disconnected.
+    const PLUG_SVG = `<svg class="plug-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2v6"/><path d="M15 2v6"/><rect x="7" y="8" width="10" height="6" rx="1"/><path d="M12 14v3"/><path d="M9 21h6a3 3 0 0 0 3-3v-1H6v1a3 3 0 0 0 3 3z"/></svg>`;
+
     function setStatus(text, ok) {
         if (!statusEl) return;
-        statusEl.textContent = text;
+        // V8 — replace verbose "connecting/connected/reconnecting" text
+        // with a plug icon + the short word. Icon plus a short label
+        // keeps screen-reader output meaningful while saving header space.
+        const label = ok ? (text && text !== "connected" ? text : "Live") : (text || "Offline");
+        statusEl.innerHTML = `${PLUG_SVG}<span class="plug-label">${escapeHtml(label)}</span>`;
         terminal.classList.toggle("disconnected", !ok);
     }
 
-    function connect() {
-        let es;
+    let activeEs = null;
+    let activeSessionId = null;
+
+    function connect(sessionId) {
+        if (activeEs) {
+            try { activeEs.close(); } catch (e) { /* ignore */ }
+            activeEs = null;
+        }
+        activeSessionId = sessionId || null;
+        if (!activeSessionId) {
+            setStatus("idle", true);
+            return;
+        }
+        let url = `${API_URL}/events/stream`;
+        url += `?session_id=${encodeURIComponent(activeSessionId)}`;
         try {
-            es = new EventSource(`${API_URL}/events/stream`);
+            activeEs = new EventSource(url);
         } catch (error) {
             setStatus("offline", false);
             return;
         }
         setStatus("connected", true);
-        es.onmessage = (msg) => {
+        activeEs.onmessage = (msg) => {
             try {
                 const evt = JSON.parse(msg.data);
                 appendEvent(evt);
@@ -1903,14 +2088,25 @@ function setupEventTerminal() {
                 console.warn("bad event payload", error);
             }
         };
-        es.onerror = () => {
+        activeEs.onerror = () => {
             setStatus("reconnecting", false);
-            try { es.close(); } catch (e) { /* ignore */ }
-            setTimeout(connect, 2000);
+            try { activeEs.close(); } catch (e) { /* ignore */ }
+            setTimeout(() => connect(activeSessionId), 2000);
         };
     }
 
-    connect();
+    // Expose a global reconnector so selectSession() can swap the
+    // subscription when the user picks a different project. Clears the
+    // displayed history so old sessions' events don't bleed into the new
+    // one's terminal view.
+    window.reconnectTerminalToSession = function(sessionId) {
+        if (stream) stream.innerHTML = "";
+        connect(sessionId);
+    };
+
+    // Initial connect — when no project is selected, keep the terminal
+    // blank instead of replaying the global recent-event buffer.
+    connect(typeof currentSessionId !== "undefined" ? currentSessionId : null);
 }
 
 // ============================================================

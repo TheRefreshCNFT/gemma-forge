@@ -1,4 +1,5 @@
 .DS_Store
+._*
 .axon/
 __pycache__/
 *.py[cod]
@@ -25,3 +26,13 @@ downloads/
 # Processed/compressed mp4 versions under docs/submission-media/processed/
 # are committed; the masters stay local.
 docs/submission-media/raw-recordings/
+
+# Bundled skill source packages can include upstream project extras that are
+# not needed for Gemma Forge's install/runtime staging path.
+skills/**/.coverage
+skills/ui-ux-pro-max/.github/
+skills/ui-ux-pro-max/cli/
+skills/ui-ux-pro-max/docs/
+skills/ui-ux-pro-max/preview/
+skills/ui-ux-pro-max/screenshots/
+skills/ui-ux-pro-max/src/

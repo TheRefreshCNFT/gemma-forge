@@ -17,6 +17,7 @@
     </div>
 
     <div id="app" class="app-shell hidden">
+        <div class="app-shell-top">
         <aside class="sidebar">
             <div class="brand">
                 <img class="brand-logo" src="/static/assets/forge-logo.svg" alt="Gemma Forge">
@@ -136,12 +137,12 @@
             <section class="planner-grid">
                 <div class="panel intake-panel">
                     <div class="panel-header">
-                        <div>
+                        <div class="intake-title">
                             <p class="section-label">New Project</p>
                             <h2>What project are we planning?</h2>
+                            <button class="help-trigger intake-help" data-help-key="new-session" aria-label="Help for new projects">?</button>
                         </div>
                         <div class="panel-header-actions">
-                            <button class="help-trigger" data-help-key="new-session" aria-label="Help for new projects">?</button>
                             <label class="verify-toggle">
                                 <input id="global-human-verify" type="checkbox" checked>
                                 <span>Human verify</span>
@@ -168,70 +169,89 @@
                         <p id="project-directory-note" class="directory-note">No directory yet: leave blank for Forge to create a workspace automatically, or enter a desired new path and Project Execution will create it.</p>
                     </div>
                     <button id="start-planning-btn" class="primary-action">Start planning</button>
-                    <div id="agent-output" class="agent-output">The planning agent will map intent, activate the right protocol cards, and define the first checkpoint.</div>
+                    <!-- Legacy inline-status sink. Kept as a hidden element so the 10
+                         existing chat.js callers (agentOutput.textContent = "...") keep
+                         working without refactor. Status surfaces via the Forge Station
+                         terminal stream below. -->
+                    <div id="agent-output" class="agent-output" hidden></div>
+                    <!-- Forge Station terminal — was a full-width band at the bottom of
+                         .app-shell; moved here so the activity stream lives next to the
+                         project intake it's narrating. -->
+                    <section id="event-terminal" class="event-terminal collapsed">
+                        <header class="event-terminal-header">
+                            <div class="event-terminal-title">
+                                <span class="event-terminal-dot"></span>
+                                <span>Forge Station</span>
+                            </div>
+                            <div class="forge-mascot" id="forge-mascot" aria-hidden="true">
+                                <span class="forge-mascot-icon" id="forge-mascot-icon" title="Gemma Forge"></span>
+                                <span class="forge-mascot-quip" id="forge-mascot-quip">Heating the forge…</span>
+                            </div>
+                            <div class="event-terminal-actions">
+                                <span id="event-terminal-status" class="event-terminal-status">connecting</span>
+                                <button id="event-terminal-clear" class="secondary-action compact-action" type="button">Clear</button>
+                                <button id="event-terminal-toggle" class="secondary-action compact-action" type="button">Show</button>
+                            </div>
+                        </header>
+                        <pre id="event-terminal-stream" class="event-terminal-stream" aria-live="polite"></pre>
+                    </section>
                 </div>
 
                 <div class="panel cards-panel">
-                    <div class="panel-header">
-                        <div>
-                            <p class="section-label">Orchestration</p>
-                            <h2>Protocol cards</h2>
-                        </div>
-                        <div class="plan-controls">
-                            <button class="help-trigger" data-help-key="protocol-cards" aria-label="Help for protocol cards">?</button>
-                            <button id="run-plan-btn" class="primary-action compact-action">Full Forge</button>
-                            <div id="plan-run-status" class="inline-status">Start a project to run active cards.</div>
-                        </div>
-                    </div>
-                    <div class="cards-panel-body">
-                        <!-- V3 rolodex stack: arrows on top, then a z-layered
-                             card deck. The active card sits on top; cards
-                             beneath peek by ~6-10px each like a deck. -->
-                        <div class="cards-rolodex">
+                    <!-- V7 — Header merged into the rolodex itself. Title +
+                         arrows + Full Forge sit in a single strip so the
+                         rolodex IS the section, not a deck buried under a
+                         separate panel header. -->
+                    <div class="cards-rolodex">
+                        <div class="rolodex-header">
+                            <div class="rolodex-title">
+                                <p class="section-label">Orchestration</p>
+                                <h2>Protocol cards</h2>
+                            </div>
                             <div class="rolodex-nav" aria-label="Navigate protocol cards">
                                 <button class="rolodex-arrow" id="rolodex-prev" type="button" title="Previous card" aria-label="Previous card">▲</button>
                                 <div class="rolodex-indicator" id="rolodex-indicator">1 / 8</div>
                                 <button class="rolodex-arrow" id="rolodex-next" type="button" title="Next card" aria-label="Next card">▼</button>
                             </div>
-                            <div id="workflow-cards" class="workflow-cards rolodex-stack"></div>
+                            <div class="rolodex-run">
+                                <button id="run-plan-btn" class="primary-action compact-action">Full Forge</button>
+                                <button class="help-trigger" data-help-key="protocol-cards" aria-label="Help for protocol cards">?</button>
+                            </div>
                         </div>
-                        <details id="skipped-protocols" class="skipped-protocols hidden">
-                            <summary>Skipped protocols</summary>
-                            <div id="skipped-cards" class="skipped-cards"></div>
-                        </details>
+                        <div id="workflow-cards" class="workflow-cards rolodex-stack"></div>
                     </div>
+                    <details id="skipped-protocols" class="skipped-protocols hidden">
+                        <summary>
+                            <span>Skipped protocols</span>
+                            <button class="help-trigger" data-help-key="skipped-protocols" aria-label="Help for skipped protocols" type="button">?</button>
+                        </summary>
+                        <div id="skipped-cards" class="skipped-cards"></div>
+                    </details>
                     <div class="session-conversation-card">
-                        <div class="session-conversation-header">Project context</div>
+                        <div class="session-conversation-header">
+                            <span>Project context</span>
+                            <button class="help-trigger" data-help-key="project-context" aria-label="Help for project context" type="button">?</button>
+                        </div>
                         <div id="session-messages" class="session-messages"></div>
                         <div class="message-compose">
                             <textarea id="session-message-input" placeholder="Ask the agent to continue this project, manage a model, or audit the current plan."></textarea>
-                            <button id="send-session-message-btn" class="primary-action compact-action">Send to agent</button>
+                            <div class="message-compose-row">
+                                <button id="send-session-message-btn" class="primary-action compact-action">Send to agent</button>
+                                <button class="help-trigger" data-help-key="agent-chat" aria-label="Help for agent chat" type="button">?</button>
+                                <div id="chat-thinking-indicator" class="chat-thinking hidden" aria-live="polite">
+                                    <span class="chat-thinking-dot"></span>
+                                    <span class="chat-thinking-dot"></span>
+                                    <span class="chat-thinking-dot"></span>
+                                    <span class="chat-thinking-label">Agent is thinking…</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
             </section>
 
-            <section id="event-terminal" class="event-terminal collapsed">
-                <header class="event-terminal-header">
-                    <div class="event-terminal-title">
-                        <span class="event-terminal-dot"></span>
-                        <span>Activity stream</span>
-                    </div>
-                    <!-- V4 — mascot + quip strip; hidden on narrow viewports
-                         to preserve the controls on the right. -->
-                    <div class="forge-mascot" id="forge-mascot" aria-hidden="true">
-                        <span class="forge-mascot-icon" id="forge-mascot-icon" title="Gemma Forge"></span>
-                        <span class="forge-mascot-quip" id="forge-mascot-quip">Heating the forge…</span>
-                    </div>
-                    <div class="event-terminal-actions">
-                        <span id="event-terminal-status" class="event-terminal-status">connecting</span>
-                        <button id="event-terminal-clear" class="secondary-action compact-action" type="button">Clear</button>
-                        <button id="event-terminal-toggle" class="secondary-action compact-action" type="button">Show</button>
-                    </div>
-                </header>
-                <pre id="event-terminal-stream" class="event-terminal-stream" aria-live="polite"></pre>
-            </section>
         </main>
+        </div>
     </div>
     <div id="help-popover" class="help-popover hidden" role="dialog" aria-live="polite"></div>
     <script src="/static/js/chat.js"></script>

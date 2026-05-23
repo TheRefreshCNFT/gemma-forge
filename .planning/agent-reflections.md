@@ -229,3 +229,73 @@ What broke: The first full validation run stopped at GSD because the small-model
 What surprised me: Once the planning-review scope bug was fixed, three separate `gemma-4` app runs completed all cards, including real SocratiCode and Axon passes, without needing task-specific product code.
 
 Concrete change: Tool readiness must be proven by executable probes and full app runs; support-tool claims are not acceptable unless the harness itself ran the tool and captured the artifact.
+
+## 2026-05-23 - Submission-State Orientation
+
+What worked: Checking GitHub, local status, Axon/SocratiCode, live harness health, and SSD backups before implementation exposed the real readiness state without touching code.
+
+What broke: Browser verification at mobile width showed the fixed sidebar/grid layout squeezes the main app into a narrow strip. Root cause: `.app-shell-top` keeps a `280px` sidebar column below mobile breakpoints instead of stacking or hiding the sidebar.
+
+What surprised me: The harness is live and healthy through `launchctl`, but `/private/tmp/gemma-forge-server.pid` is stale and not referenced by the current server or launcher code.
+
+Concrete change: Treat mobile layout and PID-source cleanup as first-class pre-submission checks, not polish afterthoughts.
+
+## 2026-05-23 - Environment Tile Proportions
+
+What worked: Measuring the rendered grid at desktop and mobile widths caught the actual tile proportions and overflow state after the CSS change.
+
+What broke: The previous half-width balancing pass made the Environment section feel heavier because the status items still stretched as wide rectangles. Root cause: column balance alone did not address the visual weight of the repeated fact elements.
+
+What surprised me: Auto-fit square tiles produced exact 95px desktop/mobile tiles with no text clipping at both checked viewports.
+
+Concrete change: For repeated visual status elements, verify both container balance and individual item geometry before considering the layout fixed.
+
+## 2026-05-23 - Start Panel Edge Alignment
+
+What worked: Measuring the rendered Start grid against the lower planner grid identified the real mismatch: matching the tile shape was not enough; the parent panel inset changed the visible edge alignment.
+
+What broke: The first square-tile iteration optimized item geometry but missed the lower New Project/Protocol column rhythm. Root cause: verification looked at tile overflow and square dimensions before comparing adjacent section edges.
+
+What surprised me: Applying the same 0.9/1.2 track split plus a negative horizontal grid margin aligned the Environment, Ollama notice, and Brain columns to within about one pixel of the lower sections.
+
+Concrete change: For layout polish tasks, include edge-delta measurements between related sections before finalizing the visual pass.
+
+## 2026-05-23 - Forge Station Quip Width
+
+What worked: Moving the quip strip onto its own full-width header row made the visible Forge Station comment area centered and much wider without changing the terminal markup.
+
+What broke: The first grid attempt still squeezed the quip because the terminal lives inside the narrower New Project column. Root cause: the layout was optimized against the viewport, not the terminal's actual rendered width.
+
+What surprised me: The mascot strip can use over 90% of the header width on desktop and mobile while keeping title/actions readable.
+
+Concrete change: For nested panel polish, measure the component's own box width instead of assuming the viewport provides the usable space.
+
+## 2026-05-23 - Blank Terminal State
+
+What worked: Verifying page load, session selection, and New Project click in the browser caught the exact state leak and confirmed the reset path after restart.
+
+What broke: The terminal subscribed to the unfiltered event stream when no project was selected, so page load replayed recent global history; the New Project button also reset form fields without clearing or disconnecting the terminal stream.
+
+What surprised me: The per-session path was already mostly correct; the leak was specifically the null-session state plus planning events that were not scoped to the newly-created session.
+
+Concrete change: Treat "no selected project" as an explicit terminal state: clear rows, show idle, and do not open the global event feed.
+
+## 2026-05-23 - Durable Session Terminal History
+
+What worked: Adding a per-session terminal log made the intended behavior explicit: blank state stays blank, selected sessions keep their own terminal history across page load and server restart.
+
+What broke: The first reset fix depended on the in-memory SSE buffer for previous session rows, so restarting the harness wiped prior terminal displays. Root cause: terminal history was separated by session but not persisted by session.
+
+What surprised me: Existing sessions could be safely restored from their card `lastRun` records, giving useful terminal rows without fabricating model work.
+
+Concrete change: Any UI history that users expect to survive session switching should be backed by per-session storage, not just a live event buffer.
+
+## 2026-05-23 - Environment Left Padding
+
+What worked: Measuring the Environment grid against the lower New Project content confirmed the exact target: left edge aligned to content, right edge preserved against the section boundary.
+
+What broke: The earlier negative margin fixed right-edge alignment but pulled the Environment chips too close to the panel edge. Root cause: edge alignment was checked against the panel box, not the lower panel's content inset.
+
+What surprised me: A desktop-only 20px left padding achieved exact content-left alignment while keeping the Environment and Ollama notice right edge within 0.14px of the lower panel.
+
+Concrete change: For section alignment, compare both outer edges and content insets; one can be correct while the other is visibly off.

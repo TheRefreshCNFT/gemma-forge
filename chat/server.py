@@ -22,31 +22,65 @@ except ImportError:
     import tool_screenshot  # type: ignore
 
 import collections
+import contextlib
+import contextvars
 import threading
 import queue
 
 
 # ============================================================
-# Activity event stream (SSE)
+# Activity event stream (SSE) — per-session filtered
 # ============================================================
 _EVENT_BUFFER = collections.deque(maxlen=400)
 _EVENT_LOCK = threading.Lock()
-_EVENT_SUBSCRIBERS = []  # list of queue.Queue
+# Each subscriber is a tuple (queue, session_filter). session_filter=None
+# means "global subscriber, receives everything". A non-None filter only
+# receives events whose session_id matches (or events with session_id=None,
+# which are treated as global broadcasts).
+_EVENT_SUBSCRIBERS = []
 _EVENT_SEQ = 0
+EVENT_LOG_FILENAME = "terminal-events.jsonl"
+
+# ContextVar lets nested calls (ollama, browse, screenshot, validation)
+# inherit the session_id of the card / endpoint they were invoked from
+# without every call site having to pass it explicitly. Wrap a request
+# handler in event_session_scope(session_id) and every emit_event inside
+# that scope auto-stamps the session_id onto the event.
+_event_session_ctx = contextvars.ContextVar("event_session_id", default=None)
+
+
+@contextlib.contextmanager
+def event_session_scope(session_id):
+    token = _event_session_ctx.set(session_id)
+    try:
+        yield
+    finally:
+        _event_session_ctx.reset(token)
 
 
 def emit_event(kind, message, **extra):
-    """Push an event onto the ring buffer + fan out to live SSE subscribers.
+    """Push an event onto the ring buffer + fan out to matching SSE subscribers.
 
     Safe to call from any thread. Never raises; failures are swallowed so
     instrumentation doesn't break the harness.
+
+    session_id resolves in this order:
+      1. explicit session_id=... in extra
+      2. extra["session"] (legacy convention used by older call sites)
+      3. ContextVar set by event_session_scope(...)
+      4. None (event is global — delivered to every subscriber)
     """
     global _EVENT_SEQ
     try:
+        explicit_sid = extra.pop("session_id", None)
+        legacy_sid = extra.get("session")
+        session_id = explicit_sid or legacy_sid or _event_session_ctx.get()
+
         payload = {
             "kind": kind,
             "message": str(message)[:500],
             "at": utc_now(),
+            "session_id": session_id,
         }
         if extra:
             payload["extra"] = {k: v for k, v in extra.items() if v is not None}
@@ -55,29 +89,150 @@ def emit_event(kind, message, **extra):
             payload["seq"] = _EVENT_SEQ
             _EVENT_BUFFER.append(payload)
             subs = list(_EVENT_SUBSCRIBERS)
-        for q in subs:
-            try:
-                q.put_nowait(payload)
-            except queue.Full:
-                pass
+        _persist_session_event(payload)
+        for q, q_filter in subs:
+            # Deliver if: subscriber is global (no filter), OR event is
+            # global (no session_id), OR they match.
+            if q_filter is None or session_id is None or q_filter == session_id:
+                try:
+                    q.put_nowait(payload)
+                except queue.Full:
+                    pass
     except Exception:
         pass
 
 
-def _subscribe_events():
+def _persist_session_event(payload):
+    session_id = payload.get("session_id")
+    if not session_id:
+        return
+    try:
+        path = os.path.join(session_dir(session_id), EVENT_LOG_FILENAME)
+        with open(path, "a") as f:
+            f.write(json.dumps(payload) + "\n")
+    except Exception:
+        pass
+
+
+def _load_session_event_log(session_id, limit=200):
+    if not session_id:
+        return []
+    try:
+        path = os.path.join(SESSION_ROOT, safe_id(session_id), EVENT_LOG_FILENAME)
+        if not os.path.exists(path):
+            return []
+        events = []
+        with open(path, "r") as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict):
+                    events.append(event)
+        return events[-limit:]
+    except Exception:
+        return []
+
+
+def _session_record_event_fallback(session_id):
+    if not session_id:
+        return []
+    try:
+        session = load_sessions().get(session_id)
+    except Exception:
+        session = None
+    if not isinstance(session, dict):
+        return []
+
+    events = []
+    for index, card in enumerate(session.get("cards", [])):
+        if not isinstance(card, dict):
+            continue
+        last_run = card.get("lastRun")
+        if not isinstance(last_run, dict):
+            continue
+        title = last_run.get("title") or card.get("title") or card.get("id") or "Card"
+        summary = last_run.get("summary") or card.get("summary") or "Section completed."
+        events.append({
+            "kind": "card-end",
+            "message": f"{title}: {summary}",
+            "at": last_run.get("ranAt") or utc_now(),
+            "session_id": session_id,
+            "seq": -(1000 - index),
+            "extra": {
+                "restored": True,
+                "status": last_run.get("status") or card.get("status"),
+                "artifact": last_run.get("artifact"),
+            },
+        })
+        review = last_run.get("extraReview")
+        if isinstance(review, dict) and review.get("required"):
+            review_status = "passed" if review.get("passed") else "needs attention"
+            events.append({
+                "kind": "review",
+                "message": f"{title} review {review_status}",
+                "at": review.get("checkedAt") or last_run.get("ranAt") or utc_now(),
+                "session_id": session_id,
+                "seq": -(500 - index),
+                "extra": {
+                    "restored": True,
+                    "confidence": review.get("confidence"),
+                },
+            })
+    return sorted(events, key=lambda event: event.get("at") or "")
+
+
+def _event_dedupe_key(event):
+    seq = event.get("seq")
+    if seq:
+        return ("seq", seq)
+    return (
+        event.get("session_id"),
+        event.get("kind"),
+        event.get("message"),
+        event.get("at"),
+    )
+
+
+def _dedupe_events(events):
+    deduped = []
+    seen = set()
+    for event in events:
+        key = _event_dedupe_key(event)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(event)
+    return deduped
+
+
+def _subscribe_events(session_filter=None):
     q = queue.Queue(maxsize=200)
     with _EVENT_LOCK:
-        _EVENT_SUBSCRIBERS.append(q)
-        snapshot = list(_EVENT_BUFFER)
+        _EVENT_SUBSCRIBERS.append((q, session_filter))
+        buffered = [
+            e for e in _EVENT_BUFFER
+            if session_filter is None
+            or e.get("session_id") is None
+            or e.get("session_id") == session_filter
+        ]
+    if session_filter:
+        persisted = _load_session_event_log(session_filter)
+        restored = _session_record_event_fallback(session_filter) if not persisted else []
+        snapshot = _dedupe_events(restored + persisted + buffered)
+    else:
+        snapshot = buffered
     return q, snapshot
 
 
 def _unsubscribe_events(q):
     with _EVENT_LOCK:
-        try:
-            _EVENT_SUBSCRIBERS.remove(q)
-        except ValueError:
-            pass
+        _EVENT_SUBSCRIBERS[:] = [
+            (existing_q, existing_filter)
+            for existing_q, existing_filter in _EVENT_SUBSCRIBERS
+            if existing_q is not q
+        ]
 try:
     from .workspace_scan import GFORGE_HOME, scan_workspace
     from .tool_runtime import (
@@ -285,7 +440,19 @@ def skill_install_roots():
 
 
 def parse_skill_name(skill_file, fallback):
+    """Read the skill's `name` field from either SKILL.md (YAML-frontmatter
+    style) or skill.json (Claude/Cursor/Windsurf bundle style). Falls back
+    to the directory name if neither parses."""
     try:
+        if skill_file.endswith(".json"):
+            with open(skill_file, "r") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for field in ("name", "displayName", "id"):
+                    value = data.get(field)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+            return fallback
         with open(skill_file, "r") as f:
             for _ in range(12):
                 line = f.readline()
@@ -294,12 +461,20 @@ def parse_skill_name(skill_file, fallback):
                 match = re.match(r"\s*name:\s*['\"]?([^'\"\n]+)", line)
                 if match:
                     return match.group(1).strip()
-    except OSError:
+    except (OSError, json.JSONDecodeError):
         pass
     return fallback
 
 
 def discover_installed_skills(max_depth=3):
+    """Walk every skill install root and surface anything that LOOKS like a
+    skill bundle. A skill is recognised if its directory contains EITHER:
+      - SKILL.md  (Codex / Anthropic skills convention)
+      - skill.json (Claude/Cursor/Windsurf/etc. bundle convention)
+    Without this, bundles that ship only skill.json (ui-ux-pro-max, etc.)
+    were invisible to the harness and the Project Context Writer had no
+    way to pick them. First-seen wins per normalized key, so duplicates
+    across roots don't multi-stage."""
     skills = {}
     for source, root in skill_install_roots():
         if not os.path.isdir(root):
@@ -310,10 +485,15 @@ def discover_installed_skills(max_depth=3):
             depth = 0 if relative_root == "." else relative_root.count(os.sep) + 1
             if depth >= max_depth:
                 dirs[:] = []
-            if "SKILL.md" not in files:
+            skill_file = None
+            if "SKILL.md" in files:
+                skill_file = os.path.join(current_root, "SKILL.md")
+            elif "skill.json" in files:
+                skill_file = os.path.join(current_root, "skill.json")
+            if not skill_file:
                 continue
             directory_name = os.path.basename(current_root)
-            skill_name = parse_skill_name(os.path.join(current_root, "SKILL.md"), directory_name)
+            skill_name = parse_skill_name(skill_file, directory_name)
             key = normalize_skill_key(skill_name)
             if key not in skills:
                 skills[key] = {
@@ -321,7 +501,7 @@ def discover_installed_skills(max_depth=3):
                     "key": key,
                     "source": source,
                     "directory": current_root,
-                    "skillFile": os.path.join(current_root, "SKILL.md"),
+                    "skillFile": skill_file,
                 }
     return skills
 
@@ -338,6 +518,13 @@ def session_skill_text(session):
 
 
 def requested_skill_keys(session, skills):
+    """Scan project text + chat history for skill matches. Matches by:
+      1. Explicit `$skill-name` or `skill <name>` mentions.
+      2. The skill's literal name (`logo-generator` or `logo generator`).
+      3. Any keyword listed in the bundle's `skill.json` `keywords` array
+         (so `ui-ux-pro-max` picks up "ui", "ux", "design", "color",
+         "typography", etc. without the user naming the skill explicitly).
+    Returns a sorted list of keys."""
     text = session_skill_text(session)
     requested = set()
     for match in re.findall(r"(?:\$|skill\s+)([a-z0-9_.-]+)", text):
@@ -349,6 +536,26 @@ def requested_skill_keys(session, skills):
         spaced = name.replace("-", " ")
         if name in text or spaced in text:
             requested.add(key)
+            continue
+        # Keyword match via the bundle's skill.json keywords. Only kicks in
+        # for bundles that ship a skill.json with a keywords list. Each
+        # keyword has to appear as a whole word in the text so "ui" doesn't
+        # match "build" or "guide".
+        skill_file = info.get("skillFile", "")
+        if skill_file.endswith("skill.json"):
+            try:
+                with open(skill_file, "r") as f:
+                    data = json.load(f)
+                kws = data.get("keywords", []) if isinstance(data, dict) else []
+                for kw in kws:
+                    if not isinstance(kw, str) or not kw.strip():
+                        continue
+                    pat = r"\b" + re.escape(kw.strip().lower()) + r"\b"
+                    if re.search(pat, text):
+                        requested.add(key)
+                        break
+            except (OSError, json.JSONDecodeError):
+                pass
     return sorted(requested)
 
 
@@ -440,14 +647,18 @@ def resolve_skill_selection(session, skills):
 
     Priority order:
       1. projectContext.skill.use (set by the Project Context Writer).
-         If the named skill exists in the discovered map, use ONLY that one.
-         If skill.use is "none" or "n/a", stage nothing.
-      2. Pre-Context-Writer sessions or sessions that failed to populate
-         a context: fall back to the legacy substring-based requested
-         keys so existing behavior still works.
+         - Real installed skill name → use ONLY that one.
+         - "none" / "n/a" → respect, stage nothing.
+         - Garbage (capability name, hallucinated value) → log + fall
+           through to the keyword matcher rather than staging nothing.
+      2. Keyword matcher: scan project text + chat history for skill
+         names / aliases. Stages every match. This is the legacy
+         "drop a skill in and it shows up" path.
     """
     if not isinstance(session, dict):
         return []
+
+    context_pick = None
     context = session.get("projectContext")
     if isinstance(context, dict):
         skill_info = context.get("skill") if isinstance(context.get("skill"), dict) else None
@@ -455,18 +666,36 @@ def resolve_skill_selection(session, skills):
         if skill_info:
             raw_use = str(skill_info.get("use", "")).strip()
         normalized = normalize_skill_key(raw_use) if raw_use else ""
-        if normalized in {"", "none", "n-a", "na"}:
+        if normalized in {"none", "n-a", "na"}:
             return []
-        if normalized in skills:
-            return [normalized]
-        log_error(
-            "skill-staging",
-            f"Project Context named a skill that is not installed: {raw_use!r}",
-            None,
-            {"requested": raw_use, "available": sorted(skills.keys())},
-        )
-        return []
-    return list(requested_skill_keys(session, skills))
+        if normalized and normalized in skills:
+            context_pick = normalized
+        elif normalized:
+            log_error(
+                "skill-staging",
+                f"Project Context named a skill that is not installed: {raw_use!r} "
+                f"— falling back to keyword matcher",
+                None,
+                {"requested": raw_use, "available": sorted(skills.keys())},
+            )
+
+    # Keyword matcher runs to (a) add more relevant skills alongside
+    # whatever Context Writer picked, and (b) substitute when Context
+    # Writer's pick was invalid or empty. Project text "use any skills
+    # you have to help" or "ui/ux design" etc. drives this.
+    keyword_picks = list(requested_skill_keys(session, skills))
+
+    if context_pick:
+        # Combine Context Writer's deliberate pick with keyword picks,
+        # preserving order and de-duplicating.
+        seen = set()
+        combined = []
+        for key in [context_pick, *keyword_picks]:
+            if key and key not in seen:
+                seen.add(key)
+                combined.append(key)
+        return combined
+    return keyword_picks
 
 
 def write_skill_manifest(workspace_dir, staged):
@@ -775,8 +1004,8 @@ def coerce_bool(value, default=False):
     return default
 
 
-def call_ollama_json(model, prompt, fallback):
-    raw, transport = call_ollama_with_transport(model, prompt)
+def call_ollama_json(model, prompt, fallback, options_override=None):
+    raw, transport = call_ollama_with_transport(model, prompt, options_override=options_override)
     parsed = parse_json_response(raw, fallback)
     return parsed, raw, transport
 
@@ -856,7 +1085,55 @@ def load_sessions():
             return json.load(f)
     return {}
 
-def save_sessions(sessions):
+def save_sessions(sessions, create_keys=None):
+    """Race-safe save.
+
+    The bug this prevents: a long-running request (card run, chat
+    message, anything that takes seconds-to-minutes) does:
+        sessions = load_sessions()      # snapshot at request start
+        ... model call takes 30-60s ...
+        # MEANWHILE: user deletes session X in the UI
+        save_sessions(sessions)         # writes the whole in-memory dict
+    The naive write resurrects X because the snapshot still has it.
+
+    This version re-reads disk RIGHT before writing. For each key
+    currently on disk, it uses our in-memory update if we have one,
+    else keeps the disk version. Keys that vanished from disk while
+    the request ran (i.e. were deleted) are NOT resurrected.
+
+    `create_keys`: iterable of session_ids that are legitimately NEW
+    creates (passed by create_session). Those bypass the on-disk
+    intersection and get written even though disk doesn't know them.
+
+    For deletes, use `write_sessions_full(sessions)` from the
+    delete_session endpoint — that's the one place where the
+    in-memory dict IS the authoritative post-delete state.
+    """
+    ensure_storage()
+    create_keys = set(create_keys or [])
+    on_disk = {}
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, "r") as f:
+                on_disk = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            on_disk = {}
+    merged = {}
+    for sid, disk_record in on_disk.items():
+        # Disk is authoritative for existence. Our in-memory update wins
+        # for content if we have one.
+        merged[sid] = sessions.get(sid, disk_record)
+    for sid in create_keys:
+        if sid in sessions:
+            merged[sid] = sessions[sid]
+    with open(SESSIONS_FILE, "w") as f:
+        json.dump(merged, f, indent=4)
+
+
+def write_sessions_full(sessions):
+    """Unconditional full-replace write. Use ONLY for delete_session,
+    where the in-memory dict is the authoritative post-delete state.
+    Everything else should use save_sessions() for race safety."""
     ensure_storage()
     with open(SESSIONS_FILE, "w") as f:
         json.dump(sessions, f, indent=4)
@@ -1019,15 +1296,19 @@ def tools_screenshot():
 
 @app.route('/api/events/stream', methods=['GET'])
 def events_stream():
-    """Server-Sent Events feed of structured harness activity."""
+    """Server-Sent Events feed of structured harness activity.
+
+    Pass `?session_id=session_xxx` to filter to one session's events
+    (plus any global / harness-wide events that aren't session-scoped).
+    Omit the param to subscribe to everything (legacy / setup screen).
+    """
+    session_filter = request.args.get("session_id", "").strip() or None
+
     def generate():
-        q, snapshot = _subscribe_events()
+        q, snapshot = _subscribe_events(session_filter=session_filter)
         try:
-            # Send recent history first so a late connection still sees
-            # the last few minutes of activity.
             for event in snapshot[-80:]:
                 yield f"data: {json.dumps(event)}\n\n"
-            # Then stream live events. Heartbeat every 15s keeps proxies happy.
             while True:
                 try:
                     event = q.get(timeout=15)
@@ -1045,9 +1326,21 @@ def events_stream():
 
 @app.route('/api/events/recent', methods=['GET'])
 def events_recent():
-    """Polling fallback if SSE is blocked by a proxy."""
+    """Polling fallback if SSE is blocked by a proxy. Honors session_id filter."""
+    session_filter = request.args.get("session_id", "").strip() or None
     with _EVENT_LOCK:
-        snapshot = list(_EVENT_BUFFER)
+        buffered = [
+            e for e in _EVENT_BUFFER
+            if session_filter is None
+            or e.get("session_id") is None
+            or e.get("session_id") == session_filter
+        ]
+    if session_filter:
+        persisted = _load_session_event_log(session_filter)
+        restored = _session_record_event_fallback(session_filter) if not persisted else []
+        snapshot = _dedupe_events(restored + persisted + buffered)
+    else:
+        snapshot = buffered
     return jsonify({"events": snapshot[-200:]})
 
 @app.route('/api/models', methods=['GET'])
@@ -1103,7 +1396,7 @@ def provision_model():
             f"Model interface for {model_name}",
             model_name,
         )
-        save_sessions(sessions)
+        save_sessions(sessions, create_keys={session_id})
         result["session_id"] = session_id
 
     return jsonify(result)
@@ -1134,7 +1427,7 @@ def create_session():
         has_project_directory,
         project_directory,
     )
-    save_sessions(sessions)
+    save_sessions(sessions, create_keys={session_id})
     return jsonify({"session_id": session_id, "session": sessions[session_id]})
 
 
@@ -1208,7 +1501,11 @@ def delete_session(session_id):
         updated_sessions.append(remaining_id)
         write_session_context(remaining_id, session)
 
-    save_sessions(sessions)
+    # delete_session is the one place where the in-memory dict IS the
+    # authoritative post-state (we just popped the deleted key). Use the
+    # full-replace writer so the deletion actually takes — the race-safe
+    # save_sessions would re-read disk and resurrect the deleted key.
+    write_sessions_full(sessions)
     return jsonify({
         "deleted": session_id,
         "sessionDataRemoved": removed_data,
@@ -1358,9 +1655,18 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 def save_and_respond(session_id, user_msg, assistant_reply):
+    # Deleted sessions must stay deleted. Previously this helper silently
+    # lazy-created an empty list for any unknown session_id, which meant a
+    # stale browser tab or cached client POST to /api/chat with the id of
+    # a session the user had just deleted would resurrect it as a ghost
+    # entry in sessions.json (with no on-disk session-data dir). Now we
+    # refuse the write and return 404 — matches the modern
+    # /api/sessions/<id>/messages endpoint's behavior.
+    if not session_id:
+        return jsonify({"error": "session_id is required"}), 400
     sessions = load_sessions()
     if session_id not in sessions:
-        sessions[session_id] = []
+        return jsonify({"error": "Unknown or deleted project. Start a new project to chat."}), 404
     if isinstance(sessions[session_id], list):
         sessions[session_id].append({"role": "user", "content": user_msg})
         sessions[session_id].append({"role": "assistant", "content": assistant_reply})
@@ -1388,7 +1694,72 @@ def session_message(session_id):
     session.setdefault("messages", [])
     session["messages"].append({"role": "user", "content": message})
 
-    reply = call_ollama(model, build_session_prompt(session, message))
+    # event_session_scope stamps the session_id onto every emit_event
+    # called inside (ollama call, chat-write, etc.) so they only route to
+    # this session's terminal subscriber.
+    with event_session_scope(session_id):
+        reply = call_ollama(model, build_session_prompt(session, message))
+
+        # Chat replies can now materialize files into the project workspace
+        # using the same GFORGE_FILE pipeline as the Execution card. The model
+        # is told in the prompt that it can emit blocks; here we parse + write
+        # them if the project has a workspace on disk.
+        materialization_summary = ""
+        workspace_dir = (session.get("projectDirectory") or "").strip()
+        if workspace_dir and os.path.isdir(workspace_dir):
+            payload = parse_forge_file_payload(reply)
+            if isinstance(payload, dict) and payload.get("files"):
+                files, rejected = normalize_model_files(payload.get("files", []))
+                written = []
+                for item in files:
+                    try:
+                        path = write_project_file(workspace_dir, item["path"], item["content"])
+                        written.append({
+                            "path": item["path"],
+                            "sha256": file_sha256(path),
+                            "bytes": os.path.getsize(path),
+                        })
+                    except Exception as write_err:
+                        rejected.append({"path": item.get("path", ""), "reason": str(write_err)})
+
+                link_failures = validate_local_link_targets(workspace_dir, written) if written else []
+                emit_event(
+                    "chat-write",
+                    f"chat materialized {len(written)} file(s) into workspace",
+                    wrote=len(written),
+                    rejected=len(rejected),
+                    linkFailures=len(link_failures),
+                )
+
+                lines = ["", "---", "**Harness wrote these files to the workspace:**"]
+                for w in written:
+                    abs_path = os.path.join(workspace_dir, w["path"])
+                    from urllib.parse import quote
+                    href = "file://" + quote(abs_path, safe="/:")
+                    lines.append(f"- [`{w['path']}`]({href}) ({w['bytes']} bytes)")
+                if rejected:
+                    lines.append("")
+                    lines.append("**Rejected (unsafe path or write error):**")
+                    for r in rejected:
+                        lines.append(f"- `{r.get('path','?')}` — {r.get('reason','')}")
+                if link_failures:
+                    lines.append("")
+                    lines.append("**⚠ Link-target validation failures:**")
+                    for f in link_failures:
+                        lines.append(f"- {f}")
+                materialization_summary = "\n".join(lines)
+            elif "<<<GFORGE_FILE:" in reply:
+                # Model tried to emit but the parser couldn't recover any blocks
+                # (malformed delimiters, missing END, etc.). Surface that so the
+                # user knows why nothing landed on disk.
+                materialization_summary = (
+                    "\n\n---\n**⚠ The model tried to emit GFORGE_FILE blocks but none "
+                    "could be parsed.** Check the reply for malformed delimiters."
+                )
+
+    if materialization_summary:
+        reply = reply + materialization_summary
+
     session["messages"].append({"role": "agent", "content": reply})
     write_session_context(session_id, session)
     save_sessions(sessions)
@@ -1414,21 +1785,23 @@ def run_session_card(session_id, card_id):
             "content": f"Checkpoint issue for {card_id}: {issue_note}",
         })
     # Build correction context BEFORE the rerun overwrites the card's lastRun.
-    # When the user clicked Resolve, this bundles the previous reviewer's
-    # findings + the user's note into a structured object the card handler
-    # can feed to the model via its "Previous review failed" prompt block.
     correction = build_correction_from_state(session, card_id, issue_note) if issue_note else None
-    if correction:
-        emit_event("card-start", f"{card_id} starting (resolve: {len(correction.get('findings', []))} findings + user note)",
-                   session=session_id, model=model, mode=mode)
-    else:
-        emit_event("card-start", f"{card_id} starting", session=session_id, model=model, mode=mode)
-    result = run_card_action(session_id, session, card_id, model, mode, correction=correction)
-    finalize_card_result(session_id, session, card_id, model, result, human_verify)
-    update_card_state(session, card_id, result)
-    emit_event("card-end", f"{card_id}: {result.get('summary', '')[:200]}",
-               session=session_id, status=result.get("status"),
-               artifact=result.get("artifact"))
+    # event_session_scope stamps session_id onto every emit_event called
+    # inside (including nested ollama, browse, screenshot, validation
+    # events from card handlers) so the SSE subscriber filter routes them
+    # only to the matching session's terminal.
+    with event_session_scope(session_id):
+        if correction:
+            emit_event("card-start", f"{card_id} starting (resolve: {len(correction.get('findings', []))} findings + user note)",
+                       session=session_id, model=model, mode=mode)
+        else:
+            emit_event("card-start", f"{card_id} starting", session=session_id, model=model, mode=mode)
+        result = run_card_action(session_id, session, card_id, model, mode, correction=correction)
+        finalize_card_result(session_id, session, card_id, model, result, human_verify, correction=correction)
+        update_card_state(session, card_id, result)
+        emit_event("card-end", f"{card_id}: {result.get('summary', '')[:200]}",
+                   session=session_id, status=result.get("status"),
+                   artifact=result.get("artifact"))
     session.setdefault("messages", [])
     session["messages"].append({
         "role": "agent",
@@ -1517,7 +1890,11 @@ def plan():
         session_for_prompt["model"] = model
 
     prompt = build_mode_aware_planning_prompt(session_for_prompt, checkpoint_mode, resource_state)
-    reply = call_ollama(model, prompt)
+    if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
+        with event_session_scope(session_id):
+            reply = call_ollama(model, prompt)
+    else:
+        reply = call_ollama(model, prompt)
 
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
         sessions[session_id].setdefault("messages", [])
@@ -1534,14 +1911,17 @@ def plan():
 
 OLLAMA_REQUEST_TIMEOUT_SECONDS = 1200
 OLLAMA_KEEP_ALIVE = "30m"
-# Honor each Modelfile's own PARAMETER tuning by default. Forcing
-# temperature / num_ctx / num_predict from the harness side overrode
-# good Modelfile defaults (gemma-4, gempus4:tuned, UnCenOr all set
-# temperature=1; gempus4:tuned sets num_ctx=65536 and num_predict=-1).
-# Per-call overrides via options_override are still respected, e.g.
-# the Project Context Writer's CONTEXT_DELIBERATION_OPTIONS sets
-# temperature=0.1 for deterministic schema emission.
-OLLAMA_DEFAULT_OPTIONS = {}
+# Harness-wide temperature for card work in the flow. Modelfile defaults
+# (gemma-4 = 1.0) were too high for instruction-following — the model
+# drifted on structured outputs (e.g. small-model reviewer generating
+# the project's files in the review step). 0.6 keeps prose / code natural
+# enough without the drift.
+# Per-call overrides via options_override still apply, e.g. the Project
+# Context Writer + small-model reviewer use CONTEXT_DELIBERATION_OPTIONS
+# (temperature=0.1) for fully deterministic structured-output paths.
+# num_ctx / num_predict are NOT overridden here — those stay at each
+# Modelfile's defaults (gempus4:tuned's 65536 ctx, etc.).
+OLLAMA_DEFAULT_OPTIONS = {"temperature": 0.3}
 
 
 def call_ollama_with_transport(model, prompt, options_override=None):
@@ -1776,6 +2156,61 @@ def build_session_prompt(session, message):
     history_lines = [f"{item.get('role')}: {item.get('content')}" for item in history]
     forge_context = read_forge_context()
     research_policy = research_budget_text(session)
+    workspace_dir = (session.get("projectDirectory") or "").strip()
+    workspace_exists = bool(workspace_dir) and os.path.isdir(workspace_dir)
+
+    # Tell the chat agent it CAN materialize files into the project workspace.
+    # This is the same GFORGE_FILE pipeline the Execution card uses — the
+    # harness parses any blocks in your reply and writes them to disk.
+    if workspace_exists:
+        # Build a short listing of what's already in the workspace so the
+        # model knows what's there and can reference real files instead of
+        # asking the user "what's in your folder?".
+        try:
+            top = sorted(os.listdir(workspace_dir))[:40]
+        except OSError:
+            top = []
+        existing = "\n".join(f"- {name}" for name in top) or "(empty)"
+        file_emission_block = f"""
+
+You CAN write files into this project's workspace directly from chat.
+
+Workspace root (already exists on disk): {workspace_dir}
+
+Files currently in the workspace root:
+{existing}
+
+If the user asks you to add, edit, or create a file, emit it as a
+GFORGE_FILE block in your reply — the harness will materialize it to disk:
+
+    <<<GFORGE_FILE:relative/path/to/file.ext>>>
+    <complete file contents — no abbreviation, no triple-backtick fence>
+    <<<END_GFORGE_FILE>>>
+
+Rules:
+- Paths are relative to the workspace root above. Do NOT use absolute paths or `..`.
+- Include the FULL file contents, not patches.
+- If you reference a file via HTML href / src / url() or markdown link, the
+  deterministic validator checks that the target exists on disk. Either
+  emit it as its own GFORGE_FILE block or do not link to it.
+- After the GFORGE_FILE blocks, write a short plain-English summary of what
+  you did and why (so the user reading the chat sees a recap). The harness
+  appends a clickable file list automatically — do not write `file://` URLs
+  yourself.
+- If the user only asked a question (no file change needed), just answer.
+  Do not fabricate file blocks just to look productive.
+
+Do NOT respond with "I'm just an agent, I can't create files" — you CAN
+in this project. The harness materializes whatever GFORGE_FILE blocks you
+emit into the workspace above."""
+    else:
+        file_emission_block = """
+
+This project does not have a workspace directory on disk yet. Run the
+Project Execution card first to create one. For now, answer the user's
+question in plain text — file emission is disabled until the workspace
+exists."""
+
     return f"""You are the Gemma Forge work-harness agent for one self-contained project.
 
 {forge_context}
@@ -1797,6 +2232,7 @@ Available protocol cards:
 
 Recent project context:
 {chr(10).join(history_lines)}
+{file_emission_block}
 
 User request:
 {message}
@@ -1861,7 +2297,9 @@ def run_card_action(session_id, session, card_id, model, mode, correction=None):
     both the previous reviewer's structured findings and the user's typed
     "Resolve issue" note. Handlers that support a "previous review failed"
     block (execution, verification) consume it via their own `correction`
-    kwarg; other handlers ignore it.
+    kwarg. Tool cards (axon, socraticode) get it so they can honor a
+    user-typed override note ("I've seen these findings, advance the chain")
+    that a re-run of the tool itself can't satisfy. Other handlers ignore it.
     """
     handlers = {
         "intake": run_intake_card,
@@ -1874,7 +2312,7 @@ def run_card_action(session_id, session, card_id, model, mode, correction=None):
         "handoff": run_handoff_card,
     }
     handler = handlers.get(card_id, run_unknown_card)
-    if card_id in {"execution", "verification"}:
+    if card_id in {"execution", "verification", "axon", "socraticode"}:
         return handler(session_id, session, model, mode, correction=correction)
     return handler(session_id, session, model, mode)
 
@@ -1917,7 +2355,7 @@ def build_correction_from_state(session, card_id, user_note):
     }
 
 
-def finalize_card_result(session_id, session, card_id, model, result, human_verify):
+def finalize_card_result(session_id, session, card_id, model, result, human_verify, correction=None):
     research = run_research_passes_if_needed(session_id, session, card_id, model, result)
     if research:
         result["researchPasses"] = research
@@ -1932,19 +2370,43 @@ def finalize_card_result(session_id, session, card_id, model, result, human_veri
             result["postReviewRepairs"] = repairs
             review = result.get("extraReview", review)
 
+    # User override path — only applies to tool cards (axon, socraticode)
+    # because re-running those tools never changes their deterministic
+    # findings, so without an override the chain would loop on Resolve.
+    # For execution/verification, the correction flows into the model
+    # prompt and a re-run can actually fix things, so no override needed.
+    user_override_note = ""
+    if isinstance(correction, dict):
+        user_override_note = str(correction.get("userNote", "")).strip()
+    override_applies = (
+        user_override_note
+        and card_id in {"axon", "socraticode"}
+    )
+
     if review and not review.get("passed"):
-        result["status"] = "needs-attention"
-        result["checkpoint"] = small_model_review_checkpoint(review)
-        return result
+        if override_applies:
+            # User reviewed the findings + explicitly chose to advance.
+            # Mark the reviewer as overridden so the audit trail keeps both
+            # the original verdict AND the user's deciding note.
+            review["userOverridden"] = True
+            review["userOverrideNote"] = user_override_note
+        else:
+            result["status"] = "needs-attention"
+            result["checkpoint"] = small_model_review_checkpoint(review)
+            return result
 
     tool_execution = result.get("toolExecution")
     if isinstance(tool_execution, dict) and tool_execution.get("requiresAttention"):
-        result["status"] = "needs-attention"
-        result["checkpoint"] = (
-            f"{tool_execution.get('tool', 'Tool')} needs attention: "
-            f"{tool_execution.get('reason', 'review the tool artifact before continuing.')}"
-        )
-        return result
+        if override_applies:
+            tool_execution["requiresAttention"] = False
+            tool_execution.setdefault("userOverride", user_override_note)
+        else:
+            result["status"] = "needs-attention"
+            result["checkpoint"] = (
+                f"{tool_execution.get('tool', 'Tool')} needs attention: "
+                f"{tool_execution.get('reason', 'review the tool artifact before continuing.')}"
+            )
+            return result
 
     result["status"] = "awaiting-human" if human_verify else "complete"
     if not human_verify:
@@ -2249,6 +2711,23 @@ def run_completion_review_if_needed(session_id, session, card_id, model, result)
             "reason": "Selected model is above the small-model review threshold.",
             "thresholdB": SMALL_MODEL_REVIEW_MAX_B,
         }
+    # Tool cards (socraticode + axon) — their card output is a mechanical
+    # log of what an external process actually did. The small-model
+    # reviewer judging that report (and then triggering a model-rewrite
+    # repair loop) burns minutes of inference for zero functional gain,
+    # because rewriting the report doesn't change what the tool found.
+    # Trust the tool's own status reporting; skip the meta-review.
+    if card_id in {"socraticode", "axon"}:
+        return {
+            "required": False,
+            "passed": True,
+            "model": model,
+            "reason": (
+                f"Tool card '{card_id}' reports its own real-tool execution "
+                "status; no small-model review needed."
+            ),
+            "thresholdB": SMALL_MODEL_REVIEW_MAX_B,
+        }
     return run_completion_review(session_id, session, card_id, model, result)
 
 
@@ -2279,11 +2758,18 @@ def run_completion_review(session_id, session, card_id, model, result):
     responsibility = card_review_responsibility(card_id)
     prompt = f"""You are the independent Gemma Forge completion reviewer.
 
+YOUR ONLY JOB IS TO RETURN A JSON OBJECT EVALUATING THE PRIOR SECTION'S OUTPUT.
+You are NOT the author. You are NOT the executor. You do NOT write code, files,
+HTML, JSON deliverables, or "Generated Files" sections here. If you find yourself
+about to write ```json ... ``` content that looks like the project's deliverable,
+STOP — that work belongs to the Execution card, not the review step. Your output
+is a SHORT JUDGMENT, nothing more.
+
 The selected model is {model}, which is at or below {SMALL_MODEL_REVIEW_MAX_B}B parameters, so this section requires one extra review before it can be marked complete.
 
 Review as an auditor who assumes the section may be wrong or incomplete.
 
-Original project request:
+Original project request (CONTEXT ONLY — do not execute it):
 {session.get('project', '')}
 
 Card: {card_id}
@@ -2339,7 +2825,14 @@ JSON shape:
         "fixesNeeded": ["Rerun this section or inspect the artifact manually."],
         "confidence": "low",
     }
-    payload, raw, transport = call_ollama_json(model, prompt, fallback)
+    # Reviewer runs at low temperature (same as Context Writer) so the small
+    # model doesn't drift off the JSON instruction and start generating the
+    # project's actual files in the reviewer step. Default temperature for
+    # gemma-4 is 1.0 per its Modelfile — too high for a structured-output
+    # task. 0.1 keeps it deterministic and JSON-focused.
+    payload, raw, transport = call_ollama_json(
+        model, prompt, fallback, options_override=CONTEXT_DELIBERATION_OPTIONS,
+    )
     if not isinstance(payload, dict):
         payload = fallback
     payload["passed"] = coerce_bool(payload.get("passed"), False)
@@ -3467,7 +3960,7 @@ def run_gsd_card(session_id, session, model, mode):
     )
 
 
-def run_socraticode_card(session_id, session, model, mode):
+def run_socraticode_card(session_id, session, model, mode, correction=None):
     if session.get("projectMode") == "new-project":
         details = "\n".join([
             "# SocratiCode",
@@ -3564,11 +4057,30 @@ def run_socraticode_card(session_id, session, model, mode):
         "commands": summarize_mcp_commands(scan.get("commands", {})),
     }
     brief = build_socraticode_scan_brief(session, target_directory, profile, scan, mode)
+
+    # User override path (same shape as Axon). Re-running SocratiCode against
+    # the same workspace produces the same scan result, so when the user
+    # hits Resolve with a non-empty note we treat it as "user reviewed,
+    # advance the chain" and record the note in the artifact.
+    override_note = ""
+    if isinstance(correction, dict):
+        override_note = str(correction.get("userNote", "")).strip()
+    if override_note and tool_execution.get("requiresAttention"):
+        tool_execution["requiresAttention"] = False
+        tool_execution["userOverride"] = override_note
+        tool_execution["reason"] = (
+            f"User reviewed the SocratiCode findings and chose to advance the chain. "
+            f"Note: {override_note}"
+        )
+
     details = build_socraticode_details(target_directory, profile, tool_execution, brief)
     artifact = write_artifact(session_id, "socraticode-brief.md", details)
     summary = "SocratiCode indexed and searched the project."
     checkpoint = "Review the SocratiCode search results and confirm the mapped files are relevant."
-    if tool_execution["status"] != "complete":
+    if tool_execution.get("userOverride"):
+        summary = "SocratiCode scan complete (user override)."
+        checkpoint = "SocratiCode findings were acknowledged via the Resolve note above."
+    elif tool_execution["status"] != "complete":
         summary = "SocratiCode semantic scan failed or is degraded."
         checkpoint = "Repair SocratiCode runtime, Docker/Qdrant, or project files, then rerun this section."
     return card_result(
@@ -3713,6 +4225,19 @@ def build_socraticode_details(target_directory, profile, tool_execution, brief):
         f"Needs tool attention: `{tool_execution.get('requiresAttention', False)}`",
         f"Reason: {tool_execution.get('reason', '')}",
         "",
+    ]
+    user_override = tool_execution.get("userOverride") if isinstance(tool_execution, dict) else None
+    if user_override:
+        lines.extend([
+            "## User Override",
+            "",
+            "The user clicked Resolve on this card and provided the following note. "
+            "The harness treated the note as authoritative and advanced the chain.",
+            "",
+            f"> {user_override}",
+            "",
+        ])
+    lines.extend([
         "## File Profile",
         "",
         f"- Semantic/code-like files: `{profile.get('semanticFileCount', 0)}`",
@@ -3723,11 +4248,11 @@ def build_socraticode_details(target_directory, profile, tool_execution, brief):
         "\n".join([f"- `{path}`" for path in profile.get("semanticSamples", [])]) or "- None.",
         "",
         brief or "No SocratiCode command brief was needed.",
-    ]
+    ])
     return "\n".join(lines)
 
 
-def run_axon_card(session_id, session, model, mode):
+def run_axon_card(session_id, session, model, mode, correction=None):
     if session.get("projectMode") == "new-project":
         details = "\n".join([
             "# Axon Structural Analysis",
@@ -3823,6 +4348,25 @@ def run_axon_card(session_id, session, model, mode):
         checkpoint = "Install or repair Axon before relying on structural analysis."
 
     tool_execution["profile"] = profile
+
+    # User override path. Re-running Axon doesn't change its findings (it's a
+    # deterministic scan), so when the user hits Resolve with a non-empty
+    # note the only sensible read is "user has reviewed these findings and
+    # wants to advance." We mark requiresAttention=False so the chain
+    # continues, and record the override note in the artifact for audit.
+    override_note = ""
+    if isinstance(correction, dict):
+        override_note = str(correction.get("userNote", "")).strip()
+    if override_note and tool_execution.get("requiresAttention"):
+        tool_execution["requiresAttention"] = False
+        tool_execution["userOverride"] = override_note
+        tool_execution["reason"] = (
+            f"User reviewed the Axon findings and chose to advance the chain. "
+            f"Note: {override_note}"
+        )
+        summary = "Structural status and dead-code scan complete (user override)."
+        checkpoint = "Axon findings were acknowledged via the Resolve note above."
+
     details = build_axon_details(target_directory, profile, tool_execution, analyze, status, dead_code)
     artifact = write_artifact(session_id, "axon-analysis.md", details)
     return card_result(
@@ -3845,6 +4389,19 @@ def build_axon_details(target_directory, profile, tool_execution, analyze, statu
         f"Needs tool attention: `{tool_execution.get('requiresAttention', False)}`",
         f"Reason: {tool_execution.get('reason', '')}",
         "",
+    ]
+    user_override = tool_execution.get("userOverride") if isinstance(tool_execution, dict) else None
+    if user_override:
+        lines.extend([
+            "## User Override",
+            "",
+            "The user clicked Resolve on this card and provided the following note. "
+            "The harness treated the note as authoritative and advanced the chain.",
+            "",
+            f"> {user_override}",
+            "",
+        ])
+    lines.extend([
         "## File Profile",
         "",
         f"- Semantic/code-like files: `{profile.get('semanticFileCount', 0)}`",
@@ -3865,7 +4422,7 @@ def build_axon_details(target_directory, profile, tool_execution, analyze, statu
         "## Dead Code",
         "",
         format_command_output(dead_code, "Dead-code report unavailable."),
-    ]
+    ])
     return "\n".join(lines)
 
 
@@ -3964,7 +4521,14 @@ Deterministic validation:
 Files found:
 {json.dumps(context.get('filesFound', {}), indent=2)}
 {correction_block}
-Produce a short verification checklist from these actual artifacts. If auto-run is enabled, list the checks already run and any remaining manual inspection. If a correction block is present above, the checklist MUST explicitly say whether each user/reviewer item has now been satisfied.""")
+Produce a short verification checklist from these actual artifacts. If auto-run is enabled, list the checks already run and any remaining manual inspection. If a correction block is present above, the checklist MUST explicitly say whether each user/reviewer item has now been satisfied.
+
+FORMATTING RULES — do not violate:
+- Refer to deliverables by their relative path in backticks only, e.g. `output/index.html` or `artifacts/validation.json`.
+- DO NOT write '[Link to local file]', '<link>', '(see attached)', '(click here)', or any placeholder text for links. The harness appends a real clickable file list at the bottom of this verification report with absolute `file://` URLs. Inventing placeholder link text just confuses the reader.
+- DO NOT write `file://` URLs yourself. You do not know the absolute workspace path. The harness owns the canonical 'Local Files' section at the bottom of this report — it has the correct absolute paths. Anything you write will be wrong.
+- DO NOT add your own '### Local File Links' / '## File Links' / similar section. The harness emits one automatically; duplicating it just produces two lists, one of them wrong.
+- DO NOT invent file paths the harness did not list above. If a path is not in the 'Files found' map, do not reference it as if it exists.""")
 
     details = build_verification_report(session_id, session, mode, context, checklist)
     return details, context.get("validation", {})
@@ -4089,7 +4653,77 @@ def build_verification_context(session):
         except (OSError, json.JSONDecodeError) as error:
             context["storedValidation"] = {"error": str(error)}
     context["validation"] = validate_model_authored_workspace(workspace_dir, context.get("storedValidation", {}), session)
+
+    # Surface Axon dead-code findings into the verification's deterministic
+    # validation so the small-model reviewer sees them and the post-review
+    # repair loop gets a chance to fix unused symbols. Without this the
+    # verifier passes a project even when Axon reported real dead code in
+    # the model's deliverable.
+    axon_findings = extract_axon_dead_code_findings(session)
+    if axon_findings:
+        existing_failures = list(context["validation"].get("failures", []) or [])
+        existing_failures.extend(axon_findings)
+        context["validation"]["failures"] = existing_failures
+        context["validation"]["passed"] = False
+        context["validation"]["axonDeadCode"] = axon_findings
     return context
+
+
+def extract_axon_dead_code_findings(session):
+    """Pull the dead-code report from the most recent Axon card run and turn
+    each entry into a validation failure string.
+
+    Filters out entries under `.gforge/skills/` because those are bundled
+    harness skills, not the model's deliverable. Returns [] if no Axon
+    card was run, or the run found no dead code, or the data is missing.
+    """
+    if not isinstance(session, dict):
+        return []
+    cards = session.get("cards", []) if isinstance(session.get("cards"), list) else []
+    axon_card = next((c for c in cards if isinstance(c, dict) and c.get("id") == "axon"), None)
+    if not axon_card:
+        return []
+    last_run = axon_card.get("lastRun") if isinstance(axon_card.get("lastRun"), dict) else {}
+    tool_exec = last_run.get("toolExecution") if isinstance(last_run.get("toolExecution"), dict) else {}
+    commands = tool_exec.get("commands") if isinstance(tool_exec.get("commands"), dict) else {}
+    dead_code = commands.get("deadCode") if isinstance(commands.get("deadCode"), dict) else {}
+    stdout = dead_code.get("stdout") or ""
+    if not stdout:
+        return []
+
+    # Format from `axon dead-code`:
+    #   Dead Code Report (N symbols)
+    #   ----------------------------------------
+    #
+    #     path/to/file.py:
+    #       - symbol_name (line 12)
+    #       - other_symbol (line 34)
+    #
+    #     another/file.js:
+    #       - foo (line 5)
+    findings = []
+    current_file = None
+    for raw_line in stdout.splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        # File header: indented, ends with `:`, no leading dash
+        if line.endswith(":") and not line.lstrip().startswith("-"):
+            current_file = line.strip().rstrip(":").strip()
+            continue
+        # Symbol entry: leading dash
+        stripped = line.lstrip()
+        if stripped.startswith("- ") and current_file:
+            entry = stripped[2:].strip()
+            # Skip dead code in bundled skills / harness support files —
+            # those aren't part of the model's deliverable contract.
+            if current_file.startswith(".gforge/") or "/.gforge/" in current_file:
+                continue
+            findings.append(
+                f"Axon flagged dead code in `{current_file}`: {entry}. "
+                f"Either remove the unused symbol or wire it into the program flow."
+            )
+    return findings
 
 
 def build_verification_report(session_id, session, mode, context, checklist):
@@ -4148,6 +4782,42 @@ def build_verification_report(session_id, session, mode, context, checklist):
         "",
         checklist or "- Deterministic checks above are the verification source of truth.",
     ])
+
+    # Harness-emitted "Local Files" section: real clickable file:// URLs for
+    # every file that actually exists on disk. The model is instructed not
+    # to fabricate placeholder link text — this is the source of truth for
+    # opening deliverables from the verification report.
+    workspace_dir = context.get("workspace", "")
+    if workspace_dir and files_found:
+        present = [(p, os.path.join(workspace_dir, p))
+                   for p, found in files_found.items() if found]
+        # Also include any auto-captured screenshot files referenced in the
+        # stored validation — those are real artifacts but not part of the
+        # contract path_pattern check, so files_found wouldn't list them.
+        stored = stored_validation if isinstance(stored_validation, dict) else {}
+        for shot in (stored.get("screenshots") or []):
+            if not isinstance(shot, dict):
+                continue
+            shot_rel = (shot.get("path") or "").strip()
+            if not shot_rel:
+                continue
+            shot_abs = os.path.join(workspace_dir, shot_rel)
+            if os.path.exists(shot_abs) and (shot_rel, shot_abs) not in present:
+                present.append((shot_rel, shot_abs))
+        if present:
+            lines.extend([
+                "",
+                "## Local Files",
+                "",
+                "Click any link below to open the file in your default app.",
+                "",
+            ])
+            for rel, absolute in present:
+                # file:// URLs need URL-encoding for spaces / special chars but
+                # leave the visible path readable.
+                from urllib.parse import quote
+                href = "file://" + quote(absolute, safe="/:")
+                lines.append(f"- [`{rel}`]({href})")
     return "\n".join(lines)
 
 
@@ -4639,6 +5309,13 @@ Rules:
 - Do not write into `.gforge/`; it is reserved for harness-provided support context.
 - Include complete file contents, not patches.
 - Do NOT wrap files in markdown code fences. Use only the `<<<GFORGE_FILE:...>>>` / `<<<END_GFORGE_FILE>>>` delimiters shown in the contract above.
+- LINKS RULE: If any HTML / CSS / Markdown file you emit contains a local-relative `href`, `src`, or `url()` pointing to another file in the workspace (e.g. `href="results/option_A.html"`), you MUST also emit that target file as its own `<<<GFORGE_FILE:...>>>` block. The harness's deterministic validator scans every HTML/CSS/MD deliverable for local-relative refs and FAILS the run if any of them point at files you did not actually write. Either deliver the file or remove the link. Do not promise files you don't produce.
+- PATH RESOLUTION RULE: HTML / CSS path references resolve RELATIVE to the file that contains them, just like a browser does it. This is a common small-model bug — read this twice:
+    * If you emit `output/index.html` with `<a href="results/option_1.html">`, the browser looks for `output/results/option_1.html` — NOT `results/option_1.html` at the workspace root. If you put `option_1.html` at the workspace root instead, the link is broken.
+    * Going the other way: if `results/option_1.html` has `<a href="../index.html">`, the browser looks for `index.html` at the workspace root. If your index lives at `output/index.html`, that link is also broken.
+  Easiest correct approach: put ALL cross-linked deliverable files in the SAME directory. If `index.html` and `option_1.html` are siblings at the workspace root, then `<a href="option_1.html">` from index works, and `<a href="index.html">` from option_1 works. No `output/` or `results/` subdirectories unless the contract specifically requires them.
+  If you must split across directories, use the real relative path: from `output/index.html` to a file at workspace-root `results/option_1.html` is `<a href="../results/option_1.html">`.
+  The deterministic validator resolves every href / src / url() exactly the way a browser would. If the resolved path is not on disk, the run fails — and the failure message tells you the resolved path so you can fix it on the next attempt.
 """
 
 
@@ -4648,6 +5325,8 @@ def normalize_model_files(files):
     if not isinstance(files, list):
         return normalized, [{"path": "", "reason": "files was not a list"}]
 
+    # First pass — basic per-item safety + content checks.
+    accepted_items = []
     for item in files:
         if not isinstance(item, dict):
             rejected.append({"path": "", "reason": "file item was not an object"})
@@ -4661,9 +5340,36 @@ def normalize_model_files(files):
         if not isinstance(content, str) or not content.strip():
             rejected.append({"path": raw_path, "reason": "content was empty"})
             continue
-        normalized.append({"path": safe_path, "content": content})
+        accepted_items.append({"path": safe_path, "content": content})
 
-    return normalized, rejected
+    # Second pass — within-batch dir/file collision check. Catches the
+    # small-model hallucination where the same name is used both as a file
+    # and as a parent directory in the same emission, e.g. emitting both
+    # `output` (as a file) and `output/index.html` (which needs `output` to
+    # be a directory). Without this guard, the second write would fail
+    # with NotADirectoryError or the first write would clobber the dir.
+    file_paths = {x["path"] for x in accepted_items}
+    parent_dirs = set()
+    for x in accepted_items:
+        parts = x["path"].split("/")
+        for i in range(1, len(parts)):
+            parent_dirs.add("/".join(parts[:i]))
+
+    final = []
+    for x in accepted_items:
+        if x["path"] in parent_dirs:
+            rejected.append({
+                "path": x["path"],
+                "reason": (
+                    f"path collision: `{x['path']}` is also the parent directory of "
+                    f"another file in this same batch. A name cannot be both a file "
+                    f"and a directory at once."
+                ),
+            })
+            continue
+        final.append(x)
+
+    return final, rejected
 
 
 def safe_workspace_relative_path(path):
@@ -4928,6 +5634,128 @@ def check_claim_evidence(kind, match, claim_text):
     return False, f"unhandled claim evidence kind: {kind}"
 
 
+def validate_local_link_targets(workspace_dir, files):
+    """
+    Scan model-authored HTML / CSS / Markdown files for local-relative
+    references (href / src / url() / [text](path)) and flag any that
+    point at files the model promised but never actually wrote.
+
+    Catches a class of small-model hallucination where the page LOOKS
+    complete (links to `results/option_A.html`, `assets/script.js`, etc.)
+    but the harness only received one GFORGE_FILE block for the index
+    itself. Project-agnostic — works for any HTML/CSS/MD output.
+
+    Returns a list of failure strings. Each one names the source file
+    that contained the dead link and the path it pointed at.
+    """
+    failures = []
+    if not workspace_dir or not os.path.isdir(workspace_dir):
+        return failures
+
+    # Regex patterns for the common local-link forms. We deliberately
+    # keep these narrow — better to miss an exotic href than to
+    # false-positive on a JS template string.
+    html_attr_re = re.compile(
+        r"""\s(?:href|src|poster|action|data-src)\s*=\s*["']([^"'#?]+)["']""",
+        re.IGNORECASE,
+    )
+    css_url_re = re.compile(r"""url\(\s*['"]?([^'")\s#?]+)""", re.IGNORECASE)
+    md_link_re = re.compile(r"""\]\(([^)\s#?]+)\)""")
+
+    def is_external(ref):
+        ref = (ref or "").strip()
+        if not ref:
+            return True
+        lower = ref.lower()
+        if lower.startswith(("http://", "https://", "mailto:", "tel:", "javascript:", "data:", "//", "ftp://")):
+            return True
+        # Skip pure fragments (#anchor) — handled by the regex `[^"'#?]+`
+        # but keep this as a defensive check.
+        if ref.startswith("#"):
+            return True
+        # Skip absolute web-root paths — we can't tell where the doc
+        # root is, so don't flag them. (Most static deliveries use
+        # relative paths anyway.)
+        if ref.startswith("/"):
+            return True
+        return False
+
+    for item in files:
+        relative_path = item.get("path", "") if isinstance(item, dict) else ""
+        if not relative_path:
+            continue
+        ext = os.path.splitext(relative_path)[1].lower()
+        if ext not in {".html", ".htm", ".css", ".md"}:
+            continue
+        safe_path = safe_workspace_relative_path(relative_path)
+        if not safe_path:
+            continue
+        src_path = os.path.join(workspace_dir, safe_path)
+        if not os.path.isfile(src_path):
+            continue
+        try:
+            with open(src_path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+        except OSError:
+            continue
+
+        refs = set()
+        if ext in {".html", ".htm"}:
+            refs.update(html_attr_re.findall(content))
+            refs.update(css_url_re.findall(content))
+        elif ext == ".css":
+            refs.update(css_url_re.findall(content))
+        elif ext == ".md":
+            refs.update(md_link_re.findall(content))
+
+        src_dir = os.path.dirname(src_path)
+        for ref in refs:
+            if is_external(ref):
+                continue
+            ref_clean = ref.split("?", 1)[0].split("#", 1)[0].strip()
+            if not ref_clean:
+                continue
+            target_abs = os.path.normpath(os.path.join(src_dir, ref_clean))
+            # Guard against escapes out of the workspace.
+            try:
+                rel_inside = os.path.relpath(target_abs, workspace_dir)
+            except ValueError:
+                continue
+            if rel_inside.startswith(".."):
+                continue
+            if not os.path.exists(target_abs):
+                # Try to find a file with the same basename anywhere else in
+                # the workspace and suggest the correct relative path. This
+                # turns a "missing file" finding into a fixable one — the
+                # model can re-emit with the right path on the next pass.
+                basename = os.path.basename(ref_clean)
+                suggestions = []
+                if basename:
+                    for root, _, names in os.walk(workspace_dir):
+                        if basename in names:
+                            actual_abs = os.path.join(root, basename)
+                            try:
+                                suggested_rel = os.path.relpath(actual_abs, src_dir)
+                            except ValueError:
+                                continue
+                            suggestions.append(suggested_rel.replace(os.sep, "/"))
+                # Show the resolved (broken) target relative to workspace so the
+                # model sees what its href ACTUALLY resolves to vs. what it
+                # probably meant.
+                resolved_rel = rel_inside.replace(os.sep, "/")
+                hint = ""
+                if suggestions:
+                    # Pick the shortest suggestion (usually correct).
+                    suggestions.sort(key=len)
+                    hint = f" — the file exists at the workspace, did you mean `href=\"{suggestions[0]}\"`?"
+                failures.append(
+                    f"`{safe_path}` links to `{ref_clean}` "
+                    f"which resolves to `{resolved_rel}` — not found{hint}"
+                )
+
+    return failures
+
+
 def validate_model_authored_workspace(workspace_dir, metadata, session):
     failures = []
     files = metadata.get("files", []) if isinstance(metadata, dict) else []
@@ -4948,6 +5776,13 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
     claim_text = collect_claim_text(metadata)
     claim_failures = validate_claims_against_disk(claim_text, capabilities_required, workspace_dir=workspace_dir)
     failures.extend(claim_failures)
+
+    # Catch hallucinated local-relative href/src/url() targets in any
+    # HTML / CSS / Markdown deliverable. Small models often fabricate
+    # links to "results/option_A.html", "assets/main.css", etc., even
+    # when only the index file was actually emitted.
+    link_failures = validate_local_link_targets(workspace_dir, files)
+    failures.extend(link_failures)
 
     for item in files:
         relative_path = item.get("path", "")
@@ -5083,7 +5918,33 @@ def build_model_execution_report(workspace_dir, execution):
 
 def write_project_file(root, relative_path, content):
     path = os.path.join(root, relative_path)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    # On-disk collision checks. These catch the case where the model
+    # references a name that already exists as the WRONG type (a file when
+    # a directory is needed, or a directory when a file is needed), e.g.
+    # an earlier card created `output/` as a dir and now a new emission
+    # wants to write `output` as a file. Raise a descriptive error so the
+    # caller logs it as a rejection instead of leaving a stale traceback
+    # in the harness log.
+    if os.path.isdir(path):
+        raise ValueError(
+            f"path collision: `{relative_path}` already exists on disk as a "
+            f"directory, cannot overwrite it with a file."
+        )
+    parent = os.path.dirname(path)
+    if parent:
+        cur = root
+        for segment in os.path.relpath(parent, root).split(os.sep):
+            cur = os.path.join(cur, segment)
+            if os.path.isfile(cur):
+                rel_to_workspace = os.path.relpath(cur, root)
+                raise ValueError(
+                    f"path collision: parent of `{relative_path}` requires "
+                    f"`{rel_to_workspace}` to be a directory, but it already "
+                    f"exists on disk as a file."
+                )
+
+    os.makedirs(os.path.dirname(path), exist_ok=True) if parent else None
     with open(path, "w") as f:
         f.write(content)
     return path

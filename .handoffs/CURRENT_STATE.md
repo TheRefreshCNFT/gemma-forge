@@ -1,17 +1,20 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-21 (UTC) by /webot-flow review session.
+Last updated: 2026-05-23 (UTC) — external backup + GitHub alignment in progress.
 
 ## Verified ground truth
 
 - Project root: `/Users/webot/Projects/gemma-forge`
-- Branch: not checked (no commit requested this session).
+- Branch: `main` tracking `origin/main`; working tree intentionally
+  contains uncommitted current-state changes. No commit requested.
 - Harness Flask server source: `chat/server.py` (3,395 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
 - Local Gemma Forge data dir: `~/.gforge/harness/` (sessions, model
   route, logs, staged skills).
+- Root `HANDOFF.md` and `ACTIVE_STATE.md` are not present in this repo;
+  canonical pickup state is this file plus `project-map.md`.
 - Ollama endpoint: `http://localhost:11434`.
 - Submission target: Gemma 4 Challenge ("huge opportunity entering a
   google contest").
@@ -24,10 +27,44 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **P0.1 partial — Ollama timeouts bumped 60/30/30 → 1200/1200/1200.**
-- Files edited so far: `chat/server.py` only (lines 1079, 1099, 1296).
-- Backups taken: `/Users/webot/Backups/gemma-forge/20260521T135622Z-pre-usability/`
-- Scope approved: full P0 + P1 + P2 (see fix plan).
+- Phase: **External backup completed; GitHub installable-state alignment in progress.**
+- User-verified current behavior:
+  - The obsolete `plan-run-status` strip / text
+    "Start a project to run active cards." is removed from the
+    protocol-card header.
+  - Auto mode keeps its separate flow and now visually activates the
+    Project Context / intake card while intake is running: active
+    border/glow plus disabled `Running` button.
+  - Manual / Human Verify flow remains separate: cards still show
+    `Forge Section` until manually run.
+- Locally verified current behavior:
+  - Completed protocol cards show compact run facts on the card
+    itself, e.g. Project Context shows format/path/count/skill/open
+    questions/review/research.
+  - Long raw card artifacts remain available but are collapsed behind
+    a "Full section artifact" disclosure by default.
+  - The right-side Project Context log keeps the chronological project
+    feed and now has a taller scroll area.
+- Latest files touched for this accepted state:
+  `chat/templates/index.html`, `chat/static/js/chat.js`,
+  `chat/static/css/style.css`, `.handoffs/CURRENT_STATE.md`,
+  `project-map.md`.
+- Working tree note: other uncommitted current-state changes existed
+  before this handoff alignment (`chat/server.py`, `launch_forge.command`,
+  `skills/`, `tools/`, etc.). They are treated as accepted project state
+  unless Ian asks for a commit or cleanup pass.
+- Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T172125Z-full-live-local-working-state/`
+  - `/Users/webot/Backups/gemma-forge/20260523T160939Z-pre-remove-plan-status/`
+  - `/Users/webot/Backups/gemma-forge/20260523T161535Z-pre-auto-intake-running/`
+  - `/Users/webot/Backups/gemma-forge/20260523T163326Z-pre-state-align/`
+  - `/Users/webot/Backups/gemma-forge/20260523T164725Z-pre-card-context-visibility/`
+- Backup/GitHub rule: when Ian asks for backup or state alignment, a
+  complete pass means (1) the full live local working state is backed up
+  to external SSD `/Volumes/PHIXERO/Backups/gemma-forge/` and verified,
+  and (2) GitHub is aligned to the installable repo state unless a
+  blocker is explicitly reported. Keep runtime/generated/private data
+  out of GitHub.
 - Demo model decision: `gemma-4` (E2B, ~3.4 GB).
 
 ## Shipped this session
@@ -525,6 +562,348 @@ the contest demo path works end-to-end.** Driving doc:
 
   Files changed: `chat/static/js/chat.js`, `chat/static/css/style.css`,
   `chat/templates/index.html`. Server unchanged.
+
+- **2026-05-22 — V7 layout finalization + ? helper fixes + skills bundled.**
+  Pre-work baseline at
+  `~/Backups/gemma-forge/20260522T164405Z-layout-final-baseline/`.
+
+  **Layout (V7) — Ian-approved.**
+  - `.app-shell` is now a natural-height flex column (NOT viewport-locked).
+    Page scrolls if total content exceeds viewport — by design.
+  - New `.app-shell-top` grid row hosts sidebar + main. CSS Grid with
+    `align-items: stretch` means sidebar stretches to match the tallest
+    column automatically — intake-panel + cards-panel auto bottom-align
+    with the sidebar bottom.
+  - `#event-terminal` moved OUT of `.main`. Now a sibling of
+    `.app-shell-top` inside `.app-shell` — sits full-bleed under the
+    sidebar + main columns with an 18 px top margin. No border-radius
+    (edge-to-edge).
+  - `.cards-panel` restructured: the heavy separate `panel-header`
+    (Orchestration / Protocol cards / Full Forge / status) was removed.
+    Title + arrow nav + Full Forge button now live inside the rolodex
+    itself as a single integrated `.rolodex-header` strip. Each
+    workflow-card has `overflow: auto` so long content scrolls inside
+    the card, not against the parent.
+  - Session-conversation-card back to natural sizing (no min-height,
+    no flex constraints). Session-messages capped at 180 px with
+    internal scroll.
+  - Environment facts now a clean `auto-fit minmax(168 px, 1fr)` tile
+    grid with label-above-value typography — replaces flex-wrap pill
+    chaos.
+
+  **? helper fixes.**
+  - `start-panel` `?` was blank — `data-help-key="start-panel"` had no
+    matching entry in `chat.js`'s `helpContent` dict. Added an entry
+    explaining the panel (Environment + Forge Brain + collapse behaviour).
+  - The "New Project" `?` was grouped with Human-Verify on the right
+    side of the panel header. Moved it inline with the title block
+    (new `.intake-title` container with `.section-label` + `<h2>` +
+    `.intake-help`) so the explainer sits next to the input it explains.
+
+  **Skills bundled into the install package.**
+  - Prior state: 3 protocol skills (`logo-generator`, `scrapling-official`,
+    `ui-ux-pro-max`) lived only at `~/.gforge/harness/skills/` (NOT in
+    the repo). A fresh clone had zero staged skills, so the Project
+    Context Writer's `skill.use` picker had nothing to point at.
+  - Copied all 3 to repo `skills/` (13 MB total, excluding `.git` and
+    `.DS_Store`). Licenses preserved (MIT for ui-ux-pro-max and
+    logo-generator; scrapling-official is the upstream).
+  - `launch_forge.command` extended with an idempotent skill-staging
+    block: walks `skills/*` and copies any missing dir into
+    `~/.gforge/harness/skills/`. Existing skills are NOT overwritten
+    (preserves user edits / additional manually-staged skills).
+  - Sandbox-verified in `/tmp/gforge-staging-test.*`: clean target →
+    3 skills land (148 K + 284 K + 13 M). Re-run → all 3 skip-existing.
+
+  **Audit summary for clean-install readiness.**
+  - `requirements.txt` complete: customtkinter, flask, flask-cors,
+    huggingface_hub, requests, PyYAML, scrapling[all]. Playwright pulled
+    in transitively via `scrapling[all]`; `scrapling install --force`
+    fetches the browser binaries.
+  - `chat/tool_browse.py` lazy-imports scrapling. `chat/tool_screenshot.py`
+    lazy-imports playwright. `chat/tool_runtime.py` is stdlib-only.
+  - `chat/server.py` only imports Flask + stdlib + yaml + the local
+    `tool_browse` / `tool_screenshot` modules.
+
+  Files changed: `chat/static/css/style.css`, `chat/static/js/chat.js`,
+  `chat/templates/index.html`, `launch_forge.command`. Added: `skills/`
+  (new dir, untracked — needs `git add skills/` before commit).
+  Syntax-clean: `bash -n launch_forge.command` ✓, `node --check chat.js` ✓.
+
+- **2026-05-22 — Full one-command installer (launch_forge.command).**
+  The launcher now installs the COMPLETE running stack — nothing else
+  to set up. Idempotent: rerunning is a no-op when everything is in
+  place. Each block is presence-checked before action.
+
+  **Install order (each step skips if already done):**
+
+  1. **Homebrew** — checks `command -v brew`; if missing, runs the
+     official one-liner installer and re-evaluates `brew shellenv` so
+     the rest of the script can use it.
+  2. **Ollama** — `brew install ollama`. Starts `brew services start
+     ollama` if `http://localhost:11434/api/version` isn't responding;
+     waits up to 10 s for liveness.
+  3. **Model pull — not done at install time.** Reviewers / users pull
+     models from the harness Settings → Provision card (supports
+     HuggingFace repo IDs like `google/gemma-4-E2B`) or directly with
+     `ollama pull <name>`. Earlier draft auto-pulled `gemma4:e2b` —
+     removed per Ian: pull happens when the user uses those features.
+  4. **Node.js 22** — `brew install node@22` + `brew link --force
+     --overwrite node@22`. Required by SocratiCode (Node 18–25 range).
+  5. **Docker Desktop** — `brew install --cask docker`. Prints a
+     one-time prompt asking the user to launch Docker.app once for
+     kernel-extension approval. Harness boots without Docker — only
+     the SocratiCode card depends on it (needs Qdrant container).
+  6. **Python venv + requirements.txt** — creates `.venv` if absent,
+     installs `customtkinter`, `flask`, `flask-cors`,
+     `huggingface_hub`, `requests`, `PyYAML`, `scrapling[all]`.
+  7. **Playwright browsers** — `scrapling install --force` flagged by
+     a `.scrapling-browsers-installed` sentinel in the venv.
+  8. **Axon CLI** — `pip install axoniq` into the venv. The `axon`
+     binary lands in `$VENV_PATH/bin/axon` and resolves via
+     `shutil.which("axon")` once the venv is active. Skipped if
+     `pip show axoniq` already finds it.
+  9. **SocratiCode MCP** — `npm install --prefix ~/.gforge/tools
+     socraticode@latest`. Only runs if
+     `~/.gforge/tools/node_modules/.bin/socraticode` doesn't exist.
+  10. **Bundled protocol skills** — copies `skills/*` →
+      `~/.gforge/harness/skills/` for any skill the user doesn't
+      already have staged.
+  11. **Launch** — exports `PYTHONPATH`, starts
+      `python -m chat.server` at port 5005.
+
+  **External tool sources documented in the launcher header:**
+  - Gemma 4 E2B: https://ollama.com/library/gemma4 (tag `e2b`, 7.2 GB)
+  - Axon: https://github.com/harshkedia177/axon (PyPI `axoniq`)
+  - SocratiCode: npm `socraticode@latest`
+  - Scrapling: pip `scrapling[all]` + `scrapling install --force`
+
+  **Verified idempotency on Ian's machine (everything-already-installed
+  state):** brew skip, ollama skip, ollama service skip,
+  gemma alias present → pull skipped, node skip, docker skip,
+  socraticode bin skip, all 3 skills skip. Only the venv-bound items
+  (scrapling browsers, axoniq) trigger when run against a fresh
+  project-root `.venv` (Ian's running harness uses a different venv at
+  `/Users/webot/Projects/gguf/venv`).
+
+  File changed: `launch_forge.command` only. `bash -n` clean.
+
+- **2026-05-22 — Clean-room install verified in a fresh macOS VM.**
+  Submission-readiness gate cleared. Reviewers cloning the repo on a
+  fresh Mac will get the entire running stack from `./launch_forge.command`.
+
+  **Test environment**
+  - macOS Sequoia base image: `ghcr.io/cirruslabs/macos-sequoia-base:latest`
+    (~30 GB, pulled once via tart, cached at `~/.tart/`).
+  - VM driver: `tart` 2.32.1 (`brew install cirruslabs/cli/tart`).
+  - Headless SSH access via `sshpass` (`brew install
+    hudochenkov/sshpass/sshpass`).
+  - Project mounted into VM at `/Volumes/My Shared Files/gemma-forge`
+    (read-only), then copied to `~/gemma-forge` inside the VM for write
+    access during the install.
+
+  **Two test scripts shipped under `tools/`:**
+  - `tools/verify_clean_install.sh` — runs INSIDE the VM after
+    `./launch_forge.command` completes. 7 sections, ~27 checks.
+    Sources `brew shellenv` at the top so it works under SSH (no
+    login-shell PATH). Treats Docker-installed-but-not-launched as
+    `⚠` (warning, not fail) since on macOS the `docker` CLI only
+    joins PATH after Docker.app is first launched (kernel-ext approval).
+    Treats `complete | awaiting-human | needs-attention` all as
+    successful E2E intake-card outcomes (the harness ran the card; the
+    quality of a 1B model's writing isn't what the verify is testing).
+  - `tools/run_clean_install_test.sh` — host-side orchestrator that
+    clones a fresh VM from the base image, boots it headless, SCPs the
+    project, kicks off `./launch_forge.command` as a backgrounded
+    process inside the VM, waits up to 15 min for the server to come up
+    on port 5005, then runs the verify script inside.
+
+  **Results from a full cold-clean run (test #2):**
+  ```
+  ✓ brew on PATH at /opt/homebrew/bin/brew
+  ✓ ollama on PATH at /opt/homebrew/bin/ollama
+  ✓ node on PATH at /opt/homebrew/bin/node
+  ⚠ docker installed at /Applications/Docker.app but not launched
+  ✓ python3 on PATH at /opt/homebrew/bin/python3
+  ✓ venv exists at /Users/admin/gemma-forge/.venv
+  ✓ python imports flask, flask_cors, yaml, requests, scrapling
+  ✓ axoniq installed in venv
+  ✓ scrapling browsers sentinel file present
+  ✓ socraticode at /Users/admin/.gforge/tools/node_modules/.bin/socraticode
+  ✓ skill staged: logo-generator
+  ✓ skill staged: scrapling-official
+  ✓ skill staged: ui-ux-pro-max
+  ✓ skill staged: axon
+  ✓ ollama version + tags → HTTP 200
+  ✓ harness root + workspace status + events recent → HTTP 200
+  ✓ pulled test model gemma3:1b
+  ✓ created session session_1779473229378
+  ✓ intake card finished — status: awaiting-human
+
+  === ALL CHECKS PASSED ===
+  ```
+
+  **Notes on Docker.** Headless VM tests cannot launch Docker.app for
+  kernel-extension approval, so the `docker` CLI isn't on PATH. The
+  harness boots without it; only SocratiCode's Qdrant container needs
+  Docker. Real reviewers on a desktop Mac will launch Docker.app once
+  and the CLI joins PATH automatically.
+
+- **2026-05-22 — Axon protocol skill added.**
+  A sub-agent (general-purpose) scraped the upstream Axon repo
+  (`https://github.com/harshkedia177/axon`) and built a protocol skill
+  at `skills/axon/` mirroring the `scrapling-official` format.
+
+  **Skill contents (76 KB, 11 files):**
+  - `SKILL.md` — frontmatter (`name: axon`, version `1.0.1` verified
+    against upstream `pyproject.toml`, MIT license, openclaw emoji 🧠,
+    requires `python3` + (`pip` | `pip3`)). Body calls out the
+    PyPI-package-name (`axoniq`) vs CLI-binary-name (`axon`) gotcha,
+    Python 3.11+ requirement, supported languages
+    (Python / TS / JS), three-step workflow, four worked examples.
+  - `LICENSE.txt` — MIT, attributed to `harshkedia177` (no LICENSE file
+    at the repo root upstream, but `pyproject.toml` declares MIT; the
+    skill includes the canonical MIT text plus a footnote pointing to
+    the upstream declaration).
+  - `examples/` — `01_analyze_and_search.sh`, `02_mcp_tools_call.py`
+    (Python MCP client over stdio), `03_cypher_query.sh`, plus a
+    README explaining which example does what.
+  - `references/` — five topical docs:
+    - `commands.md` (~12 KB) — every CLI subcommand + every flag,
+      pulled directly from `src/axon/cli.py` rather than the README
+    - `mcp-server.md` (~12 KB) — all 15 MCP tools (the README
+      advertises 7; the sub-agent verified there are actually 15 in
+      `src/axon/mcp/server.py`)
+    - `dashboard.md` (~8 KB) — the `axon ui` web dashboard
+    - `graph-model.md` (~8 KB) — node/edge schema + the 12-phase
+      indexing pipeline
+    - `cypher-queries.md` (~8 KB) — ready-to-run Cypher patterns
+
+  Skill is now bundled in `skills/`, staged by `launch_forge.command`
+  on first run, and the verify script checks for it under
+  `~/.gforge/harness/skills/axon`. Verified present in the clean-room
+  VM test above.
+
+- **2026-05-23 — Protocol-card status strip removed.**
+  User requested removal of the load-time section showing
+  "Start a project to run active cards." The exact element was
+  `#plan-run-status` in `chat/templates/index.html`; `setPlanStatus()`
+  in `chat/static/js/chat.js` already guards missing elements, so no
+  broader JS refactor was needed.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T160939Z-pre-remove-plan-status/`
+  (`index.html`).
+
+  Verified: `npm run check` passed; browser check on
+  `http://127.0.0.1:5005/` confirmed `#plan-run-status` count `0` and
+  the removed phrase no longer visible. Ian confirmed the section was
+  removed with no negative outcome.
+
+- **2026-05-23 — Auto intake running affordance fixed.**
+  User reported the process behind intake worked and advanced correctly,
+  but in auto mode the Project Context / intake card did not visually
+  activate with the running border / `Running` state. Important user
+  constraint: keep the separation between auto and manual.
+
+  Fix:
+  - `chat/static/js/chat.js`: added `runningCardId` and
+    `setRunningCard(cardId)`. `renderWorkflowCards()` now applies
+    `.running`, disables the running card button, and labels it
+    `Running` when `runningCardId` matches.
+  - `startPlanning()` primes only auto mode (`!humanVerify`) with
+    `setRunningCard("intake")` while the initial `/api/plan` request is
+    in flight.
+  - `runCardSection()` now uses the same running-state helper for
+    existing manual/section runs, preserving behavior while removing
+    duplicate direct DOM toggles.
+  - `chat/static/css/style.css`: `.workflow-card.running` and
+    `.workflow-card.running .section-run-btn:disabled` now provide the
+    stronger active border/glow and `Running` button treatment.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T161535Z-pre-auto-intake-running/`
+  (`chat.js`, `style.css`).
+
+  Verified:
+  - `npm run check` passed.
+  - Controlled Playwright test with mocked `/api/sessions` and
+    `/api/plan` confirmed auto mode: intake card class
+    `workflow-card active running is-front`, button `Running`, disabled
+    true, active border/glow applied.
+  - Controlled Playwright test confirmed manual / Human Verify
+    separation: intake card class `workflow-card active is-front`,
+    button `Forge Section`, disabled false, `.running` count `0`.
+  - Ian confirmed the fix is good.
+
+- **2026-05-23 — State alignment pass.**
+  Updated `.handoffs/CURRENT_STATE.md` and `project-map.md` to reflect
+  the accepted current UI state and backup paths above. Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T163326Z-pre-state-align/`
+  (`CURRENT_STATE.md`, `project-map.md`).
+
+  Verification at alignment start: handoff directory present, PID file
+  present (`92663`), Ollama up, harness root HTTP `200`. Latest
+  `errors.jsonl` still contains the earlier `2026-05-23T03:40:24Z`
+  Ollama timeout; no new UI-error entry was introduced by these fixes.
+
+- **2026-05-23 — Protocol-card context visibility polish.**
+  User asked what should live on protocol cards versus the Project
+  Context log while the harness runs; some context was hard to see.
+
+  Fix:
+  - `chat/static/js/chat.js`: added compact run-fact extraction in
+    `renderWorkflowCards()` so each card surfaces the relevant facts
+    that apply to that card: Project Context contract fields,
+    Forge Flow readiness fields, Execution validation/transport/files,
+    tool status for SocratiCode/Axon, review status, research count,
+    and artifact basename.
+  - Raw `lastRun.details` still stays available on the matching card,
+    but now behind a "Full section artifact" disclosure by default
+    unless the card needs attention or is awaiting human verification.
+  - `chat/static/css/style.css`: added readable fact tiles and expanded
+    the Project Context log scroll area from 180 px to 320 px.
+
+  Backup:
+  `/Users/webot/Backups/gemma-forge/20260523T164725Z-pre-card-context-visibility/`
+  (`chat.js`, `style.css`).
+
+  Verified:
+  - Entry state: `git status --short --branch` showed expected
+    uncommitted current-state changes; harness root and Ollama both
+    returned HTTP `200`; PID file was stale (`92663`), but port 5005
+    was served by Python PID `56130`.
+  - `npm run check` passed.
+  - Browser desktop check on `http://127.0.0.1:5005/`: selected a live
+    completed project, verified 45 fact tiles across 8 cards, 8
+    collapsible artifact disclosures, zero disclosures open by default,
+    Project Context log `max-height: 320px`, and no console errors.
+  - Browser mobile check at 390 × 844: no horizontal overflow and no
+    overflowing fact tiles.
+
+- **2026-05-23 — External backup + GitHub alignment rule.**
+  User clarified that "backup" means both an external-SSD full backup
+  of the live local working state and GitHub aligned with the repo state
+  needed for a fresh install from the repo URL.
+
+  External backup:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260523T172125Z-full-live-local-working-state/`
+
+  Contents:
+  - Folder copy at `repo/`.
+  - Restore archive:
+    `gemma-forge-full-live-local-working-state.tar.gz`
+    (`872M`, SHA-256
+    `a19e484d6878847884f5306bcffe3dba3f5e7a2f787415531e212d276ef96668`).
+  - `MANIFEST.md`, `git-status.txt`, `git-diff-stat.txt`,
+    `tracked-uncommitted.patch`, and `untracked-files.txt`.
+
+  Rule recorded in `AGENTS.md`: do not call a full backup complete
+  until the external SSD backup is verified and GitHub is either aligned
+  to the installable repo state or the blocker is explicitly reported.
+  GitHub should include launcher, harness code, docs, tests,
+  clean-install tools, and bundled protocol skills. It must not include
+  runtime/session/log/model/cache artifacts.
 
 ## Product philosophy (load-bearing)
 
