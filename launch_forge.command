@@ -15,10 +15,7 @@
 #   - Axon CLI (pip install axoniq into the venv)
 #   - SocratiCode (npm install socraticode@latest into ~/.gforge/tools/)
 #   - Bundled protocol skills (skills/* → ~/.gforge/harness/skills/)
-#
-# Model pulls (Gemma 4 etc.) happen in-app via the harness UI or `ollama pull`
-# directly. The harness supports HuggingFace repo IDs (e.g. google/gemma-4-E4B-it)
-# through the Settings → Provision model card.
+#   - Default Forge Brain model (`gemma4:e4b` copied to `gemma-4-e4b-it`)
 
 set -euo pipefail
 
@@ -27,6 +24,9 @@ VENV_PATH="${GFORGE_VENV:-$PROJECT_ROOT/.venv}"
 GFORGE_HOME="${GFORGE_HOME:-$HOME/.gforge}"
 GFORGE_TOOLS_ROOT="${GFORGE_TOOLS_ROOT:-$GFORGE_HOME/tools}"
 HARNESS_SKILLS_DIR="$GFORGE_HOME/harness/skills"
+DEFAULT_MODEL="${GFORGE_DEFAULT_MODEL:-gemma-4-e4b-it}"
+DEFAULT_MODEL_SOURCE="${GFORGE_DEFAULT_MODEL_SOURCE:-gemma4:e4b}"
+SKIP_DEFAULT_MODEL_PULL="${GFORGE_SKIP_DEFAULT_MODEL_PULL:-0}"
 
 cd "$PROJECT_ROOT"
 
@@ -38,6 +38,30 @@ fail() { printf "\033[1;31m[forge fail]\033[0m %s\n" "$*" >&2; exit 1; }
 
 is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
 have()     { command -v "$1" >/dev/null 2>&1; }
+
+wait_for_url() {
+    local url="$1"
+    local attempts="${2:-30}"
+    for _ in $(seq 1 "$attempts"); do
+        if curl -sf --max-time 2 "$url" >/dev/null 2>&1; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+ollama_model_installed() {
+    local model="$1"
+    local name
+    while read -r name _; do
+        [ -n "$name" ] || continue
+        if [ "$name" = "$model" ] || [ "$name" = "$model:latest" ] || [[ "$name" == "$model:"* ]]; then
+            return 0
+        fi
+    done < <(ollama list 2>/dev/null | tail -n +2)
+    return 1
+}
 
 is_macos || fail "This installer is macOS-only. Linux/Windows users: see the README for manual setup."
 
@@ -65,18 +89,28 @@ fi
 if ! curl -sf --max-time 2 http://localhost:11434/api/version >/dev/null 2>&1; then
     step "Starting Ollama service..."
     brew services start ollama >/dev/null 2>&1 || true
-    # Wait briefly for it to come up.
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-        sleep 1
-        if curl -sf --max-time 2 http://localhost:11434/api/version >/dev/null 2>&1; then
-            break
-        fi
-    done
+    wait_for_url http://localhost:11434/api/version 30 \
+        || fail "Ollama did not start on http://localhost:11434."
 fi
 
-# Note: models are pulled in-app via the harness Settings → Provision model
-# card (supports HuggingFace repo IDs like google/gemma-4-E4B-it) or directly
-# via `ollama pull <name>`. Not auto-pulled here.
+# First-run users should land with the default Forge Brain runnable. Ollama's
+# public tag is `gemma4:e4b`; Gemma Forge uses a stable local alias.
+if [ "$SKIP_DEFAULT_MODEL_PULL" != "1" ]; then
+    if ! ollama_model_installed "$DEFAULT_MODEL"; then
+        if ! ollama_model_installed "$DEFAULT_MODEL_SOURCE"; then
+            step "Pulling default Forge Brain model: $DEFAULT_MODEL_SOURCE (~10 GB one-time download)..."
+            ollama pull "$DEFAULT_MODEL_SOURCE"
+        fi
+        if [ "$DEFAULT_MODEL_SOURCE" != "$DEFAULT_MODEL" ]; then
+            step "Creating local model alias: $DEFAULT_MODEL..."
+            ollama cp "$DEFAULT_MODEL_SOURCE" "$DEFAULT_MODEL"
+        fi
+    fi
+    ollama_model_installed "$DEFAULT_MODEL" \
+        || fail "Default Forge Brain model $DEFAULT_MODEL is not installed."
+else
+    warn "Skipping default model pull because GFORGE_SKIP_DEFAULT_MODEL_PULL=1."
+fi
 
 # --- 3. Node.js (for SocratiCode MCP) --------------------------------------
 
@@ -91,9 +125,22 @@ fi
 if ! have docker; then
     step "Installing Docker Desktop via Homebrew cask..."
     brew install --cask docker
-    warn "Docker Desktop was just installed. Open Docker.app once so it can"
-    warn "grant kernel permissions, then re-run this script. The Forge will"
-    warn "boot without Docker, but SocratiCode card will be unavailable."
+fi
+
+if have docker && ! docker info >/dev/null 2>&1; then
+    if [ -d /Applications/Docker.app ]; then
+        step "Starting Docker Desktop for SocratiCode..."
+        open -gj -a Docker >/dev/null 2>&1 || open -a Docker >/dev/null 2>&1 || true
+        for _ in $(seq 1 60); do
+            if docker info >/dev/null 2>&1; then
+                break
+            fi
+            sleep 5
+        done
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        warn "Docker is installed but not running yet. SocratiCode may report unavailable until Docker Desktop finishes first-run startup."
+    fi
 fi
 
 # --- 5. Python venv + deps -------------------------------------------------

@@ -26,7 +26,8 @@ fi
 
 PORT="${GFORGE_PORT:-5005}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
-TEST_MODEL="${TEST_MODEL:-gemma3:1b}"
+DEFAULT_MODEL="${GFORGE_DEFAULT_MODEL:-gemma-4-e4b-it}"
+TEST_MODEL="${TEST_MODEL:-$DEFAULT_MODEL}"
 FAILS=0
 
 pass() { printf "\033[1;32m  ✓\033[0m %s\n" "$*"; }
@@ -56,6 +57,18 @@ check_url() {
     fi
 }
 
+ollama_model_installed() {
+    local model="$1"
+    local name
+    while read -r name _; do
+        [ -n "$name" ] || continue
+        if [ "$name" = "$model" ] || [ "$name" = "$model:latest" ] || [[ "$name" == "$model:"* ]]; then
+            return 0
+        fi
+    done < <(ollama list 2>/dev/null | tail -n +2)
+    return 1
+}
+
 # --- 1. System tools -------------------------------------------------------
 
 section "1. System tools"
@@ -68,8 +81,13 @@ check_bin node
 # installed-but-not-launched state distinctly so the "fail" doesn't lie.
 if command -v docker >/dev/null 2>&1; then
     pass "docker on PATH at $(command -v docker)"
+    if docker info >/dev/null 2>&1; then
+        pass "docker daemon ready"
+    else
+        fail "docker daemon not ready"
+    fi
 elif [ -d /Applications/Docker.app ]; then
-    warn "docker installed at /Applications/Docker.app but not launched yet — open Docker.app once to enable the CLI"
+    fail "docker installed at /Applications/Docker.app but CLI/daemon not ready"
 else
     fail "docker not found"
 fi
@@ -116,7 +134,7 @@ check_bin socraticode "$SOCRATICODE_BIN"
 
 section "4. Bundled skills"
 SKILLS_DIR="${GFORGE_HOME:-$HOME/.gforge}/harness/skills"
-for skill in logo-generator scrapling-official ui-ux-pro-max axon; do
+for skill in logo-generator scrapling-official ui-ux-pro-max axon pdf mcp-builder; do
     if [ -d "$SKILLS_DIR/$skill" ]; then
         pass "skill staged: $skill"
     else
@@ -129,6 +147,11 @@ done
 section "5. Ollama service"
 check_url "ollama version" "http://localhost:${OLLAMA_PORT}/api/version"
 check_url "ollama tags"    "http://localhost:${OLLAMA_PORT}/api/tags"
+if ollama_model_installed "$DEFAULT_MODEL"; then
+    pass "default model installed: $DEFAULT_MODEL"
+else
+    fail "default model missing from Ollama: $DEFAULT_MODEL"
+fi
 
 # --- 6. Harness server -----------------------------------------------------
 
@@ -137,22 +160,80 @@ check_url "harness root"      "http://localhost:${PORT}/"
 check_url "workspace status"  "http://localhost:${PORT}/api/workspace/status"
 check_url "events recent"     "http://localhost:${PORT}/api/events/recent"
 
-# --- 7. End-to-end: tiny test project --------------------------------------
+# --- 7. Harness readiness --------------------------------------------------
 
-section "7. End-to-end test project"
+section "7. Harness readiness"
+READINESS_JSON=$(curl -s --max-time 30 "http://localhost:${PORT}/api/workspace/status" 2>/dev/null)
+if READINESS_JSON="$READINESS_JSON" python3 - "$DEFAULT_MODEL" <<'PY'
+import json
+import os
+import sys
+
+default_model = sys.argv[1]
+data = json.loads(os.environ.get("READINESS_JSON", "{}"))
+models = data.get("modelOptions", [])
+tools = data.get("tools", {})
+default = next((m for m in models if m.get("ollamaName") == default_model), None)
+errors = []
+
+if not default:
+    errors.append(f"default model option missing: {default_model}")
+else:
+    for key in ("selected", "recommended", "installed", "supported"):
+        if not default.get(key):
+            errors.append(f"default model {key} is not true")
+
+for key in ("socraticodeInstalled", "socraticodeExecutable", "socraticodeMcpReady", "socraticodeQdrantRunning"):
+    if not tools.get(key):
+        errors.append(f"{key} is not true")
+
+if not tools.get("axonExecutable"):
+    errors.append("axonExecutable is not true")
+
+if errors:
+    print("\n".join(errors))
+    sys.exit(1)
+sys.exit(0)
+PY
+then
+    pass "workspace status reports default model, SocratiCode, and Axon install readiness"
+else
+    fail "workspace readiness check failed: $(READINESS_JSON="$READINESS_JSON" python3 - "$DEFAULT_MODEL" <<'PY'
+import json
+import os
+import sys
+
+default_model = sys.argv[1]
+try:
+    data = json.loads(os.environ.get("READINESS_JSON", "{}"))
+except Exception as exc:
+    print(f"invalid workspace status JSON: {exc}")
+    sys.exit(0)
+models = data.get("modelOptions", [])
+tools = data.get("tools", {})
+default = next((m for m in models if m.get("ollamaName") == default_model), {})
+parts = [
+    f"default.installed={default.get('installed')}",
+    f"default.selected={default.get('selected')}",
+    f"socraticodeInstalled={tools.get('socraticodeInstalled')}",
+    f"socraticodeMcpReady={tools.get('socraticodeMcpReady')}",
+    f"socraticodeQdrantRunning={tools.get('socraticodeQdrantRunning')}",
+    f"axonExecutable={tools.get('axonExecutable')}",
+]
+print(", ".join(parts))
+PY
+)"
+fi
+
+# --- 8. End-to-end: default model test project -----------------------------
+
+section "8. End-to-end test project"
 
 if ! curl -sf --max-time 2 "http://localhost:${OLLAMA_PORT}/api/tags" >/dev/null 2>&1; then
     fail "skipping E2E test — Ollama not reachable"
-elif ! curl -s "http://localhost:${OLLAMA_PORT}/api/tags" | grep -q "\"$TEST_MODEL\""; then
-    printf "  ⏳ Pulling small test model %s (~815 MB)... this can take a minute\n" "$TEST_MODEL"
-    if ollama pull "$TEST_MODEL" >/dev/null 2>&1; then
-        pass "pulled test model $TEST_MODEL"
-    else
-        fail "failed to pull $TEST_MODEL"
-    fi
 fi
 
-if curl -s "http://localhost:${OLLAMA_PORT}/api/tags" | grep -q "\"$TEST_MODEL\""; then
+if ollama_model_installed "$TEST_MODEL"; then
     pass "test model $TEST_MODEL available"
 
     SESSION_RESP=$(curl -s -X POST "http://localhost:${PORT}/api/sessions" \
