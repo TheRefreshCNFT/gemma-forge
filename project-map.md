@@ -62,6 +62,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 
 - `docs/harness-agent-operating-guide.md` - how the local Gemma agent should operate the harness for users.
 - `docs/model-routing-proof.md` - proof path for `gemma-4` model routing.
+- `docs/python-verification-fine-tuning.md` - handoff for the Python/script verification fixes and the pattern to port next-language validation.
 - `docs/submission-media/` - screenshots, deterministic demo clip, local ComfyUI mood clips, and demo recording guide for the submission video.
 - `smoke-tests/hello-color-world/` - orchestration smoke-test deliverable with validation and screenshot artifact.
 
@@ -220,11 +221,27 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   are syntax-checked, and script-created file/directory counts are inferred from
   the contract/acceptance when needed, validated by running the script in a
   temporary workspace, and then deleted rather than treated as final deliverables.
+  HTML/CSS deliverables now get static read-only integrity validation:
+  `.html`/`.htm` files fail on clear tag-pair mismatches, `.css` files fail on
+  unclosed comments/strings or unbalanced brackets/braces/parentheses, and
+  existing local-link validation still checks referenced assets against disk.
+  HTML/CSS bundle contracts treat linked CSS as a support file, so "one HTML
+  page and one linked CSS file" validates as one primary HTML deliverable plus
+  the stylesheet instead of two HTML files. HTML content counts ignore CSS
+  selector/comment text and count specific UI elements such as `status-card`
+  elements from the HTML.
+- Auto-generated execution workspace names are compact now. The harness prefers
+  the Project Context project name, e.g. `local-ai-validation-lab-dashboard`,
+  and otherwise uses a short collapsed slug. User-provided project directories
+  are still preserved exactly.
 - Verification is read-only with respect to deliverables: it can rebuild the
-  verification report from existing artifacts, but it cannot rerun Project
-  Execution or overwrite model-authored files. Passed deterministic validation
-  is authoritative for Verification; support-tool findings such as Axon dead-code
-  output are advisory for simple fresh-script deliverables.
+  verification report and rerun deterministic checks against existing artifacts,
+  but it cannot rerun Project Execution or overwrite model-authored files. If
+  issues remain, it routes back to the responsible Forge Section. Passed
+  deterministic validation is authoritative for Verification; support-tool
+  findings such as Axon dead-code output are advisory for simple fresh-script
+  deliverables. Verification now receives staged skill context for read-only
+  review, matching the Context Writer, worker, and chat agent context path.
 - Small-model extra review can still trigger repairs for concrete artifact
   mismatches, but a reviewer cannot overrule a passed deterministic validation
   count/path/PDF/content-quantity gate. This prevents false-positive review

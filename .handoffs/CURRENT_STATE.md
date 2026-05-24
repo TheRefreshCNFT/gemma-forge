@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-24 (UTC) — SSD backup and GitHub alignment.
+Last updated: 2026-05-24 (UTC) — HTML/CSS fix backed up and GitHub alignment prepared.
 
 ## Verified ground truth
 
@@ -113,6 +113,16 @@ the contest demo path works end-to-end.** Driving doc:
     runs, rejects `.pdf` outputs that do not parse as real PDFs, and can
     extract generated PDF text for content-count checks such as category
     reports.
+  - HTML/CSS deterministic validation has been ported locally from the
+    Python/PDF validation pattern. HTML/CSS checks are static and
+    read-only: `.html`/`.htm` files fail on clear tag-pair mismatches,
+    `.css` files fail on unclosed comments/strings or unbalanced
+    braces/brackets/parentheses, and existing local-link validation still
+    checks referenced `href`/`src`/`url()` assets against disk. The
+    Verification card now receives staged skill context for read-only
+    review, may rerun deterministic checks against current artifacts, and
+    must route unresolved issues back to the responsible Forge Section
+    rather than editing deliverables.
   - Small-model extra review can still force repair for real artifact
     mismatches, but it no longer gets to reinterpret a passed deterministic
     validation count gate as failure. Count/path/PDF/content-quantity
@@ -194,9 +204,9 @@ the contest demo path works end-to-end.** Driving doc:
     card; the browser then invokes the existing card/Full Forge flow
     rather than granting arbitrary tool execution inside chat.
   - The local harness server was restarted through the existing launchd
-    keep-alive path so the backend worker-action route is live
-    (latest restart old PID `49704`, new PID `63603` listening on
-    `127.0.0.1:5005`).
+    keep-alive path after the HTML/CSS false-negative patch; launchd reports
+    PID `61462` listening on `127.0.0.1:5005`, and `/api/model/route` returns
+    `200`.
   - `save_sessions()` now supports explicit `update_keys` so a long
     request only writes the project record it actually mutated. This
     prevents parallel card runs from rolling another project backward
@@ -396,6 +406,53 @@ the contest demo path works end-to-end.** Driving doc:
 - Demo model decision: `gemma-4-e4b-it` (E4B, installed local alias; official Ollama tag is `gemma4:e4b`).
 
 ## Shipped this session
+
+- **2026-05-24 — HTML/CSS validation pass.**
+  Started the next-language verifier port from
+  `docs/python-verification-fine-tuning.md`, bundling HTML and CSS because
+  their failure modes overlap. Added static deterministic checks for
+  model-authored HTML tag-pair mismatches and CSS unclosed
+  comments/strings or unbalanced braces/brackets/parentheses. Verification
+  now receives staged skill context for read-only review, reruns
+  deterministic checks against current artifacts, and routes unresolved
+  issues back to the responsible Forge Section rather than editing
+  deliverables. Pre-edit backups:
+  `/Users/webot/Backups/gemma-forge/20260524T181533Z-pre-html-css-validation/`,
+  `/Users/webot/Backups/gemma-forge/20260524T181958Z-pre-project-map-html-css-validation/`,
+  `/Users/webot/Backups/gemma-forge/20260524T182023Z-pre-current-state-html-css-validation/`.
+  Verification: focused unittest for HTML/CSS pass/fail and verifier
+  staged-skill context passed; `.venv/bin/python -m unittest discover -s
+  tests -p '*_test.py'` passed (97 tests); `npm run check` passed;
+  `git diff --check` passed.
+
+- **2026-05-24 — HTML/CSS verifier false-negative fix and workspace names.**
+  Followed up on two live dashboard failures where the generated page looked
+  correct but deterministic validation reported `deliverable.count expected at
+  least 2 html file(s)`. Root cause: Project Context interpreted "one HTML page
+  and one linked CSS file" as two HTML deliverables. Patched Context enrichment
+  and validation so linked CSS is a support file, not an extra HTML file; scoped
+  HTML content counts away from CSS selector/comment text; and tightened
+  "status cards" counting to actual HTML elements with a `status-card` class.
+  Auto-generated workspaces now prefer compact Project Context names such as
+  `local-ai-validation-lab-dashboard`, while preserving user-chosen directories.
+  Pre-edit backup:
+  `/Users/webot/Backups/gemma-forge/20260524T184739Z-pre-html-css-false-negative-fix/`.
+  Replay verification: both dashboard workspaces
+  `session_1779648021968` and `session_1779647234243` now pass with exactly 3
+  status cards; broken canary `session_1779648090315` still fails on invalid
+  HTML. Verification: focused unittest for false-negative/workspace-name cases
+  passed; `.venv/bin/python -m unittest discover -s tests -p '*_test.py'`
+  passed (102 tests); `npm run check` passed; `git diff --check` passed.
+  User verified the intended behavior after the live restart: the good HTML/CSS
+  session advanced to Handoff, while the bad-code session stopped for
+  resolution. Full live local working state was then backed up to external SSD
+  at
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260524T191659Z-full-live-local-working-state/`.
+  Per Ian, the model cache was omitted from this routine alignment backup; repo
+  state, ignored/runtime harness state, LaunchAgent metadata, restore archive,
+  manifest, and file list were preserved. Restore archive SHA-256:
+  `d7a91bd7905fc13140bae0379c727f3435c93789d5c15d594cd02403dae1980d`; checksum
+  verification passed.
 
 - **2026-05-24 — SSD backup and GitHub alignment.**
   Full live local working state was backed up to external SSD at

@@ -11,6 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 import hashlib
+from html.parser import HTMLParser
 import requests
 import yaml
 from urllib.parse import unquote
@@ -432,6 +433,25 @@ def utc_now():
 
 def safe_id(value):
     return re.sub(r"[^a-zA-Z0-9_.-]", "-", value).strip("-") or "session"
+
+
+def compact_slug(value, max_length=52, fallback="workspace"):
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", str(value or "").lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    if not slug:
+        return fallback
+    if len(slug) <= max_length:
+        return slug
+    words = [word for word in slug.split("-") if word]
+    kept = []
+    current = ""
+    for word in words:
+        candidate = "-".join(kept + [word])
+        if len(candidate) > max_length:
+            break
+        kept.append(word)
+        current = candidate
+    return current or slug[:max_length].strip("-") or fallback
 
 
 def normalize_directory_path(path):
@@ -4652,6 +4672,13 @@ def normalize_quantity_item(item):
         "tables": "table",
         "rows": "row",
     }
+    words = text.split()
+    if len(words) > 1:
+        tail = words[-1]
+        if tail in singular_aliases:
+            return singular_aliases[tail]
+        if tail in set(singular_aliases.values()):
+            return tail
     if text in singular_aliases:
         return singular_aliases[text]
     if text.endswith("ies"):
@@ -5309,6 +5336,10 @@ Take a moment. Reason carefully through seven steps in order:
      or "2 screenshots per category" are CONTENT requirements inside the deliverable.
    - Preserve those phrases in content_requirements, constraints.hard_requirements,
      and acceptance. Do NOT collapse them into vague wording like "structured content".
+   - For a web bundle such as "one HTML page and one linked CSS file",
+     deliverable.format is html and deliverable.count is the HTML file count
+     only. The CSS file is a support file named in acceptance/requirements,
+     not a second html deliverable.
 6. MAP source material and tools into agent-digestible context.
    - If the user names a local file or directory, treat it as binding source material. The harness imports it to the workspace.
    - Downstream agents must use copied workspace-relative paths, not original absolute paths, in commands.
@@ -5404,6 +5435,8 @@ Rules:
 - Quote the user verbatim in intent.surface_ask, in double-quotes.
 - deliverable.format must be one concrete canonical value from the list above.
 - deliverable.count is FILE count only. Put repeated content counts in content_requirements.
+- For HTML/CSS bundles, deliverable.count counts HTML files only; keep linked
+  CSS files as support files / acceptance requirements, not extra HTML files.
 - For runnable script requests, file/directory counts the script should create are
   script behavior requirements. Preserve them in content_requirements/acceptance,
   but keep deliverable.count as the number of script files to write.
@@ -5513,6 +5546,61 @@ def build_project_context_skill_plan(selected_keys, skills):
     return plan
 
 
+def normalize_html_css_support_bundle_context(parsed, project_text):
+    if not isinstance(parsed, dict):
+        return
+    deliverable = parsed.get("deliverable") if isinstance(parsed.get("deliverable"), dict) else {}
+    fmt = str(deliverable.get("format", "")).strip().lower()
+    if fmt != "html":
+        return
+    if not html_css_support_bundle_requested(parsed, extra_text=project_text):
+        return
+
+    reference_text = project_context_reference_text(parsed, extra_text=project_text)
+    expected = parse_positive_int(deliverable.get("count"))
+    primary_count = requested_html_file_count(reference_text)
+    if expected and primary_count and primary_count < expected:
+        deliverable["count"] = primary_count
+
+    css_files = dedupe_named_files_by_basename(named_files_in_text(reference_text, (".css",)))
+    if not css_files and re.search(r"\b(?:stylesheet|linked css|css file)\b", reference_text, re.IGNORECASE):
+        css_files = ["styles.css"]
+    if not css_files:
+        return
+
+    support_files = parsed.get("support_files") if isinstance(parsed.get("support_files"), list) else []
+    existing_css = {
+        str(item.get("path_pattern", "")).strip()
+        for item in support_files
+        if isinstance(item, dict) and str(item.get("format", "")).strip().lower() == "css"
+    }
+    for css_file in css_files:
+        if css_file in existing_css:
+            continue
+        support_files.append({
+            "format": "css",
+            "count": 1,
+            "path_pattern": css_file,
+            "required": True,
+        })
+    parsed["support_files"] = support_files
+
+    constraints = parsed.get("constraints") if isinstance(parsed.get("constraints"), dict) else {}
+    hard_requirements = constraints.get("hard_requirements") if isinstance(constraints.get("hard_requirements"), list) else []
+    hard_requirements = [str(item).strip() for item in hard_requirements if str(item).strip()]
+    acceptance = parsed.get("acceptance") if isinstance(parsed.get("acceptance"), list) else []
+    acceptance = [str(item).strip() for item in acceptance if str(item).strip()]
+    for css_file in css_files:
+        requirement = f"Linked CSS support file `{css_file}` must be present and referenced by the HTML."
+        if not any(css_file in item for item in hard_requirements):
+            hard_requirements.append(requirement)
+        if not any(css_file in item for item in acceptance):
+            acceptance.append(requirement)
+    constraints["hard_requirements"] = hard_requirements
+    parsed["constraints"] = constraints
+    parsed["acceptance"] = acceptance
+
+
 def enrich_project_context(parsed, project_text, model=None):
     """
     Post-process a freshly-parsed Project Context to guarantee correctness:
@@ -5537,6 +5625,8 @@ def enrich_project_context(parsed, project_text, model=None):
     canonical_anti = anti_deflection_text_for(fmt)
     if canonical_anti:
         deliverable["anti_deflection"] = canonical_anti
+
+    normalize_html_css_support_bundle_context(parsed, project_text or "")
 
     declared = parsed.get("capabilities_required")
     if not isinstance(declared, list):
@@ -6143,7 +6233,14 @@ def resolve_execution_workspace(session_id, session, project):
     requested = normalize_directory_path(session.get("projectDirectory", ""))
     if requested:
         return requested
-    return os.path.join(session_dir(session_id), "workspace", safe_id(project[:80]).lower())
+    context = session.get("projectContext") if isinstance(session, dict) else {}
+    project_info = context.get("project") if isinstance(context, dict) and isinstance(context.get("project"), dict) else {}
+    context_name = str(project_info.get("name", "")).strip()
+    return os.path.join(
+        session_dir(session_id),
+        "workspace",
+        compact_slug(context_name or project, max_length=52, fallback="deliverable"),
+    )
 
 
 def run_gsd_card(session_id, session, model, mode):
@@ -6697,6 +6794,10 @@ def run_verification_card(session_id, session, model, mode, correction=None):
 
 def build_verification_details(session_id, session, mode, model=None, correction=None):
     context = build_verification_context(session)
+    skill_context = None
+    workspace_dir = str(session.get("projectDirectory", "") or "").strip() if isinstance(session, dict) else ""
+    if workspace_dir and os.path.isdir(workspace_dir):
+        skill_context = prepare_workspace_skill_context(workspace_dir, session)
     correction_block = ""
     if isinstance(correction, dict):
         user_note = str(correction.get("userNote", "")).strip()
@@ -6714,6 +6815,9 @@ def build_verification_details(session_id, session, mode, model=None, correction
             )
     checklist = ""
     if model:
+        skill_block = (skill_context or {}).get("prompt") or (
+            "No Gemma Forge skills are staged for this verification pass."
+        )
         checklist = call_ollama(model, f"""Gemma Forge Verification card.
 Project: {session.get('project', '')}
 Mode: {mode}
@@ -6722,8 +6826,13 @@ Deterministic validation:
 {json.dumps(context.get('validation', {}), indent=2)}
 Files found:
 {json.dumps(context.get('filesFound', {}), indent=2)}
+
+Gemma Forge skill context for this read-only verification pass:
+{skill_block}
 {correction_block}
 Produce a short verification checklist from these actual artifacts. If auto-run is enabled, list the checks already run and any remaining manual inspection. If a correction block is present above, the checklist MUST explicitly say whether each user/reviewer item has now been satisfied.
+
+Verification may rerun deterministic checks and inspect the current workspace, but it must not edit deliverables. If issues remain, route the work back to the responsible Forge Section (usually Project Execution) with the exact blocker instead of proposing direct edits inside Verification.
 
 FORMATTING RULES — do not violate:
 - Refer to deliverables by their relative path in backticks only, e.g. `output/index.html` or `artifacts/validation.json`.
@@ -6732,7 +6841,7 @@ FORMATTING RULES — do not violate:
 - DO NOT add your own '### Local File Links' / '## File Links' / similar section. The harness emits one automatically; duplicating it just produces two lists, one of them wrong.
 - DO NOT invent file paths the harness did not list above. If a path is not in the 'Files found' map, do not reference it as if it exists.""")
 
-    details = build_verification_report(session_id, session, mode, context, checklist)
+    details = build_verification_report(session_id, session, mode, context, checklist, skill_context)
     return details, context.get("validation", {})
 
 
@@ -6923,7 +7032,7 @@ def extract_axon_dead_code_findings(session):
     return findings
 
 
-def build_verification_report(session_id, session, mode, context, checklist):
+def build_verification_report(session_id, session, mode, context, checklist, skill_context=None):
     validation = context.get("validation", {})
     lines = [
         "# Verification",
@@ -6942,9 +7051,29 @@ def build_verification_report(session_id, session, mode, context, checklist):
         "",
         json.dumps(validation, indent=2),
         "",
+    ]
+    if isinstance(skill_context, dict):
+        staged = skill_context.get("staged") if isinstance(skill_context.get("staged"), list) else []
+        lines.extend([
+            "## Staged Skill Context",
+            "",
+            f"- Skills root: `{skill_context.get('root', WORKSPACE_SKILLS_ROOT)}`",
+        ])
+        if staged:
+            for skill in staged:
+                if not isinstance(skill, dict):
+                    continue
+                marker = "requested" if skill.get("requested") else "available"
+                lines.append(
+                    f"- `{skill.get('name', skill.get('key', 'skill'))}` at `{skill.get('path', '')}` ({marker})"
+                )
+        else:
+            lines.append("- No staged skills were available.")
+        lines.append("")
+    lines.extend([
         "## Files Inspected",
         "",
-    ]
+    ])
     files_found = context.get("filesFound", {})
     if files_found:
         lines.extend([f"- `{path}`: {'found' if found else 'missing'}" for path, found in files_found.items()])
@@ -9250,6 +9379,132 @@ def path_pattern_parts(deliverable):
     return path_pattern, pattern_dir, pattern_ext
 
 
+def project_context_reference_text(project_context, extra_text=""):
+    chunks = []
+    if isinstance(project_context, dict):
+        project = project_context.get("project") if isinstance(project_context.get("project"), dict) else {}
+        chunks.extend(str(project.get(key, "")) for key in ("name", "type", "domain"))
+
+        intent = project_context.get("intent") if isinstance(project_context.get("intent"), dict) else {}
+        chunks.extend(str(intent.get(key, "")) for key in ("surface_ask", "underlying_need", "success_means"))
+
+        deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+        chunks.extend(str(deliverable.get(key, "")) for key in ("format", "count", "path_pattern", "scope"))
+
+        constraints = project_context.get("constraints") if isinstance(project_context.get("constraints"), dict) else {}
+        hard = constraints.get("hard_requirements") if isinstance(constraints.get("hard_requirements"), list) else []
+        chunks.extend(str(item) for item in hard)
+
+        acceptance = project_context.get("acceptance") if isinstance(project_context.get("acceptance"), list) else []
+        chunks.extend(str(item) for item in acceptance)
+
+        support_files = project_context.get("support_files") if isinstance(project_context.get("support_files"), list) else []
+        for item in support_files:
+            if isinstance(item, dict):
+                chunks.extend(str(item.get(key, "")) for key in ("format", "count", "path_pattern"))
+    if extra_text:
+        chunks.append(str(extra_text))
+    return "\n".join(chunk for chunk in chunks if str(chunk).strip())
+
+
+def named_files_in_text(text, extensions):
+    extensions = tuple(ext.lower().lstrip(".") for ext in extensions)
+    if not extensions:
+        return []
+    ext_pattern = "|".join(re.escape(ext) for ext in extensions)
+    pattern = re.compile(
+        rf"(?<![\w./-])([A-Za-z0-9_.\/-]+\.({ext_pattern}))(?![\w.-])",
+        re.IGNORECASE,
+    )
+    seen = set()
+    matches = []
+    for match in pattern.finditer(str(text or "")):
+        path = match.group(1).strip("`'\"“”‘’.,;:()[]{}<>")
+        path = path.replace("\\", "/").lstrip("./")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        matches.append(path)
+    return matches
+
+
+def dedupe_named_files_by_basename(paths):
+    deduped = []
+    seen = set()
+    for path in paths or []:
+        cleaned = str(path or "").replace("\\", "/").strip()
+        if not cleaned:
+            continue
+        key = os.path.basename(cleaned).lower() or cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(cleaned)
+    return deduped
+
+
+def requested_html_file_count(text):
+    text = str(text or "")
+    html_files = dedupe_named_files_by_basename(named_files_in_text(text, (".html", ".htm")))
+    if html_files:
+        return len(html_files)
+
+    patterns = [
+        re.compile(
+            rf"\b(?P<count>{COUNT_TOKEN_PATTERN})\s+html\s+(?:pages?|files?|documents?)\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            rf"\b(?P<count>{COUNT_TOKEN_PATTERN})\s+(?:single\s+)?html\s+page\b",
+            re.IGNORECASE,
+        ),
+    ]
+    for pattern in patterns:
+        match = pattern.search(text)
+        if match:
+            return parse_positive_int(match.group("count"))
+
+    if re.search(r"\b(?:one|1|single|a)\s+(?:linked\s+)?html\s+(?:page|file|document)\b", text, re.IGNORECASE):
+        return 1
+    if re.search(r"\b(?:single-page|single page|one-page|one page)\b", text, re.IGNORECASE):
+        return 1
+    return None
+
+
+def html_css_support_bundle_requested(project_context, extra_text=""):
+    text = project_context_reference_text(project_context, extra_text=extra_text).lower()
+    if not text:
+        return False
+    has_css = (
+        bool(named_files_in_text(text, (".css",)))
+        or "stylesheet" in text
+        or "css file" in text
+        or "linked css" in text
+    )
+    has_html = (
+        bool(named_files_in_text(text, (".html", ".htm")))
+        or "html" in text
+        or "webpage" in text
+        or "web page" in text
+        or "single-page" in text
+        or "single page" in text
+    )
+    return has_html and has_css
+
+
+def effective_deliverable_file_count(project_context):
+    if not isinstance(project_context, dict):
+        return None
+    deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+    expected = parse_positive_int(deliverable.get("count"))
+    fmt = str(deliverable.get("format", "")).strip().lower()
+    if fmt == "html" and expected and expected > 1 and html_css_support_bundle_requested(project_context):
+        primary_count = requested_html_file_count(project_context_reference_text(project_context))
+        if primary_count and primary_count < expected:
+            return primary_count
+    return expected
+
+
 def file_matches_deliverable(relative_path, deliverable):
     fmt = str((deliverable or {}).get("format", "")).strip().lower()
     path_pattern, pattern_dir, pattern_ext = path_pattern_parts(deliverable)
@@ -9271,7 +9526,7 @@ def validate_deliverable_file_count(files, project_context):
     if not isinstance(project_context, dict):
         return []
     deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
-    expected = parse_positive_int(deliverable.get("count"))
+    expected = effective_deliverable_file_count(project_context)
     if not expected or expected <= 1:
         return []
     matching = [
@@ -9288,48 +9543,235 @@ def validate_deliverable_file_count(files, project_context):
     ]
 
 
-def code_deliverable_files(files, project_context, extension):
+def code_deliverable_files_for_extensions(files, project_context, extensions):
     deliverable = project_context.get("deliverable") if isinstance(project_context, dict) and isinstance(project_context.get("deliverable"), dict) else {}
+    extensions = tuple(ext.lower() for ext in extensions)
     matching = [
         item for item in files
         if isinstance(item, dict)
-        and str(item.get("path", "")).lower().endswith(extension)
+        and str(item.get("path", "")).lower().endswith(extensions)
         and file_matches_deliverable(item.get("path", ""), deliverable)
     ]
     if matching:
         return matching
     return [
         item for item in files
-        if isinstance(item, dict) and str(item.get("path", "")).lower().endswith(extension)
+        if isinstance(item, dict) and str(item.get("path", "")).lower().endswith(extensions)
     ]
+
+
+def code_deliverable_files(files, project_context, extension):
+    return code_deliverable_files_for_extensions(files, project_context, (extension,))
+
+
+HTML_VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+}
+HTML_OPTIONAL_CLOSE_TAGS = {
+    "body", "colgroup", "dd", "dt", "head", "html", "li", "option",
+    "optgroup", "p", "tbody", "td", "tfoot", "th", "thead", "tr",
+}
+HTML_IMPLICIT_CLOSE_BEFORE_START = {
+    "dd": {"dd", "dt"},
+    "dt": {"dd", "dt"},
+    "li": {"li"},
+    "option": {"option"},
+    "optgroup": {"option", "optgroup"},
+    "p": {"p"},
+    "tbody": {"tbody", "thead", "tfoot"},
+    "td": {"td", "th"},
+    "tfoot": {"tbody", "thead", "tfoot"},
+    "th": {"td", "th"},
+    "thead": {"tbody", "thead", "tfoot"},
+    "tr": {"td", "th", "tr"},
+}
+
+
+class HTMLIntegrityParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack = []
+        self.errors = []
+
+    def handle_starttag(self, tag, attrs):
+        normalized = str(tag or "").lower()
+        if normalized and normalized not in HTML_VOID_TAGS:
+            closable = HTML_IMPLICIT_CLOSE_BEFORE_START.get(normalized, set())
+            while self.stack and self.stack[-1][0] in closable:
+                self.stack.pop()
+            self.stack.append((normalized, self.getpos()))
+
+    def handle_startendtag(self, tag, attrs):
+        return None
+
+    def handle_endtag(self, tag):
+        normalized = str(tag or "").lower()
+        if not normalized or normalized in HTML_VOID_TAGS:
+            return
+        if not self.stack:
+            line, col = self.getpos()
+            self.errors.append(f"closing tag </{normalized}> has no matching start tag at line {line}, column {col}")
+            return
+        open_tag, _pos = self.stack[-1]
+        if open_tag == normalized:
+            self.stack.pop()
+            return
+        open_tags = [item[0] for item in self.stack]
+        line, col = self.getpos()
+        while self.stack and self.stack[-1][0] in HTML_OPTIONAL_CLOSE_TAGS:
+            self.stack.pop()
+            if self.stack and self.stack[-1][0] == normalized:
+                self.stack.pop()
+                return
+        if normalized in open_tags:
+            self.errors.append(
+                f"closing tag </{normalized}> is mismatched at line {line}, column {col}; "
+                f"expected </{open_tag}> first"
+            )
+        else:
+            self.errors.append(f"closing tag </{normalized}> has no matching start tag at line {line}, column {col}")
+
+
+def validate_html_source(source, relative_path):
+    if not str(source or "").strip():
+        return "HTML file is empty"
+    parser = HTMLIntegrityParser()
+    try:
+        parser.feed(source)
+        parser.close()
+    except Exception as error:
+        return f"HTML parser rejected the file ({error})"
+    if parser.errors:
+        return parser.errors[0]
+    return ""
+
+
+CSS_BRACKET_PAIRS = {"}": "{", ")": "(", "]": "["}
+
+
+def css_line_col(source, index):
+    prefix = source[:index]
+    line = prefix.count("\n") + 1
+    last_newline = prefix.rfind("\n")
+    col = index + 1 if last_newline < 0 else index - last_newline
+    return line, col
+
+
+def validate_css_source(source, relative_path):
+    source = str(source or "")
+    if not source.strip():
+        return "CSS file is empty"
+    stack = []
+    quote = ""
+    escaped = False
+    in_comment = False
+    index = 0
+    while index < len(source):
+        char = source[index]
+        nxt = source[index + 1] if index + 1 < len(source) else ""
+        if in_comment:
+            if char == "*" and nxt == "/":
+                in_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char == "/" and nxt == "*":
+            in_comment = True
+            index += 2
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char in "{([":
+            stack.append((char, index))
+        elif char in CSS_BRACKET_PAIRS:
+            expected = CSS_BRACKET_PAIRS[char]
+            if not stack or stack[-1][0] != expected:
+                line, col = css_line_col(source, index)
+                return f"unexpected `{char}` at line {line}, column {col}"
+            stack.pop()
+        index += 1
+    if in_comment:
+        return "unterminated CSS comment"
+    if quote:
+        return f"unterminated CSS string starting with `{quote}`"
+    if stack:
+        opener, opener_index = stack[-1]
+        line, col = css_line_col(source, opener_index)
+        return f"unclosed `{opener}` opened at line {line}, column {col}"
+    return ""
 
 
 def validate_code_file_integrity(workspace_dir, files, project_context):
     failures = []
     deliverable = project_context.get("deliverable") if isinstance(project_context, dict) and isinstance(project_context.get("deliverable"), dict) else {}
     fmt = str(deliverable.get("format", "")).strip().lower()
-    if fmt != "python":
-        return failures
 
-    for item in code_deliverable_files(files, project_context, ".py"):
-        relative_path = item.get("path", "")
-        safe_path = safe_workspace_relative_path(relative_path)
-        if not safe_path:
-            continue
-        path = os.path.join(workspace_dir, safe_path)
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                source = f.read()
-            ast.parse(source, filename=safe_path)
-        except SyntaxError as error:
-            failures.append(
-                f"invalid Python deliverable `{safe_path}`: syntax error on line {error.lineno} "
-                f"({error.msg})"
-            )
-        except OSError as error:
-            failures.append(f"invalid Python deliverable `{safe_path}`: could not read file ({error})")
+    if fmt == "python":
+        for item in code_deliverable_files(files, project_context, ".py"):
+            relative_path = item.get("path", "")
+            safe_path = safe_workspace_relative_path(relative_path)
+            if not safe_path:
+                continue
+            path = os.path.join(workspace_dir, safe_path)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    source = f.read()
+                ast.parse(source, filename=safe_path)
+            except SyntaxError as error:
+                failures.append(
+                    f"invalid Python deliverable `{safe_path}`: syntax error on line {error.lineno} "
+                    f"({error.msg})"
+                )
+            except OSError as error:
+                failures.append(f"invalid Python deliverable `{safe_path}`: could not read file ({error})")
+
+    if fmt in {"html", "css"}:
+        for item in code_deliverable_files_for_extensions(files, project_context, (".html", ".htm")):
+            relative_path = item.get("path", "")
+            safe_path = safe_workspace_relative_path(relative_path)
+            if not safe_path:
+                continue
+            path = os.path.join(workspace_dir, safe_path)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    failure = validate_html_source(f.read(), safe_path)
+                if failure:
+                    failures.append(f"invalid HTML deliverable `{safe_path}`: {failure}")
+            except OSError as error:
+                failures.append(f"invalid HTML deliverable `{safe_path}`: could not read file ({error})")
+
+        for item in code_deliverable_files_for_extensions(files, project_context, (".css",)):
+            relative_path = item.get("path", "")
+            safe_path = safe_workspace_relative_path(relative_path)
+            if not safe_path:
+                continue
+            path = os.path.join(workspace_dir, safe_path)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    failure = validate_css_source(f.read(), safe_path)
+                if failure:
+                    failures.append(f"invalid CSS deliverable `{safe_path}`: {failure}")
+            except OSError as error:
+                failures.append(f"invalid CSS deliverable `{safe_path}`: could not read file ({error})")
     return failures
 
 
@@ -9490,7 +9932,20 @@ def validate_deliverable_file_integrity(workspace_dir, files, project_context):
     return failures
 
 
-def read_validation_text_files(workspace_dir, files):
+def validation_text_extensions(project_context):
+    if not isinstance(project_context, dict):
+        return None
+    deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+    fmt = str(deliverable.get("format", "")).strip().lower()
+    if fmt == "html":
+        # UI/component counts should measure rendered document structure.
+        # CSS selector names and comments are support code, not extra cards.
+        return {".html", ".htm", ".md", ".markdown", ".txt", ".pdf"}
+    return None
+
+
+def read_validation_text_files(workspace_dir, files, project_context=None):
+    allowed_extensions = validation_text_extensions(project_context)
     chunks = []
     for item in files:
         relative_path = item.get("path", "") if isinstance(item, dict) else ""
@@ -9498,6 +9953,8 @@ def read_validation_text_files(workspace_dir, files):
         if not safe_path:
             continue
         ext = os.path.splitext(safe_path)[1].lower()
+        if allowed_extensions is not None and ext not in allowed_extensions:
+            continue
         if ext not in TEXT_CONTENT_EXTENSIONS and ext != ".pdf":
             continue
         path = os.path.join(workspace_dir, safe_path)
@@ -9701,9 +10158,16 @@ def validate_python_script_runtime_side_effects(workspace_dir, files, project_co
 
 
 def count_content_units(text, item):
+    raw_item = str(item or "").lower()
     normalized_item = normalize_quantity_item(item)
     if not text:
         return 0
+
+    if "status" in raw_item and normalized_item == "card":
+        return regex_count(
+            r"<(?:div|section|li|article)\b(?=[^>]*\bclass\s*=\s*['\"][^'\"]*\bstatus-card\b)[^>]*>",
+            text,
+        )
 
     if normalized_item in {"article", "headline", "story", "topic"}:
         candidates = [
@@ -9778,7 +10242,7 @@ def validate_content_quantity_requirements(workspace_dir, files, project_context
     if not requirements:
         return [], []
 
-    combined_text = read_validation_text_files(workspace_dir, files)
+    combined_text = read_validation_text_files(workspace_dir, files, project_context)
     results = []
     failures = []
     script_runtime_requirements = []

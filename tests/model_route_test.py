@@ -742,6 +742,36 @@ reason: Continue the active Forge flow.
         self.assertEqual(result["workspace"], desired_path)
         self.assertEqual(session["projectDirectory"], desired_path)
 
+    def test_execution_workspace_uses_compact_context_name(self):
+        session = {
+            "project": (
+                "Build a small HTML/CSS single-page Local AI Validation Lab dashboard. "
+                "Deliver one HTML page and one linked CSS file."
+            ),
+            "projectDirectory": "",
+            "projectContext": {
+                "project": {"name": "Local AI Validation Lab Dashboard"}
+            },
+        }
+
+        workspace = server.resolve_execution_workspace("compact-workspace-test", session, session["project"])
+
+        self.assertTrue(workspace.endswith("/workspace/local-ai-validation-lab-dashboard"))
+        self.assertNotIn("build-a-small-html-css", workspace)
+
+    def test_execution_workspace_fallback_slug_is_short_and_clean(self):
+        session = {
+            "project": "Build a small HTML/CSS single-page “Local AI Validation Lab” dashboard. Deliver one HTML page and one linked CSS file.",
+            "projectDirectory": "",
+        }
+
+        workspace = server.resolve_execution_workspace("compact-fallback-test", session, session["project"])
+        dirname = os.path.basename(workspace)
+
+        self.assertLessEqual(len(dirname), 52)
+        self.assertNotIn("--", dirname)
+        self.assertNotIn(".", dirname)
+
     def test_model_authored_execution_writes_only_model_returned_files(self):
         session_id = "model-authored"
         session = {
@@ -1144,6 +1174,56 @@ VERIFICATION:
         self.assertTrue(review["passed"])
         self.assertEqual(review["fixesNeeded"], [])
         self.assertIn("Verification is read-only", " ".join(review["findings"]))
+
+    def test_verification_prompt_receives_staged_skill_context(self):
+        workspace_dir = os.path.join(self.tmp.name, "verification-skill-context")
+        os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write("<!doctype html><html><body><h1>Demo</h1></body></html>")
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+        with open(os.path.join(workspace_dir, "artifacts", "model-execution.json"), "w") as f:
+            json.dump(metadata, f)
+
+        session = {
+            "project": "Build a polished HTML/CSS page.",
+            "projectDirectory": workspace_dir,
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "skill": {"use": "code-writer"},
+            },
+        }
+        captured = {}
+
+        def fake_call(_model, prompt):
+            captured["prompt"] = prompt
+            return "- Inspect `index.html`."
+
+        skill_context = {
+            "root": ".gforge/skills",
+            "staged": [{"name": "code-writer", "path": ".gforge/skills/code-writer", "requested": True}],
+            "prompt": "Skill Usage Plan: Code Writer owns HTML/CSS implementation and validation.",
+        }
+        with patch.object(server, "prepare_workspace_skill_context", return_value=skill_context), \
+                patch.object(server, "call_ollama", side_effect=fake_call):
+            details, validation = server.build_verification_details(
+                "verification-skill-context",
+                session,
+                "auto",
+                model="gemma-4",
+            )
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertIn("Skill Usage Plan: Code Writer", captured["prompt"])
+        self.assertIn("route the work back to the responsible Forge Section", captured["prompt"])
+        self.assertIn("## Staged Skill Context", details)
+        self.assertIn("code-writer", details)
 
     def test_verification_repair_never_reruns_execution(self):
         session = {
@@ -1674,6 +1754,231 @@ open_questions: []
         self.assertFalse(validation["passed"])
         self.assertEqual(validation["contentRequirements"][0]["actual"], 1)
         self.assertTrue(any("content requirement expected at least 3" in item for item in validation["failures"]))
+
+    def test_html_css_deliverables_pass_integrity_validation(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-css-valid")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html>\n"
+                "<html><head><title>Demo</title><link rel=\"stylesheet\" href=\"styles.css\"></head>"
+                "<body><main><h1>Hello</h1></main></body></html>"
+            )
+        with open(os.path.join(workspace_dir, "styles.css"), "w") as f:
+            f.write("body { margin: 0; color: #123456; } main { min-height: 100vh; }")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}, {"path": "styles.css"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+
+    def test_html_css_bundle_does_not_count_support_css_as_second_html_file(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-css-support-count")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><head><link rel=\"stylesheet\" href=\"styles.css\"></head>"
+                "<body><main><article class=\"status-card\">Ready</article></main></body></html>"
+            )
+        with open(os.path.join(workspace_dir, "styles.css"), "w") as f:
+            f.write(".status-card { display: grid; }")
+
+        session = {
+            "projectContext": {
+                "intent": {
+                    "surface_ask": (
+                        "Deliver one HTML page and one linked CSS file named styles.css."
+                    )
+                },
+                "deliverable": {"format": "html", "count": 2, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+                "acceptance": ["index.html exists.", "styles.css exists."],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}, {"path": "styles.css"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+
+    def test_html_content_counts_ignore_css_selector_text(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-css-content-scope")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><head><link rel=\"stylesheet\" href=\"styles.css\"></head><body>"
+                "<main>"
+                "<article class=\"status-card status-ok\">Ready</article>"
+                "<article class=\"status-card status-warning\">Watch</article>"
+                "<article class=\"status-card status-danger\">Blocked</article>"
+                "</main></body></html>"
+            )
+        with open(os.path.join(workspace_dir, "styles.css"), "w") as f:
+            f.write(
+                "/* Status Cards Grid */\n"
+                ".status-card { display: grid; }\n"
+                ".status-card:hover { transform: translateY(-1px); }\n"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 3,
+                        "item": "status cards",
+                        "scope": "The main dashboard body",
+                        "source": "3 status cards",
+                    }
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}, {"path": "styles.css"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 3)
+
+    def test_html_css_context_enrichment_treats_css_as_support_file(self):
+        parsed = {
+            "project": {"name": "dashboard", "type": "code", "domain": "web"},
+            "intent": {
+                "surface_ask": "Deliver one HTML page and one linked CSS file named styles.css.",
+                "underlying_need": "A small web page.",
+                "success_means": "index.html links styles.css.",
+            },
+            "deliverable": {
+                "format": "html",
+                "count": 2,
+                "path_pattern": "index.html",
+                "encoding": "gforge_file_block",
+                "partial": False,
+                "scope": "One page plus support stylesheet.",
+                "anti_deflection": "stub",
+            },
+            "capabilities_required": ["emit_files"],
+            "constraints": {"hard_requirements": []},
+            "skill": {"use": "code-writer"},
+            "acceptance": ["index.html exists.", "styles.css exists."],
+            "open_questions": [],
+            "content_requirements": [],
+        }
+
+        server.enrich_project_context(
+            parsed,
+            "Build one HTML page and one linked CSS file named styles.css.",
+            model="gemma-4-e4b-it",
+        )
+
+        self.assertEqual(parsed["deliverable"]["count"], 1)
+        self.assertEqual(parsed["support_files"][0]["format"], "css")
+        self.assertEqual(parsed["support_files"][0]["path_pattern"], "styles.css")
+
+    def test_invalid_html_deliverable_blocks_delivery(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-invalid")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write("<!doctype html><html><body><main><h1>Broken</h1></section></body></html>")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("invalid HTML deliverable" in item for item in validation["failures"]))
+
+    def test_html_integrity_allows_common_optional_close_tags(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-optional-tags")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write("<!doctype html><html><body><ul><li>One<li>Two</ul><p>First<p>Second</body></html>")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+
+    def test_invalid_css_deliverable_blocks_delivery(self):
+        workspace_dir = os.path.join(self.tmp.name, "css-invalid")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "styles.css"), "w") as f:
+            f.write("body { color: #123456; .card { display: grid; }")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "css", "count": 1, "path_pattern": "styles.css"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "styles.css"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("invalid CSS deliverable" in item for item in validation["failures"]))
 
     def test_python_script_side_effect_counts_are_validated_in_temp_run(self):
         workspace_dir = os.path.join(self.tmp.name, "script-side-effects")
