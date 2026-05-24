@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-24 (UTC) — JavaScript verifier SSD/GitHub alignment prepared.
+Last updated: 2026-05-24 (UTC) — SQL verifier SSD/GitHub alignment prepared.
 
 ## Verified ground truth
 
@@ -8,7 +8,7 @@ Last updated: 2026-05-24 (UTC) — JavaScript verifier SSD/GitHub alignment prep
 - Branch: `main` tracking `origin/main`; current branch head is the
   installable repo state for this backup pass once pushed to GitHub.
   Runtime/generated/private harness state remains local/SSD-only.
-- Harness Flask server source: `chat/server.py` (11,553 lines).
+- Harness Flask server source: `chat/server.py` (11,931 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, JavaScript deterministic validation, and SSD/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, JavaScript deterministic validation, SQL baseline validation, and SSD/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -126,6 +126,16 @@ the contest demo path works end-to-end.** Driving doc:
     receives staged skill context for read-only review, may rerun deterministic
     checks against current artifacts, and must route unresolved issues back to
     the responsible Forge Section rather than editing deliverables.
+  - SQL baseline validation is intentionally lightweight and read-only. `.sql`
+    deliverables are not executed against any database; the verifier only catches
+    obvious broken files such as empty/non-SQL output, unclosed SQL strings or
+    quoted identifiers, unterminated block or dollar-quoted strings, and
+    unbalanced parentheses. SQL statement counts such as "two INSERT statements"
+    now count actual statement shapes like `INSERT INTO`, ignoring comments and
+    string literals, and are exact unless the contract explicitly says "at
+    least" or another minimum-count phrase. Deeper dialect/schema/database
+    behavior remains the job of the SQL/code skill or user-provided project
+    instructions.
   - JS live canary follow-up: the pure `app.js` utility passed harness
     validation and direct `node` functional import. The HTML+JS canary produced
     working code but exposed a verifier false negative: "three sample system
@@ -352,6 +362,17 @@ the contest demo path works end-to-end.** Driving doc:
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T210703Z-full-live-local-working-state/`
+    (post-SQL-verifier alignment backup target; includes repo snapshot,
+    ignored repo/runtime files, `~/.gforge/harness`, `~/.gforge/models`,
+    LaunchAgent metadata, and a restore archive; checksum verification recorded
+    in the backup manifests)
+  - `/Users/webot/Backups/gemma-forge/20260524T203454Z-pre-sql-validation/`
+    (`chat/server.py`, `tests/model_route_test.py`, `project-map.md`, and
+    current handoff state before SQL baseline validation edits)
+  - `/Users/webot/Backups/gemma-forge/20260524T205628Z-pre-sql-count-fine-tune/`
+    (`chat/server.py`, `tests/model_route_test.py`, `project-map.md`, and
+    current handoff state before SQL statement-count fine-tuning)
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T202333Z-full-live-local-working-state/`
     (final JavaScript verifier alignment backup; includes repo snapshot,
     ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent metadata, and
@@ -546,6 +567,58 @@ the contest demo path works end-to-end.** Driving doc:
   ignored repo/runtime state, `~/.gforge/harness`, LaunchAgent metadata, and a
   restore archive. GitHub alignment covers the installable repo state only;
   runtime/private harness data remains SSD/local-only.
+
+- **2026-05-24 — SQL baseline validation pass.**
+  Added a ground-level, non-executing `.sql` validator to `chat/server.py`. It
+  does not set up SQLite/Postgres/MySQL, connect to a database, run migrations,
+  or enforce dialect-specific semantics. It only performs static sanity checks:
+  empty/non-SQL output, unclosed strings/quoted identifiers, unterminated block
+  comments, unterminated PostgreSQL-style dollar-quoted strings, unexpected or
+  unclosed parentheses, and at least one recognizable common SQL statement
+  shape. Tests cover valid schema/query SQL, unclosed string failure,
+  unbalanced parenthesis failure, and plain text saved as `.sql` failure.
+  Pre-edit backup:
+  `/Users/webot/Backups/gemma-forge/20260524T203454Z-pre-sql-validation/`.
+  Verification: focused SQL tests passed (4 tests); `.venv/bin/python -m
+  unittest discover -s tests -p '*_test.py'` passed (114 tests); `npm run check`
+  passed; `git diff --check` passed. Live restart: `npm run harness:restart`
+  reloaded launchd but returned before port readiness; follow-up
+  `npm run harness:status` showed launchd PID `52140` listening on
+  `127.0.0.1:5005`, and harness root, `/api/workspace/status`, and
+  `/api/model/route` returned `200`/valid JSON.
+
+- **2026-05-24 — SQL statement-count fine-tune.**
+  Ian's first SQL canary produced final `schema.sql` with three actual
+  `INSERT INTO` statements, while the reviewer/validator claimed it found only
+  one insert statement. Root cause: content quantity validation used generic
+  prose counting, so it counted the comment phrase "INSERT statements" instead
+  of SQL statements. Added SQL-aware statement counting that strips comments and
+  string/dollar-quoted literals before counting statement shapes such as
+  `INSERT INTO`. Structural SQL statement requirements are treated as exact
+  counts unless the source requirement explicitly says "at least", "minimum",
+  "no fewer than", or similar. Replay of `session_1779655588145` now fails for
+  the correct reason: expected exactly 2 `insert statements`, found 3. Pre-edit
+  backup:
+  `/Users/webot/Backups/gemma-forge/20260524T205628Z-pre-sql-count-fine-tune/`.
+  Verification: focused SQL statement-count tests passed (6 tests);
+  `.venv/bin/python -m unittest discover -s tests -p '*_test.py'` passed (116
+  tests; one Python subprocess ResourceWarning was printed but the suite
+  completed OK); `npm run check` passed; `git diff --check` passed. Live
+  restart: `npm run harness:restart` reloaded launchd but returned before port
+  readiness; follow-up `npm run harness:status` showed launchd PID `72704`
+  listening on `127.0.0.1:5005`, and harness root, `/api/workspace/status`, and
+  `/api/model/route` returned `200`/valid JSON.
+
+- **2026-05-24 — SQL verifier SSD backup and GitHub alignment.**
+  Ian confirmed the SQL statement-count retest processed perfectly and requested
+  post-edit backup to the external SSD plus GitHub push. Pre-alignment state:
+  branch `main`, dirty files limited to `.handoffs/CURRENT_STATE.md`,
+  `chat/server.py`, `project-map.md`, and `tests/model_route_test.py`; launchd
+  harness PID `72704` listening on `127.0.0.1:5005`; `/api/model/route`
+  returned `defaultModel=gemma-4-e4b-it`. Final backup target:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260524T210703Z-full-live-local-working-state/`.
+  This backup includes `~/.gforge/models` because this request did not omit the
+  model cache.
 
 - **2026-05-24 — SSD backup and GitHub alignment.**
   Full live local working state was backed up to external SSD at

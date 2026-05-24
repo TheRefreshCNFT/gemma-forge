@@ -221,12 +221,17 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   are syntax-checked, and script-created file/directory counts are inferred from
   the contract/acceptance when needed, validated by running the script in a
   temporary workspace, and then deleted rather than treated as final deliverables.
-  HTML/CSS/JavaScript deliverables now get static read-only integrity validation:
-  `.html`/`.htm` files fail on clear tag-pair mismatches, `.css` files fail on
-  unclosed comments/strings or unbalanced brackets/braces/parentheses, and
-  `.js`/`.mjs`/`.cjs` files are parsed with `node --check` without executing
-  model-authored code. Existing local-link validation still checks referenced
-  assets against disk. HTML bundle contracts treat linked CSS/JS as support
+  HTML/CSS/JavaScript/SQL deliverables now get static read-only integrity
+  validation: `.html`/`.htm` files fail on clear tag-pair mismatches, `.css`
+  files fail on unclosed comments/strings or unbalanced brackets/braces/
+  parentheses, `.js`/`.mjs`/`.cjs` files are parsed with `node --check` without
+  executing model-authored code, and `.sql` files receive a lightweight
+  non-executing sanity scan for empty/non-SQL files, unclosed SQL strings or
+  comments, dollar-quoted string closure, and unbalanced parentheses. SQL content
+  counts use actual statement shapes, e.g. `INSERT INTO`, ignoring comments and
+  string literals; structural SQL statement counts are exact unless the request
+  says "at least" or another minimum-count phrase. Existing local-link validation
+  still checks referenced assets against disk. HTML bundle contracts treat linked CSS/JS as support
   files, so "one HTML page and one linked CSS/JS file" validates as one primary
   HTML deliverable plus support files instead of extra HTML files. HTML content
   counts ignore CSS/JS support-code text and count specific UI elements such as

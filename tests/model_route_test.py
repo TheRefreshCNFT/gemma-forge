@@ -1980,6 +1980,202 @@ open_questions: []
         self.assertFalse(validation["passed"])
         self.assertTrue(any("invalid CSS deliverable" in item for item in validation["failures"]))
 
+    def test_valid_sql_deliverable_passes_basic_static_validation(self):
+        workspace_dir = os.path.join(self.tmp.name, "sql-valid")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "schema.sql"), "w") as f:
+            f.write(
+                "-- Basic user status schema\n"
+                "CREATE TABLE users (\n"
+                "  id INTEGER PRIMARY KEY,\n"
+                "  email TEXT NOT NULL,\n"
+                "  status TEXT CHECK (status IN ('active', 'paused'))\n"
+                ");\n"
+                "INSERT INTO users (email, status) VALUES ('ian@example.com', 'active');\n"
+                "SELECT id, email FROM users WHERE status = 'active';\n"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "sql", "count": 1, "path_pattern": "schema.sql"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "schema.sql"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+
+    def test_invalid_sql_deliverable_blocks_unclosed_string(self):
+        workspace_dir = os.path.join(self.tmp.name, "sql-unclosed-string")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "query.sql"), "w") as f:
+            f.write("SELECT * FROM users WHERE status = 'active;\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "sql", "count": 1, "path_pattern": "query.sql"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "query.sql"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("invalid SQL deliverable" in item for item in validation["failures"]))
+        self.assertTrue(any("unterminated SQL string" in item for item in validation["failures"]))
+
+    def test_invalid_sql_deliverable_blocks_unbalanced_parentheses(self):
+        workspace_dir = os.path.join(self.tmp.name, "sql-unbalanced")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "schema.sql"), "w") as f:
+            f.write("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL;\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "sql", "count": 1, "path_pattern": "schema.sql"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "schema.sql"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("unclosed `(`" in item for item in validation["failures"]))
+
+    def test_sql_deliverable_rejects_plain_text_without_sql_statement(self):
+        workspace_dir = os.path.join(self.tmp.name, "sql-not-sql")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "notes.sql"), "w") as f:
+            f.write("Begin from a future database idea, but this is not a query.\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "sql", "count": 1, "path_pattern": "notes.sql"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "notes.sql"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("recognizable SQL statement" in item for item in validation["failures"]))
+
+    def test_sql_insert_statement_count_ignores_comments_and_requires_exact_count(self):
+        workspace_dir = os.path.join(self.tmp.name, "sql-insert-count-exact")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "schema.sql"), "w") as f:
+            f.write(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, status TEXT);\n"
+                "-- Requirement says two INSERT statements, but comments should not count.\n"
+                "INSERT INTO users (id, email, status) VALUES (1, 'a@example.com', 'active');\n"
+                "INSERT INTO users (id, email, status) VALUES (2, 'b@example.com', 'paused');\n"
+                "INSERT INTO users (id, email, status) VALUES (3, 'c@example.com', 'active');\n"
+                "SELECT id FROM users WHERE status = 'active';\n"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "sql", "count": 1, "path_pattern": "schema.sql"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 2,
+                        "item": "insert statements",
+                        "scope": "Data population",
+                        "source": "Two INSERT statements with sample users",
+                    }
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "schema.sql"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 3)
+        self.assertEqual(validation["contentRequirements"][0]["operator"], "exact")
+        self.assertTrue(any("expected exactly 2" in item for item in validation["failures"]))
+
+    def test_sql_insert_statement_count_allows_at_least_wording(self):
+        workspace_dir = os.path.join(self.tmp.name, "sql-insert-count-minimum")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "schema.sql"), "w") as f:
+            f.write(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, status TEXT);\n"
+                "-- At least two INSERT statements are required.\n"
+                "INSERT INTO users (id, email, status) VALUES (1, 'a@example.com', 'active');\n"
+                "INSERT INTO users (id, email, status) VALUES (2, 'b@example.com', 'paused');\n"
+                "INSERT INTO users (id, email, status) VALUES (3, 'c@example.com', 'active');\n"
+                "SELECT id FROM users WHERE status = 'active';\n"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "sql", "count": 1, "path_pattern": "schema.sql"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 2,
+                        "item": "insert statements",
+                        "scope": "Data population",
+                        "source": "At least two INSERT statements with sample users",
+                    }
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "schema.sql"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 3)
+        self.assertNotIn("operator", validation["contentRequirements"][0])
+
     def test_valid_javascript_deliverable_passes_syntax_validation(self):
         workspace_dir = os.path.join(self.tmp.name, "js-valid")
         os.makedirs(workspace_dir, exist_ok=True)

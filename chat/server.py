@@ -4878,7 +4878,8 @@ def content_requirement_line(requirement):
     scope = str(requirement.get("scope", "whole deliverable")).strip() or "whole deliverable"
     source = str(requirement.get("source", "")).strip()
     suffix = f" Source: {source}" if source else ""
-    return f"At least {count} {item} inside the deliverable ({scope}).{suffix}"
+    prefix = "Exactly" if content_requirement_uses_exact_count(requirement) else "At least"
+    return f"{prefix} {count} {item} inside the deliverable ({scope}).{suffix}"
 
 
 def merge_content_quantity_requirements(existing, detected):
@@ -9868,6 +9869,154 @@ def validate_javascript_file_syntax(path, relative_path):
     return ""
 
 
+SQL_SYNTAX_EXTENSIONS = (".sql",)
+
+
+def sql_dollar_quote_delimiter_at(source, index):
+    match = re.match(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$", source[index:])
+    return match.group(0) if match else ""
+
+
+def sql_tokens_contain_statement(tokens):
+    text = " ".join(tokens)
+    if not text:
+        return False
+    statement_patterns = (
+        r"\bselect\b.+\bfrom\b",
+        r"\binsert\b.+\binto\b",
+        r"\bupdate\b.+\bset\b",
+        r"\bdelete\b.+\bfrom\b",
+        r"\bcreate\b.+\b(?:table|view|index|schema|database|trigger|procedure|function)\b",
+        r"\balter\b.+\b(?:table|view|index|schema|database)\b",
+        r"\bdrop\b.+\b(?:table|view|index|schema|database|trigger|procedure|function)\b",
+        r"\bmerge\b.+\binto\b",
+        r"\btruncate\b.+\b(?:table\b)?",
+        r"\bgrant\b.+\b(?:on|to)\b",
+        r"\brevoke\b.+\b(?:on|from)\b",
+        r"\bcopy\b.+\b(?:from|to)\b",
+        r"\bpragma\b",
+        r"\b(?:begin|commit|rollback)\b.+\b(?:transaction|work)\b",
+        r"\b(?:explain|analyze|vacuum|attach|detach|call|declare|replace)\b",
+    )
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in statement_patterns)
+
+
+def validate_sql_source(source, relative_path):
+    source = str(source or "")
+    if not source.strip():
+        return "SQL file is empty"
+
+    stack = []
+    quote = ""
+    quote_start = 0
+    in_block_comment = False
+    block_comment_start = 0
+    tokens = []
+    current_token = []
+    index = 0
+
+    def flush_token():
+        if current_token:
+            tokens.append("".join(current_token).lower())
+            current_token.clear()
+
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if next_char == quote:
+                    index += 2
+                    continue
+                quote = ""
+            index += 1
+            continue
+
+        if in_block_comment:
+            if char == "*" and next_char == "/":
+                in_block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+
+        delimiter = sql_dollar_quote_delimiter_at(source, index) if char == "$" else ""
+        if delimiter:
+            end_index = source.find(delimiter, index + len(delimiter))
+            if end_index < 0:
+                line, col = css_line_col(source, index)
+                return f"unterminated SQL dollar-quoted string starting at line {line}, column {col}"
+            flush_token()
+            index = end_index + len(delimiter)
+            continue
+
+        if char == "-" and next_char == "-":
+            flush_token()
+            newline_index = source.find("\n", index + 2)
+            if newline_index < 0:
+                break
+            index = newline_index + 1
+            continue
+        if char == "#":
+            flush_token()
+            newline_index = source.find("\n", index + 1)
+            if newline_index < 0:
+                break
+            index = newline_index + 1
+            continue
+        if char == "/" and next_char == "*":
+            flush_token()
+            in_block_comment = True
+            block_comment_start = index
+            index += 2
+            continue
+
+        if char in {"'", '"', "`"}:
+            flush_token()
+            quote = char
+            quote_start = index
+            index += 1
+            continue
+
+        if char == "(":
+            flush_token()
+            stack.append(index)
+            index += 1
+            continue
+        if char == ")":
+            flush_token()
+            if not stack:
+                line, col = css_line_col(source, index)
+                return f"unexpected `)` at line {line}, column {col}"
+            stack.pop()
+            index += 1
+            continue
+
+        if char.isalnum() or char == "_":
+            current_token.append(char)
+        else:
+            flush_token()
+        index += 1
+
+    flush_token()
+    if in_block_comment:
+        line, col = css_line_col(source, block_comment_start)
+        return f"unterminated SQL block comment starting at line {line}, column {col}"
+    if quote:
+        line, col = css_line_col(source, quote_start)
+        return f"unterminated SQL string or quoted identifier starting with `{quote}` at line {line}, column {col}"
+    if stack:
+        line, col = css_line_col(source, stack[-1])
+        return f"unclosed `(` opened at line {line}, column {col}"
+    if not sql_tokens_contain_statement(tokens):
+        return "SQL file does not contain a recognizable SQL statement"
+    return ""
+
+
 def validate_code_file_integrity(workspace_dir, files, project_context):
     failures = []
     deliverable = project_context.get("deliverable") if isinstance(project_context, dict) and isinstance(project_context.get("deliverable"), dict) else {}
@@ -9939,6 +10088,23 @@ def validate_code_file_integrity(workspace_dir, files, project_context):
             failure = validate_javascript_file_syntax(path, safe_path)
             if failure:
                 failures.append(f"invalid JavaScript deliverable `{safe_path}`: {failure}")
+
+    if fmt == "sql":
+        for item in code_deliverable_files_for_extensions(files, project_context, SQL_SYNTAX_EXTENSIONS):
+            relative_path = item.get("path", "")
+            safe_path = safe_workspace_relative_path(relative_path)
+            if not safe_path:
+                continue
+            path = os.path.join(workspace_dir, safe_path)
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    failure = validate_sql_source(f.read(), safe_path)
+                if failure:
+                    failures.append(f"invalid SQL deliverable `{safe_path}`: {failure}")
+            except OSError as error:
+                failures.append(f"invalid SQL deliverable `{safe_path}`: could not read file ({error})")
     return failures
 
 
@@ -10153,6 +10319,110 @@ def content_requirement_text(requirement):
     ).lower()
 
 
+SQL_CONTENT_STATEMENT_PATTERNS = {
+    "insert": r"\binsert\s+into\b",
+    "select": r"\bselect\b(?:(?!;).)*\bfrom\b",
+    "update": r"\bupdate\b(?:(?!;).)*\bset\b",
+    "delete": r"\bdelete\b(?:(?!;).)*\bfrom\b",
+    "create": r"\bcreate\s+(?:table|view|index|schema|database|trigger|procedure|function)\b",
+    "alter": r"\balter\s+(?:table|view|index|schema|database)\b",
+    "drop": r"\bdrop\s+(?:table|view|index|schema|database|trigger|procedure|function)\b",
+}
+
+
+def sql_content_statement_kind(requirement, raw_item=""):
+    text = f"{raw_item} {content_requirement_text(requirement)}".lower()
+    if not re.search(r"\b(?:statements?|queries?|query)\b", text):
+        return ""
+    for keyword in SQL_CONTENT_STATEMENT_PATTERNS:
+        if re.search(rf"\b{keyword}\b", text):
+            return keyword
+    return ""
+
+
+def sql_source_without_comments_and_literals(source):
+    source = str(source or "")
+    output = []
+    quote = ""
+    in_block_comment = False
+    index = 0
+    while index < len(source):
+        char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                if next_char == quote:
+                    index += 2
+                    continue
+                quote = ""
+            index += 1
+            continue
+
+        if in_block_comment:
+            if char == "*" and next_char == "/":
+                in_block_comment = False
+                index += 2
+                continue
+            index += 1
+            continue
+
+        delimiter = sql_dollar_quote_delimiter_at(source, index) if char == "$" else ""
+        if delimiter:
+            end_index = source.find(delimiter, index + len(delimiter))
+            if end_index < 0:
+                break
+            output.append(" ")
+            index = end_index + len(delimiter)
+            continue
+
+        if char == "-" and next_char == "-":
+            newline_index = source.find("\n", index + 2)
+            if newline_index < 0:
+                break
+            output.append("\n")
+            index = newline_index + 1
+            continue
+        if char == "#":
+            newline_index = source.find("\n", index + 1)
+            if newline_index < 0:
+                break
+            output.append("\n")
+            index = newline_index + 1
+            continue
+        if char == "/" and next_char == "*":
+            in_block_comment = True
+            output.append(" ")
+            index += 2
+            continue
+        if char in {"'", '"', "`"}:
+            quote = char
+            output.append(" ")
+            index += 1
+            continue
+
+        output.append(char)
+        index += 1
+    return "".join(output)
+
+
+def count_sql_statement_occurrences(source, statement_kind):
+    pattern = SQL_CONTENT_STATEMENT_PATTERNS.get(statement_kind)
+    if not pattern:
+        return 0
+    return regex_count(pattern, sql_source_without_comments_and_literals(source))
+
+
+def content_requirement_uses_exact_count(requirement):
+    text = content_requirement_text(requirement)
+    if re.search(r"\b(?:at\s+least|minimum|min\.?|no\s+fewer\s+than|or\s+more)\b", text):
+        return False
+    return bool(sql_content_statement_kind(requirement))
+
+
 def content_requirement_is_script_runtime_side_effect(requirement, project_context):
     if not isinstance(project_context, dict):
         return False
@@ -10347,6 +10617,10 @@ def count_content_units(text, item, requirement=None):
     if not text:
         return 0
 
+    statement_kind = sql_content_statement_kind(requirement, raw_item=raw_item)
+    if statement_kind:
+        return count_sql_statement_occurrences(text, statement_kind)
+
     if requirement and content_requirement_requests_list_count(requirement, normalized_item):
         unordered_only = "unordered" in content_requirement_text(requirement) or "<ul" in content_requirement_text(requirement)
         return count_html_list_items(text, unordered_only=unordered_only)
@@ -10486,8 +10760,17 @@ def validate_content_quantity_requirements(workspace_dir, files, project_context
             "scope": requirement.get("scope", "whole deliverable"),
             "source": requirement.get("source", ""),
         }
+        exact_count = content_requirement_uses_exact_count(requirement)
+        if exact_count:
+            result["operator"] = "exact"
         results.append(result)
-        if actual < expected:
+        if exact_count and actual != expected:
+            failures.append(
+                f"content requirement expected exactly {expected} `{requirement.get('item', 'items')}` "
+                f"inside the deliverable ({requirement.get('scope', 'whole deliverable')}), "
+                f"but deterministic validation found {actual}. Source: {requirement.get('source', '')}"
+            )
+        elif actual < expected:
             failures.append(
                 f"content requirement expected at least {expected} `{requirement.get('item', 'items')}` "
                 f"inside the deliverable ({requirement.get('scope', 'whole deliverable')}), "
