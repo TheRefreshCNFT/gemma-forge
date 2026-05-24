@@ -617,8 +617,9 @@ the contest demo path works end-to-end.** Driving doc:
   harness PID `72704` listening on `127.0.0.1:5005`; `/api/model/route`
   returned `defaultModel=gemma-4-e4b-it`. Final backup target:
   `/Volumes/PHIXERO/Backups/gemma-forge/20260524T210703Z-full-live-local-working-state/`.
-  This backup includes `~/.gforge/models` because this request did not omit the
-  model cache.
+  Per Ian's follow-up instruction, this backup intentionally omits the model
+  cache while preserving the repo snapshot, harness runtime, manifests, and
+  restore archive.
 
 - **2026-05-24 — SSD backup and GitHub alignment.**
   Full live local working state was backed up to external SSD at
