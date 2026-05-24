@@ -41,7 +41,7 @@ The flagship feature of v2.0 is the **Design System Generator** - an AI-powered 
 
 ```
 +----------------------------------------------------------------------------------------+
-|  TARGET: Serenity Spa - RECOMMENDED DESIGN SYSTEM                                      |
+|  TARGET: Serenity Spa - RECOMMENDED DESIGN SYSTEM  (EXAMPLE)                           |
 +----------------------------------------------------------------------------------------+
 |                                                                                        |
 |  PATTERN: Hero-Centric + Social Proof                                                  |
