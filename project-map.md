@@ -83,7 +83,23 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Forge Intelligence recommends `gemma-4` on first run and shows supported local model lanes without locking the selector.
 - Forge Brain selection is sent to project creation, planning, card runs, and project messages.
 - Every model-backed harness call records the attempted model route.
-- Settings can import installed Ollama models, provision or skip models, show model route status, and open the error log.
+- Initial planning calls use a bounded `num_predict` budget, with a
+  tighter budget for sub-1.5B models. This keeps tiny models from making
+  new projects look frozen before the first protocol card starts, and
+  transport failures are surfaced as plan text.
+- Settings can import installed Ollama models, search Hugging Face by
+  provider/keyword/repo, select from five paged model-result pills,
+  provision the selected repo into Ollama, show model route status, and
+  open the error log.
+- Hugging Face provisioning now starts the old model-forge pipeline from
+  the harness: download the selected repo into `~/.gforge/models`, use a
+  direct GGUF when available, otherwise convert with
+  `convert_hf_to_gguf.py`, quantize with `llama-quantize`, write an
+  Ollama Modelfile, and run `ollama create`. The UI polls the provision
+  job and only creates a project interface after the model is runnable.
+  Queued/provisioning/failed/downloaded-only models remain disabled in
+  the Forge Brain pills and cannot start/run project work until Ollama
+  lists them as installed.
 - Each project record stores project messages, cards, archive state, model
   selection, and project directory state. Legacy bridge metadata may exist
   on older records, but the contest UI no longer exposes project linking.

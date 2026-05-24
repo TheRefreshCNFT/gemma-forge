@@ -3,13 +3,21 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import time
+import uuid
 from datetime import datetime, timezone
 import hashlib
 import requests
 import yaml
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
+
+try:
+    from huggingface_hub import HfApi, snapshot_download
+except ImportError:  # pragma: no cover - dependency is declared for installs.
+    HfApi = None
+    snapshot_download = None
 
 try:
     from . import tool_browse  # type: ignore
@@ -234,7 +242,7 @@ def _unsubscribe_events(q):
             if existing_q is not q
         ]
 try:
-    from .workspace_scan import GFORGE_HOME, scan_workspace
+    from .workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, scan_workspace
     from .tool_runtime import (
         axon_runtime_status,
         axon_project_probe,
@@ -244,7 +252,7 @@ try:
         socraticode_runtime_status,
     )
 except ImportError:
-    from workspace_scan import GFORGE_HOME, scan_workspace
+    from workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, scan_workspace
     from tool_runtime import (
         axon_runtime_status,
         axon_project_probe,
@@ -272,6 +280,21 @@ LEGACY_SESSIONS_FILE = os.path.join(CHAT_ROOT, "sessions.json")
 LEGACY_MODELS_FILE = os.path.join(CHAT_ROOT, "models.json")
 LEGACY_SESSION_ROOT = os.path.join(CHAT_ROOT, "session-data")
 DEFAULT_MODEL = os.environ.get("GFORGE_DEFAULT_MODEL", "gemma-4")
+HF_MODEL_SEARCH_PAGE_SIZE = 5
+HF_MODEL_SEARCH_MAX_OFFSET = 250
+HF_MODEL_SEARCH_MAX_QUERY_CHARS = 120
+LLAMA_CPP_BIN = os.environ.get("LLAMA_CPP_BIN", os.path.join(LLAMA_CPP_ROOT, "build", "bin"))
+MODEL_PROVISION_LOCK = threading.Lock()
+MODEL_PROVISION_JOBS = {}
+MODEL_PROVISION_QUANTIZATION = os.environ.get("GFORGE_MODEL_QUANTIZATION", "Q4_K_M")
+MODEL_PROVISION_TIMEOUT_SECONDS = int(os.environ.get("GFORGE_MODEL_PROVISION_TIMEOUT_SECONDS", "7200"))
+MODEL_PROVISION_SYSTEM_PROMPT = os.environ.get("GFORGE_MODEL_SYSTEM_PROMPT", "You are a helpful assistant.")
+MODEL_PROVISION_TEMPLATE = """{{ if .System }}<start_of_turn>system
+{{ .System }}<end_of_turn>
+{{ end }}{{ if .Prompt }}<start_of_turn>user
+{{ .Prompt }}<end_of_turn>
+{{ end }}<start_of_turn>model
+{{ .Response }}<end_of_turn>"""
 SMALL_MODEL_REVIEW_MAX_B = 8.0
 SMALL_TASK_RESEARCH_BUDGET = 2
 LARGE_TASK_RESEARCH_BUDGET = 4
@@ -1738,44 +1761,108 @@ def import_models():
     payload = model_payload(import_installed=True)
     return jsonify(payload)
 
+
+@app.route('/api/models/search', methods=['GET'])
+def search_hf_models():
+    query = normalize_hf_model_query(request.args.get("q", ""))
+    if not query:
+        return jsonify({"error": "Search text is required."}), 400
+
+    offset = clamp_int(
+        request.args.get("offset", 0),
+        0,
+        HF_MODEL_SEARCH_MAX_OFFSET,
+        0,
+    )
+
+    try:
+        detected = scan_workspace()
+        installed_models = detected.get("ollama", {}).get("models", [])
+        payload = hf_search_results(query, offset=offset, installed_models=installed_models)
+    except Exception as error:
+        log_error("hf-model-search", "Hugging Face model search failed.", error, {"query": query, "offset": offset})
+        return jsonify({"error": "Hugging Face search failed. Check the query or network connection."}), 502
+
+    return jsonify(payload)
+
+
 @app.route('/api/models/provision', methods=['POST'])
 def provision_model():
     data = request.json or {}
-    model_name = data.get("ollamaName", "").strip() or DEFAULT_MODEL
-    repo_id = data.get("repoId", "").strip()
+    model_name = normalize_model_name(data.get("ollamaName", "").strip() or DEFAULT_MODEL)
+    repo_id = normalize_hf_model_query(data.get("repoId", ""))
     create_interface = bool(data.get("createInterface"))
     download_only = bool(data.get("downloadOnly"))
+
+    validation_error = validate_ollama_model_name(model_name)
+    if validation_error:
+        return jsonify({"error": validation_error}), 400
+
     detected = scan_workspace()
     installed = is_ollama_model_installed(model_name, detected["ollama"]["models"])
 
     registry = load_models()
-    upsert_registry_model(registry, {
-        "name": model_name,
-        "source": repo_id or "ollama",
-        "status": "installed" if installed else "queued",
-        "downloadOnly": download_only,
-        "createInterface": create_interface,
-        "updatedAt": utc_now(),
-    })
-    save_models(registry)
+    existing_record = next(
+        (model for model in registry.get("models", []) if model_name_matches(model, model_name)),
+        None,
+    )
+    if not repo_id and existing_record:
+        stored_source = normalize_hf_model_query(existing_record.get("source", ""))
+        if stored_source and stored_source != "ollama":
+            repo_id = stored_source
 
     if installed:
+        upsert_registry_model(registry, {
+            "name": model_name,
+            "source": repo_id or "ollama",
+            "status": "installed",
+            "downloadOnly": download_only,
+            "createInterface": create_interface,
+            "updatedAt": utc_now(),
+        })
+        save_models(registry)
         result = {
             "status": "skipped",
-            "message": f"{model_name} is already installed. Gemma Forge added it to the model registry.",
+            "runnable": True,
+            "message": f"Ready: {model_name} is installed in Ollama and can be used as a Forge Brain.",
             "registry": registry,
         }
     else:
+        if not repo_id:
+            return jsonify({
+                "error": "Choose a Hugging Face repo before provisioning a model that is not already installed in Ollama.",
+                "registry": registry,
+            }), 400
+        repo_error = validate_hf_repo_id(repo_id)
+        if repo_error:
+            return jsonify({
+                "error": repo_error,
+                "registry": registry,
+            }), 400
+        if snapshot_download is None:
+            return jsonify({
+                "error": "huggingface_hub is not installed, so Gemma Forge cannot download Hugging Face models.",
+                "registry": registry,
+            }), 503
+
+        job = start_model_provision_job({
+            "repoId": repo_id,
+            "modelName": model_name,
+            "createInterface": create_interface,
+            "downloadOnly": download_only,
+            "quantization": normalize_quantization(data.get("quantization")),
+        })
+        registry = load_models()
         result = {
-            "status": "queued",
-            "message": (
-                f"{model_name} is registered for provisioning. The forge pipeline should download "
-                "or convert it before use."
-            ),
+            "status": job["status"],
+            "runnable": False,
+            "message": job["message"],
             "registry": registry,
+            "jobId": job["id"],
+            "job": job,
         }
 
-    if create_interface:
+    if create_interface and installed:
         sessions = load_sessions()
         session_id = create_session_record(
             sessions,
@@ -1785,7 +1872,15 @@ def provision_model():
         save_sessions(sessions, create_keys={session_id})
         result["session_id"] = session_id
 
-    return jsonify(result)
+    return jsonify(result), 200 if installed else 202
+
+
+@app.route('/api/models/provision/<job_id>', methods=['GET'])
+def model_provision_job_status(job_id):
+    job = model_provision_job_snapshot(job_id)
+    if not job:
+        return jsonify({"error": "Provisioning job was not found."}), 404
+    return jsonify({"job": job, "registry": load_models()})
 
 @app.route('/api/sessions', methods=['POST'])
 def create_session():
@@ -1805,10 +1900,15 @@ def create_session():
             )
         }), 400
 
+    model = normalize_model_name(data.get("model", DEFAULT_MODEL))
+    readiness = selected_model_readiness(model)
+    if not readiness["ready"]:
+        return model_not_ready_response(readiness)
+
     session_id = create_session_record(
         sessions,
         project,
-        data.get("model", DEFAULT_MODEL),
+        model,
         data.get("session_id"),
         has_project_directory,
         project_directory,
@@ -1829,10 +1929,17 @@ def update_session_model(session_id):
         model = normalize_model_name(data.get("model", ""))
         if not model:
             return jsonify({"error": "Model is required."}), 400
+        readiness = selected_model_readiness(model)
+        if not readiness["ready"]:
+            return model_not_ready_response(readiness)
         sessions[session_id]["model"] = model
         changed = True
     if "fallbackModel" in data:
         fallback = normalize_model_name(data.get("fallbackModel") or "")
+        if fallback:
+            readiness = selected_model_readiness(fallback)
+            if not readiness["ready"]:
+                return model_not_ready_response(readiness)
         sessions[session_id]["fallbackModel"] = fallback
         changed = True
     if not changed:
@@ -2004,6 +2111,10 @@ def chat():
     if not message:
         return jsonify({"error": "No message provided"}), 400
 
+    readiness = selected_model_readiness(model)
+    if not readiness["ready"]:
+        return model_not_ready_response(readiness)
+
     try:
         # 1. Try the modern /api/chat endpoint
         ollama_chat_url = "http://localhost:11434/api/chat"
@@ -2089,6 +2200,9 @@ def session_message(session_id):
         return archived_session_response()
 
     model = data.get("model") or session.get("model", DEFAULT_MODEL)
+    readiness = selected_model_readiness(model)
+    if not readiness["ready"]:
+        return model_not_ready_response(readiness)
     session["model"] = model
     session.setdefault("messages", [])
     session["messages"].append({"role": "user", "content": message})
@@ -2194,6 +2308,9 @@ def run_session_card(session_id, card_id):
         return archived_session_response()
 
     model = data.get("model") or session.get("model", DEFAULT_MODEL)
+    readiness = selected_model_readiness(model)
+    if not readiness["ready"]:
+        return model_not_ready_response(readiness)
     session["model"] = model
     human_verify = bool(data.get("humanVerify", True))
     issue_note = data.get("note", "").strip()
@@ -2245,6 +2362,9 @@ def verify_session_card(session_id, card_id):
         return archived_session_response()
 
     model = data.get("model") or session.get("model", DEFAULT_MODEL)
+    readiness = selected_model_readiness(model)
+    if not readiness["ready"]:
+        return model_not_ready_response(readiness)
     session["model"] = model
     card = find_card(session, card_id)
     if not card:
@@ -2301,6 +2421,10 @@ def plan():
     if not project:
         return jsonify({"error": "Project is required"}), 400
 
+    readiness = selected_model_readiness(model)
+    if not readiness["ready"]:
+        return model_not_ready_response(readiness)
+
     sessions = load_sessions()
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
         if session_is_archived(sessions[session_id]):
@@ -2317,11 +2441,15 @@ def plan():
         session_for_prompt["model"] = model
 
     prompt = build_mode_aware_planning_prompt(session_for_prompt, checkpoint_mode, resource_state)
+    planning_options = planning_model_options(model)
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
         with event_session_scope(session_id):
-            reply = call_ollama(model, prompt)
+            reply, transport = call_ollama_with_transport(model, prompt, options_override=planning_options)
     else:
-        reply = call_ollama(model, prompt)
+        reply, transport = call_ollama_with_transport(model, prompt, options_override=planning_options)
+
+    if not reply:
+        reply = transport_failure_message(transport)
 
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
         sessions[session_id].setdefault("messages", [])
@@ -2349,6 +2477,16 @@ OLLAMA_KEEP_ALIVE = "30m"
 # num_ctx / num_predict are NOT overridden here — those stay at each
 # Modelfile's defaults (gempus4:tuned's 65536 ctx, etc.).
 OLLAMA_DEFAULT_OPTIONS = {"temperature": 0.3}
+PLANNING_MODEL_OPTIONS = {"temperature": 0.2, "num_predict": 768}
+TINY_MODEL_MAX_B = 1.5
+
+
+def planning_model_options(model):
+    options = dict(PLANNING_MODEL_OPTIONS)
+    size = selected_model_size_b(model)
+    if size is not None and size <= TINY_MODEL_MAX_B:
+        options["num_predict"] = 384
+    return options
 
 
 def call_ollama_with_transport(model, prompt, options_override=None):
@@ -7212,6 +7350,660 @@ def is_ollama_model_installed(model_name, installed_models):
         or f"{model_name}:latest" in names
         or any(name.startswith(f"{model_name}:") for name in names)
     )
+
+
+def registry_model_record(model_name):
+    selected = normalize_model_name(model_name)
+    if not selected:
+        return None
+    registry = load_models()
+    for model in registry.get("models", []):
+        if model_name_matches(model, selected):
+            return model
+    return None
+
+
+def selected_model_readiness(model_name):
+    model = normalize_model_name(model_name or DEFAULT_MODEL)
+    record = registry_model_record(model)
+    if record and record.get("status") != "installed":
+        return {
+            "ready": False,
+            "model": model,
+            "source": record.get("source"),
+            "status": record.get("status") or "not-installed",
+            "reason": "registered-not-installed",
+        }
+    return {"ready": True, "model": model}
+
+
+def model_not_ready_response(readiness):
+    model = readiness.get("model") or "this model"
+    source = readiness.get("source")
+    source_text = f" from {source}" if source else ""
+    status = readiness.get("status", "not-installed")
+    if status == "provisioning":
+        detail = "is still provisioning and is not runnable in Ollama yet."
+    elif status == "failed":
+        detail = "failed provisioning and is not runnable in Ollama yet."
+    elif status == "downloaded":
+        detail = "was downloaded only and has not been imported into Ollama yet."
+    else:
+        detail = "is not installed in Ollama yet."
+    return jsonify({
+        "error": (
+            f"{model} is registered{source_text}, but it {detail} "
+            "Gemma Forge can only start projects with models that Ollama can run. "
+            "Provision/import the model in Settings, then use an installed Forge Brain."
+        ),
+        "model": model,
+        "status": status,
+    }), 409
+
+
+def clamp_int(value, minimum, maximum, default):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def normalize_hf_model_query(value):
+    query = re.sub(r"\s+", " ", str(value or "").strip())
+    for prefix in ("https://huggingface.co/", "http://huggingface.co/", "https://hf.co/", "http://hf.co/", "hf.co/"):
+        if query.startswith(prefix):
+            query = query[len(prefix):].strip("/")
+            break
+    if query.startswith("models/"):
+        query = query[len("models/"):]
+    return query[:HF_MODEL_SEARCH_MAX_QUERY_CHARS].strip()
+
+
+def suggested_ollama_model_name(repo_id):
+    model_part = str(repo_id or "").strip().split("/")[-1]
+    model_part = re.sub(r"(?i)(?:[-_.]?gguf)$", "", model_part)
+    model_part = re.sub(r"[^A-Za-z0-9_.:-]+", "-", model_part).strip("-._:")
+    return model_part.lower() or DEFAULT_MODEL
+
+
+def model_info_value(model, key, default=None):
+    if isinstance(model, dict):
+        return model.get(key, default)
+    return getattr(model, key, default)
+
+
+def model_card_license(model):
+    card_data = model_info_value(model, "card_data") or model_info_value(model, "cardData")
+    if isinstance(card_data, dict):
+        return card_data.get("license") or "Not specified"
+    if card_data is not None and getattr(card_data, "license", None):
+        return card_data.license
+    return "Not specified"
+
+
+def model_available_formats(model):
+    tags = model_info_value(model, "tags", []) or []
+    siblings = model_info_value(model, "siblings", []) or []
+    haystack = " ".join(str(tag).lower() for tag in tags)
+    for sibling in siblings:
+        filename = getattr(sibling, "rfilename", None)
+        if filename:
+            haystack += f" {filename.lower()}"
+
+    formats = []
+    for label, tokens in (
+        ("gguf", ("gguf",)),
+        ("safetensors", ("safetensors",)),
+        ("pytorch", ("pytorch_model", ".bin")),
+    ):
+        if any(token in haystack for token in tokens):
+            formats.append(label)
+    return formats
+
+
+def hf_model_choice_payload(model, installed_models=None):
+    model_id = model_info_value(model, "modelId") or model_info_value(model, "id") or ""
+    provider, _, short_name = model_id.partition("/")
+    suggested_name = suggested_ollama_model_name(model_id)
+    return {
+        "modelId": model_id,
+        "repoId": model_id,
+        "provider": provider,
+        "displayName": short_name or model_id,
+        "downloads": model_info_value(model, "downloads", 0) or 0,
+        "likes": model_info_value(model, "likes", 0) or 0,
+        "pipelineTag": model_info_value(model, "pipeline_tag"),
+        "license": model_card_license(model),
+        "availableFormats": model_available_formats(model),
+        "suggestedOllamaName": suggested_name,
+        "installed": is_ollama_model_installed(suggested_name, installed_models or []),
+    }
+
+
+def hf_search_results(query, offset=0, limit=HF_MODEL_SEARCH_PAGE_SIZE, api=None, installed_models=None):
+    if HfApi is None and api is None:
+        raise RuntimeError("huggingface_hub is not installed")
+
+    clean_query = normalize_hf_model_query(query)
+    if not clean_query:
+        return {
+            "query": "",
+            "offset": 0,
+            "limit": limit,
+            "results": [],
+            "hasNext": False,
+            "hasPrevious": False,
+        }
+
+    client = api or HfApi()
+    page_size = clamp_int(limit, 1, HF_MODEL_SEARCH_PAGE_SIZE, HF_MODEL_SEARCH_PAGE_SIZE)
+    page_offset = clamp_int(offset, 0, HF_MODEL_SEARCH_MAX_OFFSET, 0)
+    requested = page_offset + page_size + 1
+    collected = []
+    seen = set()
+
+    exact_candidate = clean_query if "/" in clean_query and " " not in clean_query else ""
+    if exact_candidate:
+        try:
+            exact = client.model_info(exact_candidate, timeout=5)
+            exact_id = model_info_value(exact, "modelId") or model_info_value(exact, "id")
+            if exact_id:
+                seen.add(exact_id)
+                collected.append(exact)
+        except Exception:
+            pass
+
+    for model in client.list_models(search=clean_query, sort="downloads", limit=requested, cardData=True):
+        model_id = model_info_value(model, "modelId") or model_info_value(model, "id")
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        collected.append(model)
+        if len(collected) >= requested:
+            break
+
+    page = collected[page_offset:page_offset + page_size]
+    return {
+        "query": clean_query,
+        "offset": page_offset,
+        "limit": page_size,
+        "results": [hf_model_choice_payload(model, installed_models) for model in page],
+        "hasNext": len(collected) > page_offset + page_size,
+        "hasPrevious": page_offset > 0,
+        "nextOffset": page_offset + page_size if len(collected) > page_offset + page_size else None,
+        "previousOffset": max(0, page_offset - page_size) if page_offset > 0 else None,
+    }
+
+
+def validate_ollama_model_name(model_name):
+    if not model_name:
+        return "Choose an Ollama model name before provisioning."
+    if len(model_name) > 128:
+        return "Ollama model names must be 128 characters or fewer."
+    if model_name.startswith(("-", "/", ".")):
+        return "Ollama model names cannot start with '-', '/', or '.'."
+    if ".." in model_name or any(char.isspace() for char in model_name):
+        return "Ollama model names cannot contain spaces or '..'."
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$", model_name):
+        return "Use only letters, numbers, '.', '_', '-', ':', or '/' in the Ollama model name."
+    return ""
+
+
+def validate_hf_repo_id(repo_id):
+    if not repo_id:
+        return "Choose a Hugging Face repo before provisioning."
+    if len(repo_id) > 180 or repo_id.count("/") != 1:
+        return "Use a Hugging Face repo id like provider/model before provisioning."
+    if repo_id.startswith(("-", ".", "/")) or repo_id.endswith(("-", ".", "/")):
+        return "Use a valid Hugging Face repo id like provider/model."
+    if ".." in repo_id or "--" in repo_id or any(char.isspace() for char in repo_id):
+        return "Hugging Face repo ids cannot contain spaces, '..', or '--'."
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$", repo_id):
+        return "Use a Hugging Face repo id like provider/model before provisioning."
+    return ""
+
+
+def normalize_quantization(value):
+    quantization = str(value or MODEL_PROVISION_QUANTIZATION).strip().upper()
+    if quantization == "FP16":
+        return "FP16"
+    if not re.match(r"^[A-Z0-9_]{2,24}$", quantization):
+        return MODEL_PROVISION_QUANTIZATION
+    return quantization
+
+
+def model_provision_job_snapshot(job_id):
+    with MODEL_PROVISION_LOCK:
+        job = MODEL_PROVISION_JOBS.get(job_id)
+        if not job:
+            return None
+        return json.loads(json.dumps(job))
+
+
+def update_model_provision_job(job_id, **updates):
+    event_payload = None
+    with MODEL_PROVISION_LOCK:
+        job = MODEL_PROVISION_JOBS.get(job_id)
+        if not job:
+            return None
+        message = updates.get("message")
+        step = updates.get("step")
+        status = updates.get("status")
+        job.update({key: value for key, value in updates.items() if value is not None})
+        job["updatedAt"] = utc_now()
+        if status in {"installed", "downloaded", "failed"}:
+            job["finishedAt"] = job.get("finishedAt") or job["updatedAt"]
+        if step or message:
+            job.setdefault("steps", []).append({
+                "at": job["updatedAt"],
+                "status": status or job.get("status"),
+                "step": step or job.get("step"),
+                "message": message or job.get("message"),
+            })
+            job["steps"] = job["steps"][-40:]
+        event_payload = json.loads(json.dumps(job))
+
+    emit_event(
+        "model-provision",
+        event_payload.get("message", "Model provisioning updated."),
+        jobId=event_payload.get("id"),
+        model=event_payload.get("modelName"),
+        repoId=event_payload.get("repoId"),
+        status=event_payload.get("status"),
+        step=event_payload.get("step"),
+        progress=event_payload.get("progress"),
+    )
+    return event_payload
+
+
+def update_model_registry_for_provision(job, status, **extra):
+    registry = load_models()
+    upsert_registry_model(registry, {
+        "name": job["modelName"],
+        "model": job["modelName"],
+        "source": job.get("repoId") or "ollama",
+        "status": status,
+        "downloadOnly": job.get("downloadOnly", False),
+        "createInterface": job.get("createInterface", False),
+        "jobId": job.get("id"),
+        "updatedAt": utc_now(),
+        **extra,
+    })
+    save_models(registry)
+    return registry
+
+
+def start_model_provision_job(request_data):
+    repo_id = request_data["repoId"]
+    model_name = request_data["modelName"]
+    with MODEL_PROVISION_LOCK:
+        for job in MODEL_PROVISION_JOBS.values():
+            if (
+                job.get("repoId") == repo_id
+                and job.get("modelName") == model_name
+                and job.get("status") in {"queued", "provisioning"}
+            ):
+                return json.loads(json.dumps(job))
+
+        job_id = f"model_{uuid.uuid4().hex[:12]}"
+        job = {
+            "id": job_id,
+            "repoId": repo_id,
+            "modelName": model_name,
+            "status": "provisioning",
+            "runnable": False,
+            "step": "queued",
+            "progress": 0.02,
+            "message": f"Provisioning started for {model_name} from {repo_id}.",
+            "createInterface": bool(request_data.get("createInterface")),
+            "downloadOnly": bool(request_data.get("downloadOnly")),
+            "quantization": normalize_quantization(request_data.get("quantization")),
+            "startedAt": utc_now(),
+            "updatedAt": utc_now(),
+            "steps": [],
+        }
+        MODEL_PROVISION_JOBS[job_id] = job
+        snapshot = json.loads(json.dumps(job))
+
+    update_model_registry_for_provision(snapshot, "provisioning")
+    update_model_provision_job(
+        job_id,
+        step="queued",
+        progress=0.02,
+        message=f"Provisioning queued: {repo_id} -> {model_name}.",
+    )
+    threading.Thread(target=run_model_provision_job, args=(job_id,), daemon=True).start()
+    return snapshot
+
+
+def run_model_provision_job(job_id):
+    job = model_provision_job_snapshot(job_id)
+    if not job:
+        return
+
+    try:
+        repo_id = job["repoId"]
+        model_name = job["modelName"]
+        quantization = normalize_quantization(job.get("quantization"))
+        model_dir = provision_download_dir(repo_id)
+        out_gguf = provision_output_gguf_path(model_name)
+        os.makedirs(MODELS_ROOT, exist_ok=True)
+
+        update_model_provision_job(
+            job_id,
+            status="provisioning",
+            step="inspect",
+            progress=0.08,
+            message=f"Inspecting {repo_id} for direct GGUF files.",
+        )
+        remote_gguf = preferred_remote_gguf_file(repo_id)
+
+        update_model_provision_job(
+            job_id,
+            status="provisioning",
+            step="download",
+            progress=0.18,
+            message=f"Downloading {repo_id} into {model_dir}.",
+            modelDir=model_dir,
+        )
+        download_kwargs = {}
+        if remote_gguf:
+            download_kwargs["allow_patterns"] = [remote_gguf]
+        download_model_repo(repo_id, model_dir, **download_kwargs)
+
+        if job.get("downloadOnly"):
+            latest = model_provision_job_snapshot(job_id) or job
+            update_model_registry_for_provision(
+                latest,
+                "downloaded",
+                localPath=model_dir,
+                error=None,
+            )
+            update_model_provision_job(
+                job_id,
+                status="downloaded",
+                step="downloaded",
+                progress=1.0,
+                modelDir=model_dir,
+                runnable=False,
+                message=f"Downloaded {repo_id} to {model_dir}. Download only is checked, so Ollama import was skipped.",
+            )
+            return
+
+        gguf_path = find_downloaded_gguf_file(model_dir, remote_gguf)
+        if gguf_path:
+            update_model_provision_job(
+                job_id,
+                status="provisioning",
+                step="gguf",
+                progress=0.58,
+                ggufPath=gguf_path,
+                message=f"Found GGUF file {os.path.basename(gguf_path)}. Conversion and quantization are not needed.",
+            )
+        else:
+            converter = require_llama_cpp_converter()
+            update_model_provision_job(
+                job_id,
+                status="provisioning",
+                step="convert",
+                progress=0.36,
+                ggufPath=out_gguf,
+                message=f"Converting {repo_id} to FP16 GGUF with llama.cpp.",
+            )
+            out_temp = out_gguf.replace(".gguf", "-f16.gguf")
+            run_provision_command(
+                job_id,
+                [sys.executable, converter, model_dir, "--outfile", out_temp],
+                "convert",
+            )
+
+            if quantization == "FP16":
+                os.replace(out_temp, out_gguf)
+                update_model_provision_job(
+                    job_id,
+                    status="provisioning",
+                    step="quantize",
+                    progress=0.62,
+                    message="Keeping FP16 GGUF; quantization was skipped.",
+                )
+            else:
+                quantizer = require_llama_quantize()
+                update_model_provision_job(
+                    job_id,
+                    status="provisioning",
+                    step="quantize",
+                    progress=0.56,
+                    message=f"Quantizing to {quantization}.",
+                )
+                run_provision_command(
+                    job_id,
+                    [quantizer, out_temp, out_gguf, quantization],
+                    "quantize",
+                )
+                if os.path.exists(out_temp):
+                    os.remove(out_temp)
+            gguf_path = out_gguf
+
+        modelfile_path = provision_modelfile_path(model_name)
+        update_model_provision_job(
+            job_id,
+            status="provisioning",
+            step="modelfile",
+            progress=0.76,
+            modelfilePath=modelfile_path,
+            message=f"Writing Ollama Modelfile for {model_name}.",
+        )
+        write_ollama_modelfile(modelfile_path, gguf_path)
+
+        update_model_provision_job(
+            job_id,
+            status="provisioning",
+            step="ollama-create",
+            progress=0.86,
+            message=f"Importing {model_name} into Ollama.",
+        )
+        run_provision_command(job_id, ["ollama", "create", model_name, "-f", modelfile_path], "ollama-create")
+
+        detected = scan_workspace()
+        if not is_ollama_model_installed(model_name, detected["ollama"]["models"]):
+            raise RuntimeError(f"Ollama create finished, but {model_name} did not appear in Ollama's model list.")
+
+        latest = model_provision_job_snapshot(job_id) or job
+        update_model_registry_for_provision(
+            latest,
+            "installed",
+            localPath=model_dir,
+            ggufPath=gguf_path,
+            modelfilePath=modelfile_path,
+            quantization=quantization,
+            error=None,
+        )
+
+        session_id = None
+        if job.get("createInterface"):
+            sessions = load_sessions()
+            session_id = create_session_record(sessions, f"Model interface for {model_name}", model_name)
+            save_sessions(sessions, create_keys={session_id})
+
+        update_model_provision_job(
+            job_id,
+            status="installed",
+            step="installed",
+            progress=1.0,
+            runnable=True,
+            session_id=session_id,
+            message=f"Ready: {model_name} is installed in Ollama and can be used as a Forge Brain.",
+        )
+    except Exception as error:
+        latest = model_provision_job_snapshot(job_id) or job
+        update_model_registry_for_provision(latest, "failed", error=str(error))
+        update_model_provision_job(
+            job_id,
+            status="failed",
+            step="failed",
+            progress=1.0,
+            runnable=False,
+            error=str(error),
+            message=f"Provisioning failed for {latest.get('modelName')}: {error}",
+        )
+        log_error(
+            "model-provision",
+            "Model provisioning failed.",
+            error,
+            {"jobId": job_id, "repoId": latest.get("repoId"), "model": latest.get("modelName")},
+        )
+
+
+def provision_download_dir(repo_id):
+    return os.path.join(MODELS_ROOT, safe_id(repo_id.replace("/", "_")))
+
+
+def provision_output_gguf_path(model_name):
+    return os.path.join(MODELS_ROOT, f"{safe_id(model_name)}.gguf")
+
+
+def provision_modelfile_path(model_name):
+    return os.path.join(MODELS_ROOT, f"Modelfile_{safe_id(model_name)}")
+
+
+def read_hf_token():
+    try:
+        if HF_TOKEN_PATH and os.path.exists(HF_TOKEN_PATH):
+            with open(HF_TOKEN_PATH, "r") as token_file:
+                return token_file.read().strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def download_model_repo(repo_id, model_dir, **kwargs):
+    if snapshot_download is None:
+        raise RuntimeError("huggingface_hub is not installed.")
+    os.makedirs(model_dir, exist_ok=True)
+    token = read_hf_token()
+    download_args = {
+        "repo_id": repo_id,
+        "local_dir": model_dir,
+        "max_workers": 8,
+    }
+    if token:
+        download_args["token"] = token
+    download_args.update(kwargs)
+    return snapshot_download(**download_args)
+
+
+def preferred_remote_gguf_file(repo_id):
+    if HfApi is None:
+        return None
+    token = read_hf_token()
+    try:
+        api = HfApi()
+        kwargs = {"token": token} if token else {}
+        files = api.list_repo_files(repo_id, **kwargs)
+    except Exception:
+        return None
+    return choose_preferred_gguf(files)
+
+
+def choose_preferred_gguf(paths):
+    ggufs = [path for path in paths if str(path).lower().endswith(".gguf")]
+    if not ggufs:
+        return None
+
+    def score(path):
+        name = os.path.basename(str(path)).lower()
+        preferences = ("q4_k_m", "q4-k-m", "q4_k_s", "q5_k_m", "q5-k-m", "q8_0", "f16", "fp16")
+        for index, token in enumerate(preferences):
+            if token in name:
+                return (index, len(name), name)
+        return (len(preferences), len(name), name)
+
+    return sorted(ggufs, key=score)[0]
+
+
+def find_downloaded_gguf_file(model_dir, preferred_remote=None):
+    if preferred_remote:
+        preferred_path = os.path.join(model_dir, preferred_remote)
+        if os.path.exists(preferred_path):
+            return preferred_path
+
+    candidates = []
+    for root, _dirs, files in os.walk(model_dir):
+        for filename in files:
+            if filename.lower().endswith(".gguf"):
+                candidates.append(os.path.join(root, filename))
+    return choose_preferred_gguf(candidates)
+
+
+def require_llama_cpp_converter():
+    candidates = [
+        os.path.join(LLAMA_CPP_ROOT, "convert_hf_to_gguf.py"),
+        os.path.join(GFORGE_HOME, "tools", "llama.cpp", "convert_hf_to_gguf.py"),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(f"llama.cpp converter was not found. Expected convert_hf_to_gguf.py under {LLAMA_CPP_ROOT}.")
+
+
+def require_llama_quantize():
+    candidates = [
+        os.path.join(LLAMA_CPP_BIN, "llama-quantize"),
+        os.path.join(LLAMA_CPP_ROOT, "build", "bin", "llama-quantize"),
+        shutil.which("llama-quantize"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(f"llama.cpp quantizer was not found. Expected llama-quantize under {LLAMA_CPP_BIN}.")
+
+
+def run_provision_command(job_id, command, step):
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=MODEL_PROVISION_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as error:
+        raise RuntimeError(f"Required command was not found: {command[0]}") from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError(f"{step} timed out after {MODEL_PROVISION_TIMEOUT_SECONDS} seconds.") from error
+
+    output = "\n".join(part for part in [result.stdout, result.stderr] if part).strip()
+    if output:
+        update_model_provision_job(
+            job_id,
+            step=step,
+            commandOutput=output[-4000:],
+            message=f"{step} output received.",
+        )
+    if result.returncode != 0:
+        snippet = output[-1200:] if output else "No command output."
+        raise RuntimeError(f"{step} failed with exit code {result.returncode}: {snippet}")
+    return output
+
+
+def escape_modelfile_string(value):
+    return str(value or "").replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def write_ollama_modelfile(modelfile_path, gguf_path):
+    os.makedirs(os.path.dirname(modelfile_path), exist_ok=True)
+    content = "\n".join([
+        f"FROM {os.path.abspath(gguf_path)}",
+        "PARAMETER temperature 1.0",
+        "PARAMETER top_p 0.95",
+        "PARAMETER top_k 64",
+        f"SYSTEM \"{escape_modelfile_string(MODEL_PROVISION_SYSTEM_PROMPT)}\"",
+        f"TEMPLATE \"\"\"{MODEL_PROVISION_TEMPLATE}\"\"\"",
+    ])
+    with open(modelfile_path, "w") as modelfile:
+        modelfile.write(content)
+        modelfile.write("\n")
 
 
 def default_cards(project_mode="unknown", project_directory="", project=""):

@@ -21,6 +21,31 @@ class FakeOllamaResponse:
         return {"message": {"content": "ok"}}
 
 
+class FakeHfModel:
+    def __init__(self, model_id, downloads=0, tags=None, card_data=None):
+        self.modelId = model_id
+        self.downloads = downloads
+        self.tags = tags or []
+        self.card_data = card_data or {}
+        self.pipeline_tag = "text-generation"
+        self.likes = 0
+
+
+class FakeHfApi:
+    def __init__(self, models, exact=None):
+        self.models = models
+        self.exact = exact
+
+    def model_info(self, repo_id, **_kwargs):
+        if self.exact and self.exact.modelId == repo_id:
+            return self.exact
+        raise RuntimeError("not found")
+
+    def list_models(self, **kwargs):
+        limit = kwargs.get("limit") or len(self.models)
+        return self.models[:limit]
+
+
 class ModelRouteTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -47,11 +72,13 @@ class ModelRouteTest(unittest.TestCase):
         server.LEGACY_MODELS_FILE = os.path.join(self.tmp.name, "missing-models.json")
         server.LEGACY_SESSION_ROOT = os.path.join(self.tmp.name, "missing-session-data")
         server._storage_ready = False
+        server.MODEL_PROVISION_JOBS.clear()
 
     def tearDown(self):
         for key, value in self.old_values.items():
             setattr(server, key, value)
         server._storage_ready = False
+        server.MODEL_PROVISION_JOBS.clear()
         self.tmp.cleanup()
 
     def test_default_model_is_sent_to_ollama_and_recorded(self):
@@ -116,6 +143,183 @@ class ModelRouteTest(unittest.TestCase):
 
         with patch.object(server, "scan_workspace", return_value=workspace):
             self.assertFalse(server.small_model_review_required("gempus4:tuned"))
+
+    def test_hf_model_search_returns_five_choice_pages(self):
+        models = [
+            FakeHfModel(f"Qwen/model-{index}", downloads=1000 - index, tags=["gguf"])
+            for index in range(8)
+        ]
+        api = FakeHfApi(models)
+
+        first_page = server.hf_search_results("qwen", api=api)
+        second_page = server.hf_search_results("qwen", offset=5, api=api)
+
+        self.assertEqual(len(first_page["results"]), 5)
+        self.assertTrue(first_page["hasNext"])
+        self.assertFalse(first_page["hasPrevious"])
+        self.assertEqual(first_page["nextOffset"], 5)
+        self.assertEqual(len(second_page["results"]), 3)
+        self.assertFalse(second_page["hasNext"])
+        self.assertTrue(second_page["hasPrevious"])
+        self.assertEqual(second_page["previousOffset"], 0)
+
+    def test_hf_model_search_pins_exact_repo_match(self):
+        exact = FakeHfModel("google/gemma-4-E2B-it", downloads=999, tags=["safetensors"])
+        models = [exact, FakeHfModel("google/other-model", downloads=10)]
+        api = FakeHfApi(models, exact=exact)
+
+        payload = server.hf_search_results(
+            "https://huggingface.co/google/gemma-4-E2B-it",
+            api=api,
+            installed_models=[{"name": "gemma-4-e2b-it:latest"}],
+        )
+
+        self.assertEqual(payload["query"], "google/gemma-4-E2B-it")
+        self.assertEqual(payload["results"][0]["repoId"], "google/gemma-4-E2B-it")
+        self.assertEqual(payload["results"][0]["suggestedOllamaName"], "gemma-4-e2b-it")
+        self.assertTrue(payload["results"][0]["installed"])
+
+    def test_hf_model_search_route_rejects_blank_query(self):
+        client = server.app.test_client()
+        response = client.get("/api/models/search?q=   ")
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_provision_starts_job_for_missing_ollama_model(self):
+        client = server.app.test_client()
+        workspace = {"ollama": {"models": []}}
+        job = {
+            "id": "model_testjob",
+            "status": "provisioning",
+            "message": "Provisioning queued.",
+            "modelName": "zaya1-8b",
+            "repoId": "Zyphra/ZAYA1-8B",
+        }
+
+        with patch.object(server, "scan_workspace", return_value=workspace), \
+             patch.object(server, "start_model_provision_job", return_value=job):
+            response = client.post("/api/models/provision", json={
+                "repoId": "Zyphra/ZAYA1-8B",
+                "ollamaName": "zaya1-8b",
+                "createInterface": True,
+            })
+
+        payload = response.get_json()
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(payload["status"], "provisioning")
+        self.assertFalse(payload["runnable"])
+        self.assertEqual(payload["jobId"], "model_testjob")
+        self.assertNotIn("session_id", payload)
+
+    def test_provision_validation_does_not_register_phantom_model(self):
+        client = server.app.test_client()
+        workspace = {"ollama": {"models": []}}
+
+        with patch.object(server, "scan_workspace", return_value=workspace):
+            response = client.post("/api/models/provision", json={
+                "ollamaName": "not-installed-test-model",
+                "createInterface": False,
+            })
+
+        self.assertEqual(response.status_code, 400)
+        registry = server.load_models()
+        self.assertFalse(any(
+            model.get("name") == "not-installed-test-model"
+            for model in registry.get("models", [])
+        ))
+
+    def test_provision_reuses_stored_hf_source_for_queued_model(self):
+        client = server.app.test_client()
+        workspace = {"ollama": {"models": []}}
+        server.save_models({
+            "models": [{
+                "name": "zaya1-8b",
+                "source": "Zyphra/ZAYA1-8B",
+                "status": "queued",
+            }]
+        })
+        job = {
+            "id": "model_stored_source",
+            "status": "provisioning",
+            "message": "Provisioning queued.",
+            "modelName": "zaya1-8b",
+            "repoId": "Zyphra/ZAYA1-8B",
+        }
+
+        with patch.object(server, "scan_workspace", return_value=workspace), \
+             patch.object(server, "start_model_provision_job", return_value=job) as starter:
+            response = client.post("/api/models/provision", json={
+                "ollamaName": "zaya1-8b",
+                "createInterface": False,
+            })
+
+        self.assertEqual(response.status_code, 202)
+        starter.assert_called_once()
+        self.assertEqual(starter.call_args.args[0]["repoId"], "Zyphra/ZAYA1-8B")
+
+    def test_provision_job_imports_direct_gguf_into_ollama(self):
+        commands = []
+
+        def fake_snapshot_download(repo_id, local_dir, **_kwargs):
+            os.makedirs(local_dir, exist_ok=True)
+            with open(os.path.join(local_dir, "model.Q4_K_M.gguf"), "w") as f:
+                f.write("gguf")
+            return local_dir
+
+        def fake_run(job_id, command, step):
+            commands.append((job_id, command, step))
+            return "ok"
+
+        workspace_after_create = {"ollama": {"models": [{"name": "zaya1-8b:latest"}]}}
+
+        with patch.object(server, "MODELS_ROOT", self.tmp.name), \
+             patch.object(server, "preferred_remote_gguf_file", return_value="model.Q4_K_M.gguf"), \
+             patch.object(server, "snapshot_download", side_effect=fake_snapshot_download), \
+             patch.object(server, "run_provision_command", side_effect=fake_run), \
+             patch.object(server, "scan_workspace", return_value=workspace_after_create):
+            job = {
+                "id": "model_direct_test",
+                "repoId": "Zyphra/ZAYA1-8B",
+                "modelName": "zaya1-8b",
+                "status": "provisioning",
+                "message": "Provisioning queued.",
+                "createInterface": True,
+                "downloadOnly": False,
+                "quantization": "Q4_K_M",
+                "steps": [],
+            }
+            server.MODEL_PROVISION_JOBS[job["id"]] = dict(job)
+            server.run_model_provision_job(job["id"])
+
+        finished = server.model_provision_job_snapshot(job["id"])
+        self.assertEqual(finished["status"], "installed")
+        self.assertTrue(finished["runnable"])
+        self.assertIn("session_id", finished)
+        self.assertEqual(commands[-1][1][:3], ["ollama", "create", "zaya1-8b"])
+
+        registry = server.load_models()
+        [record] = [model for model in registry["models"] if model["name"] == "zaya1-8b"]
+        self.assertEqual(record["status"], "installed")
+        self.assertTrue(os.path.exists(record["modelfilePath"]))
+
+    def test_registered_uninstalled_model_cannot_start_project(self):
+        server.save_models({
+            "models": [{
+                "name": "zaya1-8b",
+                "source": "Zyphra/ZAYA1-8B",
+                "status": "queued",
+            }]
+        })
+
+        response = server.app.test_client().post("/api/sessions", json={
+            "project": "Create a gallery site.",
+            "model": "zaya1-8b",
+            "hasProjectDirectory": False,
+            "projectDirectory": "",
+        })
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("not installed in Ollama", response.get_json()["error"])
 
     def test_selected_model_can_be_saved_to_project(self):
         sessions = {}
@@ -314,6 +518,86 @@ reason: Continue the active Forge flow.
 
         self.assertEqual(response.status_code, 409)
         self.assertIn("Archived projects are read-only", response.get_json()["error"])
+
+    def test_plan_bounds_tiny_model_prediction_budget(self):
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            "Create a tiny model plan.",
+            "gemma-3-1b-test",
+            requested_id="tiny-plan-test",
+            has_project_directory=False,
+        )
+        server.save_sessions(sessions, create_keys={session_id})
+        captured = {}
+        workspace = {
+            "agentCapacity": {"mode": "single-agent-audit", "maxParallelSubagents": 0},
+            "ollama": {
+                "models": [{
+                    "name": "gemma-3-1b-test:latest",
+                    "model": "gemma-3-1b-test:latest",
+                    "details": {"parameter_size": "999.89M"},
+                }]
+            }
+        }
+
+        def fake_call(model, prompt, options_override=None):
+            captured["model"] = model
+            captured["options"] = options_override
+            return "Plan ready.", {
+                "status": "ok",
+                "model": model,
+                "elapsedMs": 1,
+                "attempts": 1,
+                "error": None,
+                "timeoutSeconds": server.OLLAMA_REQUEST_TIMEOUT_SECONDS,
+            }
+
+        with patch.object(server, "scan_workspace", return_value=workspace), \
+             patch.object(server, "call_ollama_with_transport", side_effect=fake_call):
+            response = server.app.test_client().post("/api/plan", json={
+                "session_id": session_id,
+                "project": "Create a tiny model plan.",
+                "model": "gemma-3-1b-test",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["reply"], "Plan ready.")
+        self.assertEqual(captured["options"]["num_predict"], 384)
+        self.assertEqual(captured["options"]["temperature"], 0.2)
+
+    def test_plan_surfaces_transport_failure(self):
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            "Create a small page.",
+            "gemma-4",
+            requested_id="plan-transport-test",
+            has_project_directory=False,
+        )
+        server.save_sessions(sessions, create_keys={session_id})
+        workspace = {
+            "agentCapacity": {"mode": "single-agent-audit", "maxParallelSubagents": 0},
+            "ollama": {"models": [{"name": "gemma-4:latest", "details": {"parameter_size": "4.6B"}}]},
+        }
+
+        with patch.object(server, "scan_workspace", return_value=workspace), \
+             patch.object(server, "call_ollama_with_transport", return_value=("", {
+                 "status": "timeout",
+                 "model": "gemma-4",
+                 "elapsedMs": 1200000,
+                 "attempts": 1,
+                 "error": "timeout",
+                 "timeoutSeconds": 1200,
+             })):
+            response = server.app.test_client().post("/api/plan", json={
+                "session_id": session_id,
+                "project": "Create a small page.",
+                "model": "gemma-4",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Ollama request timed out", response.get_json()["reply"])
 
     def test_auto_run_section_waits_when_small_model_review_fails(self):
         sessions = {}

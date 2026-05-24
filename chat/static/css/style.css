@@ -549,6 +549,77 @@ button {
     border-radius: 6px;
 }
 
+.hf-search-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    min-width: 0;
+}
+
+.hf-search-row .compact-action {
+    min-width: 86px;
+}
+
+.hf-model-results {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+.hf-model-pill {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    max-width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel-alt);
+    color: var(--ink);
+    cursor: pointer;
+    text-align: left;
+    line-height: 1.25;
+}
+
+.hf-model-pill:hover {
+    border-color: var(--accent);
+}
+
+.hf-model-pill.is-active {
+    border-color: var(--accent-strong);
+    box-shadow: 0 0 0 2px rgba(25, 111, 99, 0.14);
+}
+
+.hf-model-pill span,
+.hf-model-pill small {
+    max-width: 100%;
+    overflow-wrap: anywhere;
+}
+
+.hf-model-pill span {
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.hf-model-pill small {
+    color: var(--muted);
+    font-size: 0.72rem;
+}
+
+.hf-search-pager {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.provision-note {
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+
 .check-row {
     grid-template-columns: auto 1fr;
     align-items: center;
@@ -1865,7 +1936,7 @@ textarea {
 }
 
 .model-pill.is-disabled::after {
-    content: "in fallback";
+    content: attr(data-disabled-label);
     font-size: 0.65rem;
     font-weight: 600;
     color: var(--muted);
@@ -1880,6 +1951,10 @@ textarea {
 
 .model-pill.is-active.is-fallback-active {
     background: var(--accent-strong);
+}
+
+.model-pill.is-unavailable {
+    background: #f6f4f1;
 }
 
 .model-active-pill {

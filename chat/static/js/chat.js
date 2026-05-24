@@ -22,7 +22,7 @@ const helpContent = {
     },
     "settings": {
         title: "Settings",
-        body: "Use Settings to import installed Ollama models, register a model for provisioning, view the model route, or inspect meaningful harness errors."
+        body: "Use Settings to import installed Ollama models, search Hugging Face, provision a selected model into Ollama, view the model route, or inspect meaningful harness errors."
     },
     "forge-engine": {
         title: "Forge Engine",
@@ -73,6 +73,8 @@ const helpContent = {
 let workspace = null;
 let currentSessionId = null;
 let selectedModel = "";
+let hfSearchState = { query: "", offset: 0, results: [], selected: null };
+let activeProvisionPoll = null;
 let sessionsCache = {};
 let pinnedHelpKey = null;
 let helpHideTimer = null;
@@ -286,14 +288,63 @@ function renderModelSelector(payload) {
         names.add(selectedModel);
     }
 
-    select.innerHTML = "";
-    Array.from(new Set(Array.from(names).map(normalizeModelName).filter(Boolean))).sort().forEach(name => {
-        const option = document.createElement("option");
-        option.value = name;
-        option.textContent = name;
-        select.appendChild(option);
-    });
+    if (select) {
+        select.innerHTML = "";
+        Array.from(new Set(Array.from(names).map(normalizeModelName).filter(Boolean))).sort().forEach(name => {
+            const option = document.createElement("option");
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+        });
+    }
+    renderModelPills(modelPillOptionsFromRegistry(payload, names));
     setSelectedModel(selectedModel || defaultModel, false);
+}
+
+function modelPillOptionsFromRegistry(payload, names) {
+    const registryModels = payload.registry?.models || [];
+    const detectedModels = payload.detected || [];
+    const byName = new Map();
+
+    Array.from(names || []).forEach(name => {
+        const key = normalizeModelName(name);
+        if (key) {
+            byName.set(key, { ollamaName: key, label: key, installed: false });
+        }
+    });
+
+    registryModels.forEach(model => {
+        const key = normalizeModelName(model.name || model.model);
+        if (!key) return;
+        const status = model.status || (model.installed ? "installed" : "queued");
+        byName.set(key, {
+            ...byName.get(key),
+            ollamaName: key,
+            label: model.label || key,
+            family: model.family,
+            parameterSize: model.parameterSize || model.parameter_size || model.sizeLabel,
+            status,
+            source: model.source,
+            installed: status === "installed" || Boolean(model.installed)
+        });
+    });
+
+    detectedModels.forEach(model => {
+        const key = normalizeModelName(model.name || model.model);
+        if (!key) return;
+        const details = model.details || {};
+        byName.set(key, {
+            ...byName.get(key),
+            ollamaName: key,
+            label: key,
+            family: details.family || model.family,
+            parameterSize: details.parameter_size || model.parameterSize,
+            status: "installed",
+            installed: true
+        });
+    });
+
+    return Array.from(byName.values()).sort((a, b) => a.ollamaName.localeCompare(b.ollamaName));
 }
 
 async function refreshModelRouteStatus() {
@@ -1260,6 +1311,10 @@ async function runCardSection(cardId, options = {}, sessionId = currentSessionId
         return null;
     }
 
+    if (isSelectedSession(sessionId) && !ensureSelectedModelRunnable()) {
+        return null;
+    }
+
     const controller = runController(sessionId);
     const section = isSelectedSession(sessionId)
         ? document.querySelector(`.workflow-card[data-card-id="${cardId}"]`)
@@ -1579,6 +1634,10 @@ async function startPlanning() {
         return;
     }
 
+    if (!ensureSelectedModelRunnable()) {
+        return;
+    }
+
     output.textContent = "Planning agent is mapping the project and activating protocol cards.";
 
     let planningSessionId = null;
@@ -1676,6 +1735,10 @@ async function sendSessionMessage() {
         return;
     }
 
+    if (!ensureSelectedModelRunnable()) {
+        return;
+    }
+
     input.value = "";
     if (isSelectedSession(sessionId)) {
         output.textContent = "Agent is working inside this project.";
@@ -1752,14 +1815,190 @@ async function handleChatWorkerActions(actions, sessionId) {
     }
 }
 
+function formatModelDownloads(value) {
+    const count = Number(value || 0);
+    if (!Number.isFinite(count) || count <= 0) {
+        return "";
+    }
+    if (count >= 1000000) {
+        return `${(count / 1000000).toFixed(count >= 10000000 ? 0 : 1)}M downloads`;
+    }
+    if (count >= 1000) {
+        return `${(count / 1000).toFixed(count >= 10000 ? 0 : 1)}K downloads`;
+    }
+    return `${count} downloads`;
+}
+
+function selectedHfRepoId() {
+    return hfSearchState.selected?.repoId || hfSearchState.selected?.modelId || "";
+}
+
+function selectHfModelResult(model) {
+    hfSearchState.selected = model;
+    document.getElementById("download-repo-input").value = model.repoId || model.modelId || "";
+    document.getElementById("download-name-input").value = model.suggestedOllamaName || "";
+    const status = document.getElementById("hf-search-status");
+    status.textContent = `Selected ${model.repoId || model.modelId}. Review the Ollama name, then provision.`;
+    renderHfModelResults();
+}
+
+function renderHfModelResults() {
+    const host = document.getElementById("hf-model-results");
+    const pager = document.getElementById("hf-search-pager");
+    const previous = document.getElementById("hf-prev-btn");
+    const next = document.getElementById("hf-next-btn");
+    if (!host || !pager || !previous || !next) {
+        return;
+    }
+
+    host.innerHTML = "";
+    hfSearchState.results.forEach(model => {
+        const button = document.createElement("button");
+        const modelId = model.repoId || model.modelId;
+        const formats = Array.isArray(model.availableFormats) && model.availableFormats.length
+            ? model.availableFormats.join(", ")
+            : "format unknown";
+        const downloads = formatModelDownloads(model.downloads);
+        const meta = [model.provider, downloads, formats, model.license]
+            .filter(Boolean)
+            .join(" · ");
+        button.type = "button";
+        button.className = "hf-model-pill";
+        if (modelId && modelId === selectedHfRepoId()) {
+            button.classList.add("is-active");
+        }
+        button.innerHTML = `
+            <span>${escapeHtml(modelId)}</span>
+            <small>${escapeHtml(meta)}</small>
+        `;
+        button.addEventListener("click", () => selectHfModelResult(model));
+        host.appendChild(button);
+    });
+
+    pager.classList.toggle("hidden", !hfSearchState.hasNext && !hfSearchState.hasPrevious);
+    previous.disabled = !hfSearchState.hasPrevious;
+    next.disabled = !hfSearchState.hasNext;
+}
+
+async function searchHfModels(offset = 0, reuseCurrentQuery = false) {
+    const input = document.getElementById("download-repo-input");
+    const status = document.getElementById("hf-search-status");
+    const query = reuseCurrentQuery && hfSearchState.query
+        ? hfSearchState.query
+        : input.value.trim();
+    if (!query) {
+        status.textContent = "Type a provider, keyword, or repo id first.";
+        return;
+    }
+
+    status.textContent = "Searching Hugging Face.";
+    hfSearchState = { query, offset, results: [], selected: null };
+    renderHfModelResults();
+
+    try {
+        const params = new URLSearchParams({ q: query, offset: String(offset) });
+        const res = await fetch(`${API_URL}/models/search?${params.toString()}`);
+        const payload = await res.json();
+        if (!res.ok) {
+            status.textContent = payload.error || "Model search failed.";
+            return;
+        }
+
+        hfSearchState = {
+            query: payload.query || query,
+            offset: payload.offset || 0,
+            results: payload.results || [],
+            selected: null,
+            hasNext: Boolean(payload.hasNext),
+            hasPrevious: Boolean(payload.hasPrevious),
+            nextOffset: payload.nextOffset,
+            previousOffset: payload.previousOffset
+        };
+
+        if (!hfSearchState.results.length) {
+            status.textContent = "No Hugging Face models matched that search.";
+        } else {
+            const pageStart = hfSearchState.offset + 1;
+            const pageEnd = hfSearchState.offset + hfSearchState.results.length;
+            status.textContent = `Showing ${pageStart}-${pageEnd}. Select a model, then provision.`;
+        }
+        renderHfModelResults();
+    } catch (error) {
+        status.textContent = "Model search failed. Check the connection and try again.";
+    }
+}
+
+function provisionJobMessage(job) {
+    if (!job) return "Provisioning status unavailable.";
+    const step = job.step ? `Step: ${job.step}. ` : "";
+    const progress = typeof job.progress === "number"
+        ? `${Math.round(job.progress * 100)}%`
+        : "";
+    return `${step}${job.message || "Provisioning in progress."}${progress ? ` (${progress})` : ""}`;
+}
+
+function stopProvisionPoll() {
+    if (activeProvisionPoll) {
+        clearInterval(activeProvisionPoll);
+        activeProvisionPoll = null;
+    }
+}
+
+async function pollProvisionJob(jobId) {
+    const status = document.getElementById("provision-status");
+    const button = document.getElementById("provision-model-btn");
+    if (!jobId || !status) return;
+
+    stopProvisionPoll();
+    button.disabled = true;
+    activeProvisionPoll = setInterval(async () => {
+        try {
+            const res = await fetch(`${API_URL}/models/provision/${encodeURIComponent(jobId)}`);
+            const payload = await res.json();
+            if (!res.ok) {
+                status.textContent = payload.error || "Provisioning status unavailable.";
+                stopProvisionPoll();
+                button.disabled = false;
+                return;
+            }
+
+            const job = payload.job;
+            status.textContent = provisionJobMessage(job);
+            if (payload.registry) {
+                renderModelSelector({ registry: payload.registry, detected: workspace?.ollama?.models || [], defaultModel: selectedModel });
+            }
+
+            if (["installed", "downloaded", "failed"].includes(job.status)) {
+                stopProvisionPoll();
+                button.disabled = false;
+                if (job.status === "installed") {
+                    setSelectedModel(job.modelName, false);
+                    await importInstalledModels(false);
+                    if (job.session_id) {
+                        await fetchSessions();
+                        selectSession(job.session_id, sessionsCache[job.session_id]);
+                    }
+                }
+            }
+        } catch (error) {
+            status.textContent = "Provisioning status check failed.";
+            stopProvisionPoll();
+            button.disabled = false;
+        }
+    }, 2500);
+}
+
 async function provisionModel() {
     const repoId = document.getElementById("download-repo-input").value.trim();
     const ollamaName = document.getElementById("download-name-input").value.trim() || selectedModel;
     const createInterface = document.getElementById("create-interface-check").checked;
     const downloadOnly = document.getElementById("download-only-check").checked;
     const status = document.getElementById("provision-status");
+    const button = document.getElementById("provision-model-btn");
 
-    status.textContent = "Checking model installation state.";
+    status.textContent = "Starting model provisioning.";
+    button.disabled = true;
+    stopProvisionPoll();
 
     try {
         const res = await fetch(`${API_URL}/models/provision`, {
@@ -1768,14 +2007,28 @@ async function provisionModel() {
             body: JSON.stringify({ repoId, ollamaName, createInterface, downloadOnly })
         });
         const data = await res.json();
-        status.textContent = data.message || "Model status updated.";
-        renderModelSelector({ registry: data.registry, detected: workspace?.ollama?.models || [], defaultModel: selectedModel });
+        if (!res.ok) {
+            status.textContent = data.error || "Provision request failed.";
+            button.disabled = false;
+            return;
+        }
+
+        status.textContent = data.job ? provisionJobMessage(data.job) : (data.message || "Model status updated.");
+        if (data.registry) {
+            renderModelSelector({ registry: data.registry, detected: workspace?.ollama?.models || [], defaultModel: selectedModel });
+        }
         if (data.session_id) {
             await fetchSessions();
             selectSession(data.session_id, sessionsCache[data.session_id]);
         }
+        if (data.jobId) {
+            await pollProvisionJob(data.jobId);
+        } else {
+            button.disabled = false;
+        }
     } catch (error) {
         status.textContent = "Provision request failed.";
+        button.disabled = false;
     }
 }
 
@@ -1880,6 +2133,15 @@ initializeHelp();
 document.getElementById("start-planning-btn").addEventListener("click", startPlanning);
 document.getElementById("send-session-message-btn").addEventListener("click", sendSessionMessage);
 document.getElementById("import-models-btn").addEventListener("click", () => importInstalledModels(true));
+document.getElementById("search-models-btn").addEventListener("click", () => searchHfModels(0));
+document.getElementById("download-repo-input").addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+        event.preventDefault();
+        searchHfModels(0);
+    }
+});
+document.getElementById("hf-prev-btn").addEventListener("click", () => searchHfModels(hfSearchState.previousOffset || 0, true));
+document.getElementById("hf-next-btn").addEventListener("click", () => searchHfModels(hfSearchState.nextOffset || 0, true));
 document.getElementById("provision-model-btn").addEventListener("click", provisionModel);
 document.getElementById("run-plan-btn").addEventListener("click", () => runPlan());
 // Legacy <select id="active-model-select"> was replaced by the pill UI.
@@ -2037,6 +2299,7 @@ function renderModelPills(payload) {
     function makePill(model, kind) {
         const key = normalizeModelName(model.ollamaName || model.name || "");
         const installed = model.installed === undefined ? true : !!model.installed;
+        const status = model.status || (installed ? "installed" : "not-installed");
         const pill = document.createElement("button");
         pill.type = "button";
         pill.className = "model-pill";
@@ -2044,17 +2307,26 @@ function renderModelPills(payload) {
         pill.dataset.kind = kind;
 
         const otherSelected = kind === "primary" ? fallbackModel : selectedModel;
-        if (key === otherSelected) pill.classList.add("is-disabled");
+        if (key === otherSelected) {
+            pill.classList.add("is-disabled");
+            pill.dataset.disabledLabel = kind === "primary" ? "in fallback" : "primary";
+        }
 
         const isActive = (kind === "primary" ? key === selectedModel : key === fallbackModel);
         if (isActive) pill.classList.add("is-active");
         if (kind === "fallback" && isActive) pill.classList.add("is-fallback-active");
+        if (!installed) {
+            pill.classList.add("is-disabled", "is-unavailable");
+            pill.dataset.disabledLabel = status === "provisioning" ? "provisioning" : "not in Ollama";
+            pill.title = `${key} is ${status}, and is not runnable in Ollama yet.`;
+            pill.disabled = true;
+        }
 
         const label = model.label || model.ollamaName || key;
         const meta = [];
         if (model.parameterSize) meta.push(model.parameterSize);
         if (model.family) meta.push(model.family);
-        if (!installed) meta.push("not installed");
+        if (!installed) meta.push(status === "provisioning" ? "provisioning" : "not installed");
         const metaText = meta.length ? `<span class="model-pill-meta">${meta.join(" · ")}</span>` : "";
         pill.innerHTML = `<span>${escapeHtml(label)}</span>${metaText}`;
 
@@ -2082,13 +2354,53 @@ function renderModelPills(payload) {
 function updateActiveModelPillDisplay() {
     const pill = document.getElementById("active-model-pill");
     if (!pill) return;
+    const readiness = selectedModelReadiness(selectedModel);
     if (selectedModel) {
-        pill.textContent = fallbackModel
+        pill.textContent = !readiness.ready
+            ? `Forge Brain: ${selectedModel} (not installed)`
+            : fallbackModel
             ? `Forge Brain: ${selectedModel}  ·  fallback: ${fallbackModel}`
             : `Forge Brain: ${selectedModel}`;
     } else {
         pill.textContent = "Forge Brain: (pick one below)";
     }
+}
+
+function modelOptionByName(model) {
+    const key = normalizeModelName(model);
+    return modelOptionsCache.find(item => normalizeModelName(item.ollamaName || item.name || item.model || "") === key);
+}
+
+function selectedModelReadiness(model) {
+    const key = normalizeModelName(model);
+    if (!key) {
+        return { ready: false, message: "Choose an installed Forge Brain first." };
+    }
+    const option = modelOptionByName(key);
+    if (option && option.installed === false) {
+        const status = option.status || "not installed";
+        const statusText = status === "provisioning"
+            ? "is still provisioning"
+            : status === "failed"
+            ? "failed provisioning"
+            : "is not installed in Ollama yet";
+        return {
+            ready: false,
+            message: `${key} ${statusText}. Use Settings to provision it into Ollama, then choose it as the Forge Brain.`
+        };
+    }
+    return { ready: true };
+}
+
+function ensureSelectedModelRunnable() {
+    const readiness = selectedModelReadiness(selectedModel);
+    if (!readiness.ready) {
+        const output = document.getElementById("agent-output");
+        if (output) output.textContent = readiness.message;
+        setPlanStatus(readiness.message);
+        return false;
+    }
+    return true;
 }
 
 async function persistFallbackModel() {

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gemma Forge | Work Harness</title>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260523T223722Z">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260523T235200Z">
 </head>
 <body>
     <div id="setup-screen" class="setup-screen">
@@ -71,22 +71,34 @@
                     </div>
                     <div class="download-card">
                         <label>
-                            Hugging Face repo
-                            <input id="download-repo-input" type="text" placeholder="google/gemma-4-E2B-it">
+                            Hugging Face search or repo
+                            <div class="hf-search-row">
+                                <input id="download-repo-input" type="text" placeholder="google, qwen, google/gemma-4-E2B-it">
+                                <button id="search-models-btn" class="secondary-action compact-action" type="button">Search</button>
+                            </div>
                         </label>
+                        <div id="hf-search-status" class="inline-status">Search Hugging Face, select a result, then provision.</div>
+                        <div id="hf-model-results" class="hf-model-results" aria-live="polite"></div>
+                        <div id="hf-search-pager" class="hf-search-pager hidden">
+                            <button id="hf-prev-btn" class="secondary-action compact-action" type="button">Previous 5</button>
+                            <button id="hf-next-btn" class="secondary-action compact-action" type="button">Next 5</button>
+                        </div>
                         <label>
                             Ollama model name
                             <input id="download-name-input" type="text" placeholder="gemma-4">
                         </label>
+                        <div class="provision-note">
+                            Provision downloads the selected Hugging Face repo, converts or uses GGUF, writes an Ollama Modelfile, then imports it into Ollama. Large models can take time and disk.
+                        </div>
                         <label class="check-row">
                             <input id="download-only-check" type="checkbox">
                             <span>Download only</span>
                         </label>
                         <label class="check-row">
                             <input id="create-interface-check" type="checkbox" checked>
-                            <span>Create a new project interface for this model</span>
+                            <span>Create a project interface after this model is runnable</span>
                         </label>
-                        <button id="provision-model-btn" class="primary-action compact-action">Provision or skip if installed</button>
+                        <button id="provision-model-btn" class="primary-action compact-action">Provision model</button>
                         <div id="provision-status" class="inline-status"></div>
                     </div>
                 </div>
@@ -252,6 +264,6 @@
         </div>
     </div>
     <div id="help-popover" class="help-popover hidden" role="dialog" aria-live="polite"></div>
-    <script src="/static/js/chat.js?v=20260523T223722Z"></script>
+    <script src="/static/js/chat.js?v=20260523T235200Z"></script>
 </body>
 </html>

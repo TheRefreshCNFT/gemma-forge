@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-23 (UTC) — verified sidebar action stack backup + GitHub alignment.
+Last updated: 2026-05-24 (UTC) — verified SSD/GitHub alignment pass.
 
 ## Verified ground truth
 
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, and full-state backup/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, and final SSD/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -140,6 +140,48 @@ the contest demo path works end-to-end.** Driving doc:
     delete above archive/restore, reclaiming horizontal space for the
     session title. Titles use a two-line clamp and keep the state label
     underneath.
+  - Settings now includes a Hugging Face model search picker. Users can
+    type a provider/keyword/repo such as `google`, `qwen`, or
+    `google/gemma-4-E2B-it`, click Search, see five selectable pill
+    choices, page through Next 5 / Previous 5, select a result to fill
+    the Hugging Face repo and suggested Ollama model name, then click
+    Provision model.
+  - Provision model now revives the old model-forging behavior inside the
+    harness: it starts a background job, downloads the selected Hugging
+    Face repo into `~/.gforge/models`, uses a direct GGUF when available,
+    otherwise converts HF weights with `convert_hf_to_gguf.py`, quantizes
+    through `llama-quantize`, writes an Ollama Modelfile, runs
+    `ollama create`, verifies the model appears in Ollama, and only then
+    creates the optional project interface. The Settings status line
+    polls job steps so the user can see inspect/download/convert/quantize/
+    modelfile/import progress. Invalid provision requests no longer leave
+    phantom queued model records.
+  - Provisioning guard remains live after the `zaya1-8b` incident:
+    queued/provisioning/failed/downloaded-only models are disabled in the
+    Forge Brain pills and session creation/model updates/plan/card/chat/
+    verify routes reject non-runnable models with a clear `409` instead
+    of calling Ollama and producing 404s.
+  - Small/tiny model incident diagnosed: `zaya1-8b` failed conversion
+    because llama.cpp does not support `ZayaForCausalLM`. The direct GGUF
+    `gemma-3-1b-it-glm-4.7-flash-heretic-uncensored-thinking` installed
+    correctly, but a 1B "thinking" model stalled/parroted the large
+    harness planning prompt. Two user sessions created with that model
+    were switched back to `gemma-4` after backing up
+    `~/.gforge/harness/sessions.json`. The `/api/plan` path now bounds
+    planning output (`num_predict`) and applies a tighter budget for
+    sub-1.5B models so initial planning finishes or surfaces transport
+    failure instead of silently hanging.
+  - User-requested cleanup is complete. The stalled custom 1B model was
+    removed from Ollama, the Forge registry, local GGUF files, and its
+    Modelfile. The failed `zaya1-8b` provisioning attempt was also
+    removed from the registry and `~/.gforge/models`, its dedicated
+    project interface was deleted, and the remaining gallery session was
+    switched back to `gemma-4`. Read-back verification showed no zaya
+    records in Ollama, registry, sessions, or the model download folder.
+  - User verified after cleanup that all systems are working great.
+    Current live probes before this final backup pass: harness `200` at
+    `http://127.0.0.1:5005/`, Ollama `0.20.5`, harness PID `40762`,
+    `~/.gforge/harness` about 37 MB, and `~/.gforge/models` about 4.6 GB.
 - Latest files touched for this accepted state:
   `chat/server.py`, `chat/static/js/chat.js`,
   `chat/static/css/style.css`, `chat/templates/index.html`,
@@ -150,6 +192,15 @@ the contest demo path works end-to-end.** Driving doc:
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T004319Z-full-live-local-working-state/` (this final verified full live local working state backup with restore archive; checksum passed)
+  - `/Users/webot/Backups/gemma-forge/20260524T003119Z-pre-kill-zaya/`
+  - `/Users/webot/Backups/gemma-forge/20260524T003040Z-pre-delete-zaya-failed-download/`
+  - `/Users/webot/Backups/gemma-forge/20260524T002946Z-pre-delete-1b-model/`
+  - `/Users/webot/Backups/gemma-forge/20260524T002708Z-sessions-before-switch-from-1b.json`
+  - `/Users/webot/Backups/gemma-forge/20260524T002518Z-pre-small-model-planning-guard/`
+  - `/Users/webot/Backups/gemma-forge/20260523T234353Z-pre-full-provision-pipeline/`
+  - `/Users/webot/Backups/gemma-forge/20260523T233222Z-pre-provision-clarity-guard/`
+  - `/Users/webot/Backups/gemma-forge/20260523T231310Z-pre-hf-search-picker/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260523T224225Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed)
   - `/Users/webot/Backups/gemma-forge/20260523T223722Z-pre-sidebar-action-stack/`
   - `/Users/webot/Backups/gemma-forge/20260523T222213Z-pre-sidebar-session-simplify/`
@@ -179,6 +230,84 @@ the contest demo path works end-to-end.** Driving doc:
 - Demo model decision: `gemma-4` (E2B, ~3.4 GB).
 
 ## Shipped this session
+
+- **2026-05-24 — Failed model cleanup and final alignment pass.**
+  Removed the custom 1B thinking model after it proved unsuitable for
+  harness planning, removed the failed `zaya1-8b` provision attempt,
+  cleaned the related registry/download/session records, and switched
+  affected sessions back to `gemma-4`. Final verification before backup:
+  `npm run check`; `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (49 tests); `git diff --check`; live harness probe `200`; Ollama
+  version `0.20.5`; model list read-back confirms no custom 1B model or
+  zaya model remains installed.
+
+- **2026-05-24 — Small-model planning guard after 1B model stall.**
+  Diagnosis: the small direct-GGUF model
+  `gemma-3-1b-it-glm-4.7-flash-heretic-uncensored-thinking` installed
+  and answered a tiny `OK` prompt, but the two newest projects had only
+  logged an Ollama call and never reached `card-start`; the model was
+  stuck on the initial planning prompt. A bounded live probe returned in
+  8s but mostly echoed the harness prompt, confirming it is not suitable
+  for full harness work. Fix: `/api/plan` now uses
+  `call_ollama_with_transport` with bounded planning `num_predict`, a
+  tighter sub-1.5B budget, and explicit transport-failure text when the
+  model returns nothing. The two affected sessions
+  (`session_1779581904555`, `session_1779581722282`) were backed up and
+  switched to `gemma-4`. Verification: `npm run check`;
+  `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (49 tests); harness restarted to PID `40762`; live 1B plan probe
+  returns instead of hanging; live `gemma-4` plan probe returns a concise
+  useful response.
+
+- **2026-05-23 — Full Hugging Face provisioning restored in harness.**
+  Restored the old `src/app.py` functionality behind the Settings
+  Provision model button: selected Hugging Face repos now download into
+  `~/.gforge/models`, direct GGUF repos are imported without conversion,
+  raw HF repos convert with llama.cpp, quantize to `Q4_K_M`, write an
+  Ollama Modelfile, run `ollama create`, verify the model appears in
+  Ollama, and then create the optional project interface. Added a
+  background provision job/status API and front-end polling so users see
+  each stage instead of an ambiguous terminal-only action. Validation now
+  rejects missing repo/model-name errors without writing phantom registry
+  entries. Verification: `npm run check`;
+  `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (47 tests); live harness restart to PID `15283`; live search
+  `GET /api/models/search?q=qwen&offset=0` returns five results with
+  paging; live installed-model provision for `gemma-4` returns skipped/
+  runnable; live missing-repo provision returns 400 and does not write a
+  registry entry; curl read-back confirms the new Provision model wording
+  and cache-busted assets.
+
+- **2026-05-23 — Provisioning clarity guard after `zaya1-8b`.**
+  Diagnosis: `zaya1-8b` was registered in
+  `~/.gforge/harness/models.json` as queued from `Zyphra/ZAYA1-8B`, but
+  Ollama did not have that model installed. The old UI created project
+  records using the queued model, so `/api/chat` calls hit Ollama 404
+  (`model 'zaya1-8b' not found`). Guard fix: queued/provisioning/
+  downloaded-only/failed model pills are disabled and labelled not
+  installed or provisioning, project-interface creation waits until
+  Ollama can run the model, and session creation/model updates/plan/card/
+  chat/verify routes reject non-runnable models with a clear 409.
+  Verification:
+  `npm run check`; `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (44 tests); live `POST /api/sessions` with `zaya1-8b` returns 409;
+  browser/API read-back showed disabled `zaya1-8b` pills and clear
+  provisioning guidance.
+
+- **2026-05-23 — Hugging Face search picker for Settings.**
+  Added `/api/models/search` with five-result paging, exact
+  provider/model matching, repo normalization for pasted `hf.co` /
+  `huggingface.co` URLs, suggested Ollama aliases, and installed-state
+  hints. Settings now has a Search button, five selectable result pills,
+  and Next 5 / Previous 5 controls. Selecting a pill fills the Hugging
+  Face repo and Ollama model-name fields before the existing provision
+  action. Also fixed the model registry refresh path so the current pill
+  UI updates without relying on the removed legacy select.
+  Verification: `npm run check`; `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (42 tests); live `GET /api/models/search?q=qwen&offset=0`;
+  live `GET /api/models/search?q=google/gemma-4-E2B-it&offset=0`;
+  browser verification on `http://127.0.0.1:5005/` for search,
+  selection, Next 5, and Previous 5.
 
 - **2026-05-21 — Ollama timeouts to 1200s.** `call_ollama` 60→1200 s,
   `/api/chat` route primary 30→1200 s, `/api/generate` fallback 30→1200 s.
