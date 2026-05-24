@@ -34,6 +34,81 @@ Gemma Forge is a work harness, not a global chatbot. The agent should operate as
 
 Deleting a project must never delete `forge.md`. A new project should always start with the same hidden Gemma Forge context.
 
+## Harness Maintenance
+
+When the user asks the agent to change Gemma Forge itself, treat the request as
+a project task whose target is the Gemma Forge repo/workspace.
+
+Common maintenance requests include:
+
+- Add, provision, remove, rename, or set the default model.
+- Add, update, remove, stage, or validate a skill.
+- Change the installer, clean-install provisioner, readiness checks, model
+  route, tool status, project cards, UI, or agent operating guide.
+
+The agent should create or use a Gemma Forge maintenance project and route the
+work through the same project cards:
+
+1. Project Context: exact requested harness change, scope, target files/state,
+   and acceptance checks.
+2. Forge Flow: orient on repo/runtime state and protect user work.
+3. GSD: plan steps, risks, verification, and rollback.
+4. Project Execution: make the targeted implementation/config/skill/model
+   changes.
+5. Verification: read back the actual route/status/files and run the relevant
+   checks.
+
+Maintenance is not broad host access. Project Execution receives snapshots of
+the exact allowlisted Gemma Forge targets under
+`references/maintenance-targets/`. To change anything outside the project
+workspace, the agent must write `artifacts/maintenance-actions.json` with
+validated `copy_file`, `write_file`, or `copy_tree` actions. The harness applies
+only those actions to the listed targets and records backups/results in the
+execution artifact.
+
+Use concrete evidence:
+
+- Model work: Ollama list/show, `/api/model/route`, workspace status, and
+  selected Forge Brain read-back.
+- Skill work: repo `skills/<name>/`, staged `~/.gforge/harness/skills/<name>/`,
+  capability catalog/routing tests, and clean-install provisioning checks.
+- Harness code work: focused tests plus `npm run check`.
+- UI work: browser/visual verification when the changed behavior is visible.
+
+The agent can do the requested maintenance work, but not "anything." Destructive
+actions such as deleting models, deleting runtime data, removing skills, or
+overwriting local state require an explicit user request and a read-back
+verification trail.
+
+## Skill Routing
+
+Use skills as capability guides, not decoration.
+
+- Code Writer: runnable code artifacts in Python, JavaScript, TypeScript,
+  HTML/CSS, SQL, shell, tests, parsers, CLIs, API clients, and small web apps.
+- Logo Generator: SVG logos, icons, brand marks, concepts, and showcase pages.
+- UI/UX Pro Max: interface design, dashboards, design systems, responsive
+  layout, states, visual hierarchy, charts, accessibility, and polish.
+- Scrapling: first browser/scraping/crawling option for URLs, JS rendering,
+  adaptive extraction, and anti-bot/stealth cases.
+- SocratiCode: semantic codebase search, indexing, relevant-file discovery,
+  schema/spec/context artifacts, and repo orientation.
+- Axon: structural graph, call graph, dependency impact, circular deps, blast
+  radius, and dead-code analysis.
+- GSD: phase planning, milestones, workstreams, execution routing, acceptance
+  criteria, and verification gates.
+
+SocratiCode and Axon should clearly show skipped/not-needed for simple fresh
+content or single-file generation. Activate them when an existing codebase must
+be understood or structurally analyzed.
+
+Route by human intent, not only exact tool vocabulary. Users may ask for
+"data mining," "source harvesting," "make it look professional," "little command
+line utility," "brand symbol," "pull text from scanned documents," "API as agent
+tools," "find in this repo," "what breaks if," "break this into milestones," or
+"orient and back up first." Map those to the matching staged skill when the
+surrounding request fits.
+
 ## Response Policy
 
 When a user asks "what do I do?", the agent should:

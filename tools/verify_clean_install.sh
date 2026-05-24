@@ -27,6 +27,7 @@ fi
 PORT="${GFORGE_PORT:-5005}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 DEFAULT_MODEL="${GFORGE_DEFAULT_MODEL:-gemma-4-e4b-it}"
+EMBEDDING_MODEL="${GFORGE_EMBEDDING_MODEL:-nomic-embed-text:latest}"
 TEST_MODEL="${TEST_MODEL:-$DEFAULT_MODEL}"
 FAILS=0
 
@@ -75,13 +76,14 @@ section "1. System tools"
 check_bin brew
 check_bin ollama
 check_bin node
-# Docker on macOS installs Docker.app to /Applications/. The `docker` CLI
-# lives inside Docker.app and only joins PATH after the app is launched
-# once (kernel-extension approval — needs a GUI session). Report the
-# installed-but-not-launched state distinctly so the "fail" doesn't lie.
-if command -v docker >/dev/null 2>&1; then
-    pass "docker on PATH at $(command -v docker)"
-    if docker info >/dev/null 2>&1; then
+DOCKER_APP_BIN="/Applications/Docker.app/Contents/Resources/bin/docker"
+DOCKER_BIN="$(command -v docker 2>/dev/null || true)"
+if [ -z "$DOCKER_BIN" ] && [ -x "$DOCKER_APP_BIN" ]; then
+    DOCKER_BIN="$DOCKER_APP_BIN"
+fi
+if [ -n "$DOCKER_BIN" ]; then
+    pass "docker CLI at $DOCKER_BIN"
+    if "$DOCKER_BIN" info >/dev/null 2>&1; then
         pass "docker daemon ready"
     else
         fail "docker daemon not ready"
@@ -91,7 +93,15 @@ elif [ -d /Applications/Docker.app ]; then
 else
     fail "docker not found"
 fi
+if [ -d /Applications/Docker.app ]; then
+    if xattr -p com.apple.quarantine /Applications/Docker.app >/dev/null 2>&1; then
+        fail "Docker.app still has macOS quarantine attribute"
+    else
+        pass "Docker.app quarantine cleared"
+    fi
+fi
 check_bin python3
+check_bin python3.13
 check_bin curl
 
 # --- 2. Python venv + harness deps -----------------------------------------
@@ -134,7 +144,7 @@ check_bin socraticode "$SOCRATICODE_BIN"
 
 section "4. Bundled skills"
 SKILLS_DIR="${GFORGE_HOME:-$HOME/.gforge}/harness/skills"
-for skill in logo-generator scrapling-official ui-ux-pro-max axon pdf mcp-builder; do
+for skill in webot-flow gsd logo-generator scrapling-official ui-ux-pro-max axon socraticode pdf mcp-builder; do
     if [ -d "$SKILLS_DIR/$skill" ]; then
         pass "skill staged: $skill"
     else
@@ -151,6 +161,11 @@ if ollama_model_installed "$DEFAULT_MODEL"; then
     pass "default model installed: $DEFAULT_MODEL"
 else
     fail "default model missing from Ollama: $DEFAULT_MODEL"
+fi
+if ollama_model_installed "$EMBEDDING_MODEL"; then
+    pass "embedding model installed: $EMBEDDING_MODEL"
+else
+    fail "embedding model missing from Ollama: $EMBEDDING_MODEL"
 fi
 
 # --- 6. Harness server -----------------------------------------------------
@@ -187,8 +202,9 @@ for key in ("socraticodeInstalled", "socraticodeExecutable", "socraticodeMcpRead
     if not tools.get(key):
         errors.append(f"{key} is not true")
 
-if not tools.get("axonExecutable"):
-    errors.append("axonExecutable is not true")
+for key in ("forgeFlowReady", "gsdReady", "socraticodeSkillReady", "axonExecutable", "axonProjectReady"):
+    if not tools.get(key):
+        errors.append(f"{key} is not true")
 
 if errors:
     print("\n".join(errors))
@@ -218,7 +234,11 @@ parts = [
     f"socraticodeInstalled={tools.get('socraticodeInstalled')}",
     f"socraticodeMcpReady={tools.get('socraticodeMcpReady')}",
     f"socraticodeQdrantRunning={tools.get('socraticodeQdrantRunning')}",
+    f"forgeFlowReady={tools.get('forgeFlowReady')}",
+    f"gsdReady={tools.get('gsdReady')}",
+    f"socraticodeSkillReady={tools.get('socraticodeSkillReady')}",
     f"axonExecutable={tools.get('axonExecutable')}",
+    f"axonProjectReady={tools.get('axonProjectReady')}",
 ]
 print(", ".join(parts))
 PY

@@ -10,7 +10,7 @@
 # Usage:
 #   tools/run_clean_install_test.sh                  # default — full test
 #   tools/run_clean_install_test.sh --keep-vm        # don't suggest deletion
-#   tools/run_clean_install_test.sh --no-pull-model  # skip the gemma3:1b pull
+#   tools/run_clean_install_test.sh --no-pull-model  # skip the default model pull
 #
 # Prerequisites on the host:
 #   - tart installed (brew install cirruslabs/cli/tart)
@@ -169,11 +169,12 @@ printf "\n"
 if [ "$VERIFY_EXIT" -eq 0 ]; then
     step "ALL CHECKS PASSED ✓"
     step "VM is still running at $VM_IP. Open Safari → http://$VM_IP:5005/ to inspect the UI manually."
-    step "When done: tart delete $VM_NAME"
+    step "When done without saving anything: tart stop $VM_NAME && tart delete $VM_NAME"
     exit 0
 else
     fail "$VERIFY_EXIT check(s) failed."
     step "VM left running for inspection. SSH: sshpass -p admin ssh admin@$VM_IP"
     step "Launcher log: ssh admin@$VM_IP 'tail -n 100 /tmp/forge.log'"
+    step "When done without saving anything: tart stop $VM_NAME && tart delete $VM_NAME"
     exit "$VERIFY_EXIT"
 fi

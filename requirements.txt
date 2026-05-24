@@ -5,3 +5,7 @@ huggingface_hub
 requests
 PyYAML>=6.0
 scrapling[all]>=0.4.5
+pypdf>=4.0
+pdfplumber>=0.11
+pypdfium2>=4.30
+reportlab>=4.0

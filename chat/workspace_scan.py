@@ -29,6 +29,10 @@ MODELS_ROOT = os.environ.get("GFORGE_MODELS_ROOT", os.path.join(GFORGE_HOME, "mo
 OLLAMA_MODELS_ROOT = os.environ.get("OLLAMA_MODELS", os.path.join(OLLAMA_HOME, "models"))
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CODEX_HOME = os.environ.get("CODEX_HOME", os.path.join(HOME, ".codex"))
+HARNESS_SKILLS_DIR = os.path.join(GFORGE_HOME, "harness", "skills")
+GFORGE_SKILLS_DIR = os.path.join(GFORGE_HOME, "skills")
+PROJECT_SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
+AGENTS_SKILLS_DIR = os.path.join(HOME, ".agents", "skills")
 LLAMA_CPP_DEFAULT = os.path.join(GFORGE_HOME, "tools", "llama.cpp")
 LLAMA_CPP_ROOT = os.environ.get("LLAMA_CPP_ROOT") or (
     "/Users/webot/Projects/gguf/llama.cpp"
@@ -267,6 +271,28 @@ def _agent_capacity(memory_gb: float | None, cpu_count: int | None) -> dict[str,
     }
 
 
+def _skill_install_roots() -> list[str]:
+    return [
+        HARNESS_SKILLS_DIR,
+        GFORGE_SKILLS_DIR,
+        PROJECT_SKILLS_DIR,
+        os.path.join(CODEX_HOME, "skills"),
+        AGENTS_SKILLS_DIR,
+    ]
+
+
+def _skill_ready(name: str) -> bool:
+    for root in _skill_install_roots():
+        skill_dir = os.path.join(root, name)
+        if os.path.exists(os.path.join(skill_dir, "SKILL.md")):
+            return True
+        if os.path.exists(os.path.join(skill_dir, "skill.json")):
+            return True
+        if name == "socraticode" and os.path.isdir(skill_dir):
+            return True
+    return False
+
+
 def _tool_status() -> dict[str, Any]:
     axon = axon_runtime_status()
     socraticode = socraticode_runtime_status(auto_install=True)
@@ -280,7 +306,7 @@ def _tool_status() -> dict[str, Any]:
         "stdout": "",
         "stderr": axon.get("reason"),
     }
-    socraticode_skill_ready = os.path.isdir(SOCRATICODE_SKILL_PATH)
+    socraticode_skill_ready = _skill_ready("socraticode")
     axon_index_ready = os.path.exists(os.path.join(PROJECT_ROOT, ".axon", "meta.json"))
     docker = socraticode.get("docker", {})
     node = socraticode.get("node", {})
@@ -288,8 +314,8 @@ def _tool_status() -> dict[str, Any]:
     return {
         "llamaCppReady": os.path.isdir(LLAMA_CPP_ROOT),
         "hfTokenReady": os.path.exists(HF_TOKEN_PATH),
-        "forgeFlowReady": os.path.exists(FORGE_FLOW_SKILL_PATH),
-        "gsdReady": os.path.exists(GSD_SKILL_PATH),
+        "forgeFlowReady": _skill_ready("webot-flow"),
+        "gsdReady": _skill_ready("gsd"),
         "socraticodeReady": bool(socraticode.get("ready") and socraticode_probe.get("ready")),
         "socraticodeExecutable": bool(socraticode.get("executable")),
         "socraticodeInstalled": bool(socraticode.get("installed")),

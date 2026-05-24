@@ -20,6 +20,7 @@ AXON_FALLBACK_BIN = os.path.join(HOME, ".local", "bin", "axon")
 TOOL_LOCK_ROOT = os.path.join(GFORGE_HOME, "harness", "tool-locks")
 SOCRATICODE_PACKAGE = os.environ.get("GFORGE_SOCRATICODE_PACKAGE", "socraticode@latest")
 SOCRATICODE_QDRANT_CONTAINER = os.environ.get("GFORGE_SOCRATICODE_QDRANT", "socraticode-qdrant")
+DOCKER_APP_BIN = "/Applications/Docker.app/Contents/Resources/bin/docker"
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
 
@@ -64,6 +65,10 @@ def npm_available():
 
 def npx_available():
     return shutil.which("npx")
+
+
+def docker_command():
+    return shutil.which("docker") or (DOCKER_APP_BIN if os.access(DOCKER_APP_BIN, os.X_OK) else None)
 
 
 def node_version_status():
@@ -184,7 +189,7 @@ def resolve_socraticode_command(auto_install=None):
 
 
 def docker_status():
-    docker_path = shutil.which("docker")
+    docker_path = docker_command()
     if not docker_path:
         return {
             "ready": False,
@@ -212,7 +217,7 @@ def docker_status():
 
 
 def qdrant_container_status(docker_path=None):
-    command = docker_path or shutil.which("docker")
+    command = docker_path or docker_command()
     if not command:
         return {"running": False, "status": "Docker was not found.", "image": ""}
     result = run_command(

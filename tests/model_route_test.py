@@ -1083,6 +1083,103 @@ VERIFICATION:
         self.assertTrue(result["validation"]["passed"])
         self.assertTrue(result["validation"]["authenticity"]["modelAuthored"])
 
+    def test_passed_validation_downgrades_count_only_extra_review_false_positive(self):
+        review_payload = {
+            "passed": False,
+            "summary": "The execution failed to meet exactly 3 categories; validation data indicates 4 categories were generated.",
+            "findings": [
+                "Validation data reports actual 4 categories when exactly 3 were requested."
+            ],
+            "fixesNeeded": ["Regenerate exactly 3 category reports."],
+            "confidence": "medium",
+        }
+        result = {
+            "summary": "Generated PDF category reports.",
+            "details": "Validation passed and reports open.",
+            "validation": {
+                "passed": True,
+                "failures": [],
+                "contentRequirements": [
+                    {"item": "categories", "expected": 3, "actual": 4}
+                ],
+            },
+        }
+
+        with patch.object(server, "call_ollama_json", return_value=(review_payload, "{}", {"status": "ok"})):
+            review = server.run_completion_review(
+                "count-review",
+                {"project": "Create 3 categories based on content."},
+                "execution",
+                "gemma-4",
+                result,
+            )
+
+        self.assertTrue(review["passed"])
+        self.assertEqual(review["fixesNeeded"], [])
+        self.assertIn("Deterministic validation is authoritative", " ".join(review["findings"]))
+
+    def test_verification_passed_validation_downgrades_failed_reviewer(self):
+        review_payload = {
+            "passed": False,
+            "summary": "Axon reported a possible issue, so verification should repair.",
+            "findings": ["Support-tool concern after deterministic validation passed."],
+            "fixesNeeded": ["Patch the deliverable."],
+            "confidence": "medium",
+        }
+        result = {
+            "summary": "Verification report generated.",
+            "details": "Deterministic validation passed.",
+            "validation": {"passed": True, "failures": []},
+        }
+
+        with patch.object(server, "call_ollama_json", return_value=(review_payload, "{}", {"status": "ok"})):
+            review = server.run_completion_review(
+                "verification-review",
+                {"project": "Write a Python setup script."},
+                "verification",
+                "gemma-4",
+                result,
+            )
+
+        self.assertTrue(review["passed"])
+        self.assertEqual(review["fixesNeeded"], [])
+        self.assertIn("Verification is read-only", " ".join(review["findings"]))
+
+    def test_verification_repair_never_reruns_execution(self):
+        session = {
+            "id": "verification-readonly",
+            "project": "Write a Python setup script.",
+            "model": "gemma-4",
+            "projectDirectory": os.path.join(self.tmp.name, "verification-readonly-workspace"),
+        }
+        os.makedirs(session["projectDirectory"], exist_ok=True)
+        result = {
+            "summary": "Verification failed review.",
+            "details": "Old verification.",
+            "validation": {"passed": False, "failures": ["syntax error"]},
+        }
+        review = {
+            "passed": False,
+            "summary": "Verification found a broken script.",
+            "findings": ["syntax error"],
+            "fixesNeeded": ["Fix execution deliverable."],
+        }
+
+        with patch.object(server, "build_verification_details", return_value=("rebuilt verification", {"passed": False, "failures": ["syntax error"]})), \
+                patch.object(server, "execute_model_authored_project") as execute:
+            repair = server.repair_verification_after_review(
+                "verification-readonly",
+                session,
+                result,
+                review,
+                1,
+            )
+
+        execute.assert_not_called()
+        self.assertFalse(repair["changed"])
+        self.assertNotIn("upstreamArtifact", repair)
+        self.assertEqual(result["details"], "rebuilt verification")
+
     def test_repair_prompt_continues_from_existing_workspace_snapshot(self):
         workspace_dir = os.path.join(self.tmp.name, "repair-workspace")
         os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
@@ -1419,6 +1516,24 @@ open_questions: []
         self.assertEqual(args[1:4], ["install", "--target", ".gforge-installs/python"])
         self.assertIn("requests", args)
 
+    def test_workspace_long_running_dependency_and_script_commands_get_bounded_time(self):
+        self.assertEqual(
+            server.tool_workspace.workspace_command_timeout(["python", "-m", "pip", "install", "pdfplumber"]),
+            server.tool_workspace.LONG_WORKSPACE_COMMAND_TIMEOUT,
+        )
+        self.assertEqual(
+            server.tool_workspace.workspace_command_timeout(["python", "scripts/process.py"]),
+            server.tool_workspace.LONG_WORKSPACE_COMMAND_TIMEOUT,
+        )
+        self.assertEqual(
+            server.tool_workspace.workspace_command_timeout(["node", "scripts/process.js"]),
+            server.tool_workspace.LONG_WORKSPACE_COMMAND_TIMEOUT,
+        )
+        self.assertEqual(
+            server.tool_workspace.workspace_command_timeout(["git", "status"]),
+            server.tool_workspace.DEFAULT_WORKSPACE_COMMAND_TIMEOUT,
+        )
+
     def test_system_package_install_remains_missing_capability(self):
         with patch.object(server.tool_workspace, "can_install_packages", return_value=True):
             missing = server.missing_capabilities(server.detect_required_capabilities("brew install ffmpeg"))
@@ -1560,6 +1675,235 @@ open_questions: []
         self.assertEqual(validation["contentRequirements"][0]["actual"], 1)
         self.assertTrue(any("content requirement expected at least 3" in item for item in validation["failures"]))
 
+    def test_python_script_side_effect_counts_are_validated_in_temp_run(self):
+        workspace_dir = os.path.join(self.tmp.name, "script-side-effects")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "setup_structure.py"), "w") as f:
+            f.write("from pathlib import Path\nprint('ready')\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "python", "count": 1, "path_pattern": "setup_structure.py"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 5,
+                        "item": "directories named dir1, dir2, dir3, dir4, dir5",
+                        "scope": "at the same root level of the parent directory named test",
+                        "source": "creates 5 directories named like dir1, dir2, dir3, dir4, dir5",
+                    },
+                    {
+                        "count": 25,
+                        "item": ".txt files with 1 small paragraph on the decided subject",
+                        "scope": "5 .txt files in each",
+                        "source": "write out 5 .txt files in each",
+                    },
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "setup_structure.py"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        def fake_run(tmpdir, commands, **_kwargs):
+            root = os.path.join(tmpdir, "test")
+            os.makedirs(os.path.join(root, "src"), exist_ok=True)
+            for dir_index in range(1, 6):
+                dirname = os.path.join(root, f"dir{dir_index}")
+                os.makedirs(dirname, exist_ok=True)
+                for file_index in range(1, 6):
+                    with open(os.path.join(dirname, f"file{file_index}.txt"), "w") as f:
+                        f.write("A small paragraph.\n")
+            return [{"ok": True, "skipped": False, "command": "python setup_structure.py", "returncode": 0}]
+
+        with patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True), \
+                patch.object(server.tool_workspace, "run_workspace_commands", side_effect=fake_run):
+            validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 5)
+        self.assertEqual(validation["contentRequirements"][1]["actual"], 25)
+        self.assertEqual(validation["contentRequirements"][0]["mode"], "script_runtime")
+        self.assertFalse(os.path.exists(os.path.join(workspace_dir, "test")))
+
+    def test_python_script_runtime_requirements_can_be_inferred_from_acceptance(self):
+        workspace_dir = os.path.join(self.tmp.name, "script-side-effect-inferred")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "setup_structure.py"), "w") as f:
+            f.write("from pathlib import Path\nprint('ready')\n")
+
+        session = {
+            "projectContext": {
+                "intent": {
+                    "surface_ask": "write a python script i can launch that creates 5 directories named like dir1, dir2, dir3, dir4, dir5 and 5 .txt files in each of the five numbered directories",
+                    "success_means": "The script creates the requested test directory structure when run.",
+                },
+                "deliverable": {"format": "python", "count": 1, "path_pattern": "setup_structure.py"},
+                "capabilities_required": ["emit_files"],
+                "constraints": {
+                    "hard_requirements": [
+                        "The script must create five subdirectories named dir1 through dir5.",
+                        "The script must create 5 files named *.txt inside each of the five numbered directories.",
+                    ]
+                },
+                "acceptance": [
+                    "Executing setup_structure.py results in test/dir1 through test/dir5 and 25 total .txt files."
+                ],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "setup_structure.py"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        def fake_run(tmpdir, commands, **_kwargs):
+            root = os.path.join(tmpdir, "test")
+            os.makedirs(os.path.join(root, "src"), exist_ok=True)
+            for dir_index in range(1, 6):
+                dirname = os.path.join(root, f"dir{dir_index}")
+                os.makedirs(dirname, exist_ok=True)
+                for file_index in range(1, 6):
+                    with open(os.path.join(dirname, f"file{file_index}.txt"), "w") as f:
+                        f.write("A small paragraph.\n")
+            return [{"ok": True, "skipped": False, "command": "python setup_structure.py", "returncode": 0}]
+
+        with patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True), \
+                patch.object(server.tool_workspace, "run_workspace_commands", side_effect=fake_run):
+            validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertTrue(any(item["actual"] == 5 and "director" in item["item"] for item in validation["contentRequirements"]))
+        self.assertTrue(any(item["actual"] == 25 and ".txt" in item["item"] for item in validation["contentRequirements"]))
+        self.assertFalse(os.path.exists(os.path.join(workspace_dir, "test")))
+
+    def test_python_context_enrichment_detects_script_runtime_counts(self):
+        parsed = {
+            "project": {"name": "setup script", "type": "code"},
+            "intent": {"surface_ask": "", "underlying_need": "", "success_means": ""},
+            "deliverable": {"format": "python", "count": 1, "path_pattern": "setup_structure.py"},
+            "capabilities_required": ["emit_files"],
+            "constraints": {"hard_requirements": []},
+            "skill": {"use": "code-writer"},
+            "acceptance": ["setup_structure.py exists."],
+            "open_questions": [],
+            "content_requirements": [],
+        }
+
+        server.enrich_project_context(
+            parsed,
+            "write a python script i can launch that creates 5 directories named like dir1, dir2, dir3, dir4, dir5 and write out 5 .txt files in each of the five numbered directories",
+            model="gemma-4-e4b-it",
+        )
+
+        self.assertTrue(any("director" in item["item"] and item["minimum_total"] == 5 for item in parsed["content_requirements"]))
+        self.assertTrue(any(".txt" in item["item"] and item["minimum_total"] == 25 for item in parsed["content_requirements"]))
+
+    def test_python_script_runtime_failure_blocks_delivery(self):
+        workspace_dir = os.path.join(self.tmp.name, "script-runtime-fail")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "setup_structure.py"), "w") as f:
+            f.write("from pathlib import Path\nprint('ready')\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "python", "count": 1, "path_pattern": "setup_structure.py"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 5,
+                        "item": "directories named dir1, dir2, dir3, dir4, dir5",
+                        "scope": "at the same root level of the parent directory named test",
+                        "source": "creates 5 directories named like dir1, dir2, dir3, dir4, dir5",
+                    }
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "setup_structure.py"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        with patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True), \
+                patch.object(server.tool_workspace, "run_workspace_commands", return_value=[{
+                    "ok": False,
+                    "skipped": False,
+                    "command": "python setup_structure.py",
+                    "returncode": 1,
+                    "stderr": "NameError: boom",
+                }]):
+            validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("script runtime validation failed" in item for item in validation["failures"]))
+
+    def test_python_deliverable_syntax_error_blocks_delivery(self):
+        workspace_dir = os.path.join(self.tmp.name, "script-syntax-fail")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "setup_structure.py"), "w") as f:
+            f.write("def broken(:\n    pass\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "python", "count": 1, "path_pattern": "setup_structure.py"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "setup_structure.py"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("invalid Python deliverable" in item for item in validation["failures"]))
+
+    def test_validation_counts_category_reports_inside_pdf_deliverables(self):
+        workspace_dir = os.path.join(self.tmp.name, "pdf-content-count")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        files = []
+        for index, category in enumerate(["Automation", "Business", "Technical"], start=1):
+            relative_path = f"output/category-{index}.pdf"
+            with open(os.path.join(workspace_dir, relative_path), "wb") as f:
+                f.write(b"%PDF-1.4\n%%EOF\n")
+            files.append({"path": relative_path})
+
+        project_context = {
+            "content_requirements": [
+                {
+                    "count": 3,
+                    "item": "categories",
+                    "scope": "whole deliverable",
+                    "source": "create 3 categories based on content",
+                }
+            ],
+        }
+
+        with patch.object(
+            server,
+            "extract_pdf_validation_text",
+            side_effect=[f"Category Report: {category}" for category in ["Automation", "Business", "Technical"]],
+        ):
+            failures, results = server.validate_content_quantity_requirements(workspace_dir, files, project_context)
+
+        self.assertEqual(failures, [])
+        self.assertEqual(results[0]["actual"], 3)
+
     def test_validation_fails_when_deliverable_file_count_is_under_delivered(self):
         workspace_dir = os.path.join(self.tmp.name, "file-count-under")
         os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
@@ -1585,6 +1929,147 @@ open_questions: []
 
         self.assertFalse(validation["passed"])
         self.assertTrue(any("deliverable.count expected at least 3" in item for item in validation["failures"]))
+
+    def test_pdf_shell_context_gets_workspace_package_install_capability(self):
+        parsed = {
+            "project": {"name": "PDF report", "type": "doc"},
+            "intent": {"surface_ask": "Create PDF reports.", "underlying_need": "", "success_means": ""},
+            "deliverable": {"format": "pdf", "count": 3, "path_pattern": "output/report-NN.pdf"},
+            "capabilities_required": ["emit_files", "shell_exec", "pdf"],
+            "constraints": {"hard_requirements": []},
+            "skill": {"use": "pdf"},
+            "acceptance": ["Three PDFs exist.", "The PDFs open."],
+            "open_questions": [],
+        }
+
+        with patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True), \
+                patch.object(server.tool_workspace, "can_install_packages", return_value=True):
+            server.enrich_project_context(parsed, "Create three PDF reports.", model="gemma-4")
+
+        self.assertIn("install_package", parsed["capabilities_required"])
+
+    def test_validation_fails_when_workspace_command_failed(self):
+        workspace_dir = os.path.join(self.tmp.name, "command-failed")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "output", "report.txt"), "w") as f:
+            f.write("Report body")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "txt", "count": 1, "path_pattern": "output/report.txt"},
+                "capabilities_required": ["emit_files", "shell_exec"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "output/report.txt"}],
+            "commands": ["python scripts/process.py"],
+            "commandRuns": [
+                {
+                    "ok": False,
+                    "skipped": False,
+                    "command": "python scripts/process.py",
+                    "returncode": 1,
+                    "stderr": "ModuleNotFoundError: No module named 'pdfplumber'",
+                }
+            ],
+            "summary": "The script ran successfully.",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("workspace command failed" in item for item in validation["failures"]))
+        self.assertTrue(any("pdfplumber" in item for item in validation["failures"]))
+
+    def test_validation_fails_for_invalid_pdf_deliverable(self):
+        workspace_dir = os.path.join(self.tmp.name, "invalid-pdf")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "output", "report.pdf"), "wb") as f:
+            f.write(
+                b"%PDF-1.7\n"
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+                b"stream\nThis is not a valid generated PDF structure.\n"
+                b"%%EOF"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "pdf", "count": 1, "path_pattern": "output/report.pdf"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "output/report.pdf"}],
+            "commands": [],
+            "commandRuns": [],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("invalid PDF deliverable" in item for item in validation["failures"]))
+
+    def test_workspace_yolo_infers_python_import_dependencies(self):
+        workspace_dir = os.path.join(self.tmp.name, "dependency-infer")
+        os.makedirs(workspace_dir, exist_ok=True)
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "txt", "count": 1, "path_pattern": "output/report.txt"},
+                "capabilities_required": ["emit_files", "shell_exec"],
+                "content_requirements": [],
+            }
+        }
+        files = [
+            {
+                "path": "scripts/process.py",
+                "content": "import os\nimport pandas\nimport yaml\nfrom bs4 import BeautifulSoup\n",
+            }
+        ]
+
+        with patch.object(server.tool_workspace, "can_install_packages", return_value=True):
+            commands = server.augment_workspace_commands_for_dependencies(
+                workspace_dir,
+                session,
+                files,
+                ["python scripts/process.py"],
+            )
+
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(commands[0].startswith("python -m pip install "))
+        self.assertIn("pandas", commands[0])
+        self.assertIn("PyYAML", commands[0])
+        self.assertIn("beautifulsoup4", commands[0])
+        self.assertNotIn(" os", commands[0])
+        self.assertEqual(commands[1], "python scripts/process.py")
+
+    def test_execution_quarantines_stale_deliverables_before_retry(self):
+        workspace_dir = os.path.join(self.tmp.name, "stale-output")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        stale_path = os.path.join(workspace_dir, "output", "report.pdf")
+        with open(stale_path, "wb") as f:
+            f.write(b"%PDF-1.7\nbroken\n%%EOF")
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "pdf", "count": 1, "path_pattern": "output/report.pdf"},
+                "capabilities_required": ["emit_files", "shell_exec"],
+                "content_requirements": [],
+            }
+        }
+
+        moved = server.quarantine_existing_deliverables(workspace_dir, session)
+
+        self.assertFalse(os.path.exists(stale_path))
+        self.assertEqual(moved[0]["path"], "output/report.pdf")
+        self.assertTrue(os.path.exists(os.path.join(workspace_dir, moved[0]["backup"])))
 
 
 if __name__ == "__main__":

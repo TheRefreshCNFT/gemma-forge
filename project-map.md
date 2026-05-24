@@ -28,6 +28,15 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   `~/.gforge/harness/skills/` for one-package installs.
 - `tools/` - clean-install verification/orchestration scripts used to
   prove a fresh clone can install and run the harness.
+  - `tools/harness_service.sh` - canonical macOS service helper for the
+    live harness. Use `npm run harness:start`, `npm run harness:stop`,
+    `npm run harness:restart`, `npm run harness:status`, `npm run
+    harness:logs`, or `npm run harness:open`; it manages the launchd
+    KeepAlive service `com.webot.gemma-forge.harness`.
+  - `tools/provision_clean_install.py` - first-use provisioner called by
+    `launch_forge.command` after package install; pulls the embedding
+    model, verifies bundled skills, initializes SocratiCode/Qdrant, and
+    writes the Axon project index before the app launches.
 - `.git/` - initialized local git metadata pointing at private GitHub repo `https://github.com/TheRefreshCNFT/gemma-forge`.
 
 ## Harness Code
@@ -59,6 +68,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 ## Tests
 
 - `tests/integration_test.py` - local pipeline test for download, conversion, quantization, Ollama import, and list verification.
+- `tests/maintenance_access_test.py` - controlled Gemma Forge maintenance allowlist, action application, Ollama command gating, and sandbox-denial tests.
 
 ## Runtime Defaults
 
@@ -71,6 +81,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Ollama API endpoint: `http://localhost:11434`.
 - Harness URL: `http://127.0.0.1:5005/`.
 - Initial recommended Forge Brain: `gemma-4-e4b-it`.
+- Default embedding model for SocratiCode: `nomic-embed-text:latest`.
 - Current private repo: `https://github.com/TheRefreshCNFT/gemma-forge`.
 - Full-state external backups: `/Volumes/PHIXERO/Backups/gemma-forge/`.
 - Backup policy: a full backup/state-alignment request means the live
@@ -83,6 +94,12 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 ## Current Behavior
 
 - Startup shows "Setting up workspace" while scanning local resources.
+- The macOS launcher now treats first-use provisioning as part of install,
+  not a later surprise: after installing dependencies it stages all bundled
+  skills, pulls `nomic-embed-text:latest`, runs SocratiCode/Qdrant indexing
+  for the checkout, and runs Axon analysis so Settings can report ready
+  tool state before the app launches. Set `GFORGE_ALLOW_DEGRADED_TOOLS=1`
+  only when intentionally launching with degraded support tools.
 - Forge Engine reports system, Ollama, tools, model paths, SocratiCode install/MCP/Qdrant state, Axon CLI/index state, and subagent capacity.
 - Forge Intelligence recommends `gemma-4-e4b-it` on first run and shows supported local model lanes without locking the selector.
 - Forge Brain selection is sent to project creation, planning, card runs, and project messages.
@@ -112,7 +129,10 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   stale snapshots over another project's newer card state.
 - Full Forge runs active protocol cards in order.
 - The left project sidebar lists active projects newest-first and keeps
-  archived projects in their own newest-first group.
+  archived projects in their own newest-first group. On desktop, the
+  sidebar/session rail reaches at least the bottom of the viewport even
+  when the Start panel is collapsed; mobile/tablet shows the main work area
+  first and moves the project/session rail below it.
 - The contest sidebar does not show project-link checkboxes, Link
   projects, or Lock selected projects controls. Session titles are the
   primary text with up to two visible lines; the state label sits smaller
@@ -163,11 +183,13 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Continuation repair prompts tell the model not to start over unless the human explicitly requested a restart, include reviewer/validator blockers, provide a bounded current-file snapshot from the workspace, and ask for only the complete repaired/added files needed to finish the original request.
 - Project Execution has no built-in task generator; it writes only file content returned by the selected Gemma model and records model-authored execution metadata for verification. It accepts strict JSON or the Forge file-block payload so small local models do not have to escape long HTML/CSS through JSON.
 - Project Execution stages installed Forge skills into the workspace under `.gforge/skills`, writes a skill manifest, injects requested skill instructions into the Gemma prompt, and reserves `.gforge/` so the model cannot overwrite harness support context.
-- Bundled Forge skills now include `pdf` from Anthropic's PDF skill and
-  `mcp-builder` from Anthropic's MCP builder skill, alongside the
-  existing `logo-generator`, `scrapling-official`, `ui-ux-pro-max`, and
-  `axon` skills. Both new skills include expanded keywords so Project
-  Context can assign them from PDF/form/OCR and MCP/server/tool-schema
+- Bundled Forge skills now include `code-writer`, `pdf` from Anthropic's
+  PDF skill, and `mcp-builder` from Anthropic's MCP builder skill,
+  alongside `logo-generator`, `scrapling-official`, `ui-ux-pro-max`,
+  `axon`, `socraticode`, `gsd`, and `webot-flow`. These skills include
+  expanded routing keywords so Project Context can assign them from
+  runnable code, logo/brand, PDF/form/OCR, MCP/server/tool-schema,
+  browser/scraping, UI/UX, semantic codebase, graph/impact, and planning
   language.
 - Project Execution can clone GitHub/GitLab/Bitbucket repository
   references into `references/repos/` using host `git` and authenticated
@@ -183,6 +205,39 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   relative target. Deploy, publish, push, system/global installs,
   absolute paths, parent traversal, pipes, and multiline shell remain
   blocked.
+- Workspace execution now has a controlled "workspace yolo" path: when a
+  model-authored Python script imports non-stdlib packages, the harness
+  infers the packages and prepends a workspace-local pip install into
+  `.gforge-installs/python` before running the script. PDF/OCR jobs also
+  get the known `pypdf`/`pdfplumber`/`reportlab` packages. Package installs
+  and script-file commands receive a bounded 300-second timeout, while
+  ordinary commands keep the 60-second cap. Before each retry, stale matching
+  deliverables are moved to `.gforge/attempt-backups` so old bad outputs
+  cannot satisfy validation. Deterministic validation fails if any requested
+  workspace command is skipped/failed, `.pdf` outputs must parse as real PDFs
+  instead of only having a `%PDF` header, and generated PDF text can be used
+  for content-count checks such as category reports. Python script deliverables
+  are syntax-checked, and script-created file/directory counts are inferred from
+  the contract/acceptance when needed, validated by running the script in a
+  temporary workspace, and then deleted rather than treated as final deliverables.
+- Verification is read-only with respect to deliverables: it can rebuild the
+  verification report from existing artifacts, but it cannot rerun Project
+  Execution or overwrite model-authored files. Passed deterministic validation
+  is authoritative for Verification; support-tool findings such as Axon dead-code
+  output are advisory for simple fresh-script deliverables.
+- Small-model extra review can still trigger repairs for concrete artifact
+  mismatches, but a reviewer cannot overrule a passed deterministic validation
+  count/path/PDF/content-quantity gate. This prevents false-positive review
+  feedback such as treating "at least 3 categories" as "exactly 3" from
+  deleting good generated outputs during continuation repair.
+- Gemma Forge self-maintenance runs through a controlled allowlist. When the
+  request is to change the harness itself, Project Execution snapshots exact
+  repo/runtime targets into `references/maintenance-targets/`; outside-workspace
+  file changes must be requested in `artifacts/maintenance-actions.json` using
+  validated `copy_file`, `write_file`, or `copy_tree` actions. The harness
+  applies only targets on the allowlist, records backups under
+  `~/.gforge/harness/maintenance-backups/`, and gates Ollama CLI commands to
+  explicit model maintenance.
 - Project chat stages the same selected skill context when a workspace
   exists. The chat agent may request a worker handoff by emitting one
   bounded `GFORGE_WORKER_ACTION` block for `full_forge` or a known
@@ -196,11 +251,39 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   saved Project Context is canonicalized to the real skill key, and the
   Forge Station terminal emits visible `skill` events when skills are
   selected or staged.
+- Project Context now includes an installed user-facing skill capability
+  catalog so the model sees what each harness skill is for before writing
+  the contract. Skill routing is tested for simple no-tool tasks, UI/UX
+  interface work, Scrapling browser/scraping work, SocratiCode semantic
+  codebase discovery, Axon structural graph/impact analysis, combined
+  code-intelligence requests, logo generation, runnable code, PDF/OCR
+  work, and MCP server/tool-schema work. Generic MCP keywords such as bare
+  `auth` no longer steal ordinary codebase-search requests.
+- Skill routing aliases now include more human, non-tool phrasing for every
+  bundled skill: data mining/harvesting/deep research for Scrapling, make
+  it look professional/mobile friendly for UI/UX, little command-line
+  utility/process files for Code Writer, brand symbol/app icon for Logo
+  Generator, pull text from scanned documents for PDF, local tool server/API
+  as agent tools for MCP, find in this repo for SocratiCode, what breaks if
+  for Axon, task breakdown/milestones for GSD, and orient/backup/protect
+  live for Webot Flow. Broad web-research phrases are guarded so codebase
+  search requests stay with SocratiCode instead of accidentally staging
+  Scrapling.
 - Project Context separates deliverable file count from repeated content
   counts. `deliverable.count` remains "how many files"; raw user phrases
   like "top 3 articles in each category" or "three design options" are
   preserved as `content_requirements`, injected into Execution, and
   enforced by deterministic validation for text-like deliverables.
+- Project Context now treats any explicit local file or directory path as
+  source material. Project Execution imports those files into
+  `references/input/`, writes `references/source-inputs.md`, and tells the
+  model to use copied workspace-relative paths plus command evidence rather
+  than inventing filenames or using original `/Users/...` paths.
+- GSD planning now receives the full Project Context contract, source
+  inputs, skill plan, tool plan, model profile, and hard count gates. The
+  bundled `skills/gsd/` install state includes the full workflow suite
+  (workflows, prompts, agents, references, templates, hooks), not just the
+  stub `SKILL.md`.
 - Project Execution skill context starts with a concise usage plan before
   raw skill manuals. For scraping + webpage tasks, `scrapling-official`
   is identified as the scraping/extraction layer and `ui-ux-pro-max` as

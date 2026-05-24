@@ -10,12 +10,13 @@
 #   - Ollama (brew install ollama, brew services start ollama)
 #   - Node.js 22 (brew install node@22) — needed for SocratiCode MCP
 #   - Docker Desktop (brew install --cask docker) — needed for SocratiCode Qdrant
-#   - Python venv + requirements.txt (flask, scrapling[all], huggingface_hub, etc.)
+#   - Python 3.13 venv + requirements.txt (flask, scrapling[all], huggingface_hub, etc.)
 #   - Playwright browsers (via `scrapling install --force`)
 #   - Axon CLI (pip install axoniq into the venv)
 #   - SocratiCode (npm install socraticode@latest into ~/.gforge/tools/)
 #   - Bundled protocol skills (skills/* → ~/.gforge/harness/skills/)
 #   - Default Forge Brain model (`gemma4:e4b` copied to `gemma-4-e4b-it`)
+#   - Embedding model + SocratiCode/Qdrant index + Axon project index
 
 set -euo pipefail
 
@@ -27,6 +28,10 @@ HARNESS_SKILLS_DIR="$GFORGE_HOME/harness/skills"
 DEFAULT_MODEL="${GFORGE_DEFAULT_MODEL:-gemma-4-e4b-it}"
 DEFAULT_MODEL_SOURCE="${GFORGE_DEFAULT_MODEL_SOURCE:-gemma4:e4b}"
 SKIP_DEFAULT_MODEL_PULL="${GFORGE_SKIP_DEFAULT_MODEL_PULL:-0}"
+POSTINSTALL_PROVISION="${GFORGE_POSTINSTALL_PROVISION:-1}"
+ALLOW_DEGRADED_TOOLS="${GFORGE_ALLOW_DEGRADED_TOOLS:-0}"
+DOCKER_WAIT_SECONDS="${GFORGE_DOCKER_WAIT_SECONDS:-600}"
+PYTHON_BIN="${GFORGE_PYTHON:-}"
 
 cd "$PROJECT_ROOT"
 
@@ -38,6 +43,61 @@ fail() { printf "\033[1;31m[forge fail]\033[0m %s\n" "$*" >&2; exit 1; }
 
 is_macos() { [[ "$(uname -s)" == "Darwin" ]]; }
 have()     { command -v "$1" >/dev/null 2>&1; }
+
+docker_cli() {
+    if have docker; then
+        command -v docker
+    elif [ -x /Applications/Docker.app/Contents/Resources/bin/docker ]; then
+        printf '%s\n' /Applications/Docker.app/Contents/Resources/bin/docker
+    else
+        return 1
+    fi
+}
+
+docker_ready() {
+    local cli
+    cli="$(docker_cli)" || return 1
+    "$cli" info >/dev/null 2>&1
+}
+
+admin_run() {
+    if [ "$(id -u)" = "0" ]; then
+        "$@"
+        return
+    fi
+    if have sudo && sudo -n true >/dev/null 2>&1; then
+        sudo -n "$@"
+        return
+    fi
+    if have sudo && [ -t 0 ]; then
+        sudo "$@"
+        return
+    fi
+    return 1
+}
+
+clear_app_quarantine() {
+    local app_path="$1"
+    [ -e "$app_path" ] || return 0
+    if xattr -p com.apple.quarantine "$app_path" >/dev/null 2>&1; then
+        step "Clearing macOS quarantine from $(basename "$app_path")..."
+        xattr -dr com.apple.quarantine "$app_path" >/dev/null 2>&1 \
+            || admin_run xattr -dr com.apple.quarantine "$app_path"
+    fi
+}
+
+configure_docker_desktop() {
+    [ -d /Applications/Docker.app ] || return 0
+    clear_app_quarantine /Applications/Docker.app \
+        || warn "Could not clear Docker Desktop quarantine; macOS may ask to approve first launch."
+
+    local installer="/Applications/Docker.app/Contents/MacOS/install"
+    if [ -x "$installer" ]; then
+        step "Configuring Docker Desktop admin components..."
+        admin_run "$installer" --accept-license --user "$USER" >/dev/null 2>&1 \
+            || warn "Docker Desktop admin preconfiguration failed; Docker may need a manual first-run approval."
+    fi
+}
 
 wait_for_url() {
     local url="$1"
@@ -122,32 +182,60 @@ fi
 
 # --- 4. Docker Desktop (for SocratiCode Qdrant) ----------------------------
 
-if ! have docker; then
+if ! docker_cli >/dev/null 2>&1 && [ ! -d /Applications/Docker.app ]; then
     step "Installing Docker Desktop via Homebrew cask..."
     brew install --cask docker
 fi
 
-if have docker && ! docker info >/dev/null 2>&1; then
+configure_docker_desktop
+
+if [ -d /Applications/Docker.app ] && ! docker_ready; then
     if [ -d /Applications/Docker.app ]; then
         step "Starting Docker Desktop for SocratiCode..."
         open -gj -a Docker >/dev/null 2>&1 || open -a Docker >/dev/null 2>&1 || true
-        for _ in $(seq 1 60); do
-            if docker info >/dev/null 2>&1; then
+        DOCKER_WAIT_ATTEMPTS=$((DOCKER_WAIT_SECONDS / 5))
+        if [ "$DOCKER_WAIT_ATTEMPTS" -lt 1 ]; then
+            DOCKER_WAIT_ATTEMPTS=1
+        fi
+        for _ in $(seq 1 "$DOCKER_WAIT_ATTEMPTS"); do
+            if docker_ready; then
                 break
             fi
             sleep 5
         done
     fi
-    if ! docker info >/dev/null 2>&1; then
+    if ! docker_ready; then
         warn "Docker is installed but not running yet. SocratiCode may report unavailable until Docker Desktop finishes first-run startup."
     fi
 fi
 
-# --- 5. Python venv + deps -------------------------------------------------
+# --- 5. Python 3.13 venv + deps -------------------------------------------
+
+if [ -z "$PYTHON_BIN" ]; then
+    if have python3.13; then
+        PYTHON_BIN="$(command -v python3.13)"
+    else
+        step "Installing Python 3.13 via Homebrew..."
+        brew install python@3.13
+        PYTHON_BIN="$(brew --prefix python@3.13)/bin/python3.13"
+    fi
+fi
+
+if [ ! -x "$PYTHON_BIN" ]; then
+    fail "Python interpreter not executable: $PYTHON_BIN"
+fi
+
+if [ -d "$VENV_PATH" ]; then
+    VENV_PYTHON_VERSION="$("$VENV_PATH/bin/python" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "unknown")"
+    if [ "$VENV_PYTHON_VERSION" != "3.13" ]; then
+        step "Recreating Python venv with Python 3.13 (found $VENV_PYTHON_VERSION)..."
+        rm -rf "$VENV_PATH"
+    fi
+fi
 
 if [ ! -d "$VENV_PATH" ]; then
     step "Creating Python venv at $VENV_PATH..."
-    python3 -m venv "$VENV_PATH"
+    "$PYTHON_BIN" -m venv "$VENV_PATH"
 fi
 
 # shellcheck disable=SC1091
@@ -191,14 +279,32 @@ if [ -d "$PROJECT_ROOT/skills" ]; then
     for skill_dir in "$PROJECT_ROOT/skills"/*/; do
         [ -d "$skill_dir" ] || continue
         skill_name="$(basename "$skill_dir")"
-        if [ ! -d "$HARNESS_SKILLS_DIR/$skill_name" ]; then
+        skill_destination="$HARNESS_SKILLS_DIR/$skill_name"
+        if [ -d "$skill_destination" ] && [ ! -f "$skill_destination/SKILL.md" ] && [ ! -f "$skill_destination/skill.json" ]; then
+            warn "Refreshing incomplete staged skill: $skill_name"
+            rm -rf "$skill_destination"
+        fi
+        if [ ! -d "$skill_destination" ]; then
             step "Staging skill: $skill_name"
-            cp -R "$skill_dir" "$HARNESS_SKILLS_DIR/$skill_name"
+            cp -R "$skill_dir" "$skill_destination"
         fi
     done
 fi
 
-# --- 10. Launch ------------------------------------------------------------
+# --- 10. First-use provisioning -------------------------------------------
+
+if [ "$POSTINSTALL_PROVISION" != "0" ]; then
+    step "Provisioning embedding model, SocratiCode/Qdrant, Axon index, and bundled skills..."
+    if [ "$ALLOW_DEGRADED_TOOLS" = "1" ]; then
+        python tools/provision_clean_install.py --allow-degraded
+    else
+        python tools/provision_clean_install.py
+    fi
+else
+    warn "Skipping post-install provisioning because GFORGE_POSTINSTALL_PROVISION=0."
+fi
+
+# --- 11. Launch ------------------------------------------------------------
 
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 

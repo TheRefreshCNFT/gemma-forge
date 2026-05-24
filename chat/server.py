@@ -1,15 +1,19 @@
 import os
 import json
+import ast
+import shlex
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 import hashlib
 import requests
 import yaml
+from urllib.parse import unquote
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_cors import CORS
 
@@ -279,6 +283,16 @@ MODEL_ROUTE_FILE = os.path.join(GFORGE_DATA_ROOT, "model-route.json")
 FORGE_CONTEXT_FILE = os.path.join(GFORGE_DATA_ROOT, "forge.md")
 DEFAULT_FORGE_CONTEXT_SOURCE = os.path.join(PROJECT_ROOT, "forge.md")
 WORKSPACE_SKILLS_ROOT = os.path.join(".gforge", "skills")
+SOURCE_INPUTS_ROOT = os.path.join("references", "input")
+SOURCE_INPUTS_MANIFEST = os.path.join("references", "source-inputs.md")
+SOURCE_INPUTS_MAX_FILES = int(os.environ.get("GFORGE_SOURCE_INPUTS_MAX_FILES", "400"))
+SOURCE_INPUTS_MAX_BYTES = int(os.environ.get("GFORGE_SOURCE_INPUTS_MAX_BYTES", str(250 * 1024 * 1024)))
+MAINTENANCE_TARGETS_ROOT = os.path.join("references", "maintenance-targets")
+MAINTENANCE_TARGETS_MANIFEST = os.path.join("references", "maintenance-targets.md")
+MAINTENANCE_ACTIONS_FILE = os.path.join("artifacts", "maintenance-actions.json")
+MAINTENANCE_BACKUP_ROOT = os.path.join(GFORGE_DATA_ROOT, "maintenance-backups")
+MAINTENANCE_MAX_FILES = int(os.environ.get("GFORGE_MAINTENANCE_MAX_FILES", "500"))
+MAINTENANCE_MAX_BYTES = int(os.environ.get("GFORGE_MAINTENANCE_MAX_BYTES", str(8 * 1024 * 1024)))
 LEGACY_SESSIONS_FILE = os.path.join(CHAT_ROOT, "sessions.json")
 LEGACY_MODELS_FILE = os.path.join(CHAT_ROOT, "models.json")
 LEGACY_SESSION_ROOT = os.path.join(CHAT_ROOT, "session-data")
@@ -316,6 +330,24 @@ IGNORED_CODE_DIRS = {
     "dist",
     "node_modules",
     "venv",
+}
+SOURCE_INPUT_SKIP_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+}
+SOURCE_INPUT_SKIP_FILES = {
+    ".DS_Store",
+    "Thumbs.db",
 }
 AXON_INDEXABLE_EXTENSIONS = {
     ".c",
@@ -582,6 +614,33 @@ def normalize_skill_phrase(value):
     return re.sub(r"[^a-z0-9]+", " ", str(value).lower()).strip()
 
 
+USER_FACING_SKILL_SOURCES = {"harness", "gforge", "project"}
+CORE_HARNESS_SKILL_KEYS = {
+    "axon",
+    "gsd",
+    "code-writer",
+    "logo-generator",
+    "mcp-builder",
+    "pdf",
+    "scrapling-official",
+    "socraticode",
+    "ui-ux-pro-max",
+    "webot-flow",
+}
+SKILL_CATALOG_ORDER = [
+    "scrapling-official",
+    "ui-ux-pro-max",
+    "code-writer",
+    "socraticode",
+    "axon",
+    "gsd",
+    "pdf",
+    "mcp-builder",
+    "logo-generator",
+    "webot-flow",
+]
+
+
 SKILL_SELECTION_ALIASES = {
     "scrapling-official": [
         "scrapling",
@@ -606,6 +665,43 @@ SKILL_SELECTION_ALIASES = {
         "live news",
         "latest news",
         "current news",
+        "online research",
+        "internet research",
+        "deep research",
+        "deep web research",
+        "detailed search",
+        "detailed web search",
+        "detailed source search",
+        "source gathering",
+        "source collection",
+        "collect sources",
+        "gather sources",
+        "find sources",
+        "find articles",
+        "gather articles",
+        "collect articles",
+        "public web research",
+        "public data search",
+        "open web research",
+        "online investigation",
+        "web investigation",
+        "competitive research",
+        "market research",
+        "data mining",
+        "web data mining",
+        "data harvesting",
+        "web harvesting",
+        "information harvesting",
+        "harvest data",
+        "harvest sources",
+        "harvest articles",
+        "gather web data",
+        "collect web data",
+        "find everything about",
+        "pull from websites",
+        "grab website content",
+        "look across websites",
+        "search public sites",
         "news scraping",
         "news articles",
         "news headlines",
@@ -650,6 +746,22 @@ SKILL_SELECTION_ALIASES = {
         "research sources",
         "research sites",
         "research pages",
+        "render javascript",
+        "rendered page",
+        "headless browser",
+        "browser automation",
+        "adaptive scraping",
+        "adaptive selectors",
+        "anti bot bypass",
+        "cloudflare bypass",
+        "turnstile bypass",
+        "crawl site",
+        "crawl website",
+        "multi page crawl",
+        "site crawl",
+        "web spider",
+        "scraping pipeline",
+        "extract structured data from website",
     ],
     "logo-generator": [
         "logo",
@@ -661,10 +773,88 @@ SKILL_SELECTION_ALIASES = {
         "svg logo",
         "logo design",
         "logo concepts",
+        "logo options",
+        "logo variants",
+        "identity mark",
+        "company mark",
+        "product mark",
+        "brand symbol",
+        "app icon",
+        "badge",
+        "emblem",
+        "monogram",
+        "logotype",
+        "mark system",
+        "branding concepts",
+        "brand concepts",
+        "visual mark",
+        "symbol design",
         "wordmark",
         "showcase",
         "brand identity",
         "visual identity",
+    ],
+    "code-writer": [
+        "code writer",
+        "code generation",
+        "write code",
+        "implement code",
+        "build code",
+        "create code",
+        "write a script",
+        "build a script",
+        "create a script",
+        "make a script",
+        "make a tool",
+        "build a tool",
+        "create a tool",
+        "make a utility",
+        "build a utility",
+        "little program",
+        "small program",
+        "working program",
+        "working code",
+        "automation script",
+        "automate this",
+        "automate a task",
+        "process files",
+        "process a file",
+        "processes files",
+        "process data",
+        "processes data",
+        "transform data",
+        "transforms data",
+        "convert data",
+        "converts data",
+        "validate data",
+        "validates data",
+        "parse file",
+        "parse files",
+        "python script",
+        "python cli",
+        "python command line",
+        "python utility",
+        "javascript module",
+        "js module",
+        "typescript module",
+        "ts module",
+        "html css js",
+        "html css javascript",
+        "single page app",
+        "web app",
+        "api client",
+        "parser",
+        "data parser",
+        "unit test",
+        "unit tests",
+        "test suite",
+        "sql query",
+        "shell script",
+        "bash script",
+        "cli tool",
+        "command line tool",
+        "command line utility",
+        "runnable code",
     ],
     "ui-ux-pro-max": [
         "ui",
@@ -682,6 +872,31 @@ SKILL_SELECTION_ALIASES = {
         "responsive",
         "across devices",
         "present nicely",
+        "make it look good",
+        "make it look professional",
+        "make it polished",
+        "visual polish",
+        "polish the page",
+        "clean layout",
+        "beautiful page",
+        "good looking page",
+        "mobile friendly",
+        "phone friendly",
+        "tablet friendly",
+        "desktop friendly",
+        "easy to use",
+        "user friendly",
+        "user experience",
+        "screen design",
+        "page design",
+        "front end",
+        "front-end",
+        "frontend",
+        "visual design",
+        "presentation design",
+        "make the ui better",
+        "improve the interface",
+        "improve the design",
         "modern page",
         "modern webpage",
         "frontend design",
@@ -694,6 +909,34 @@ SKILL_SELECTION_ALIASES = {
         "accessibility",
         "dashboard design",
         "landing page design",
+        "app design",
+        "app shell",
+        "admin dashboard",
+        "saas dashboard",
+        "product page",
+        "pricing page",
+        "onboarding flow",
+        "form flow",
+        "mobile layout",
+        "mobile responsive",
+        "desktop layout",
+        "component library",
+        "component system",
+        "style guide",
+        "visual hierarchy",
+        "interaction design",
+        "usability",
+        "ux audit",
+        "ui audit",
+        "design audit",
+        "data visualization",
+        "data visualisation",
+        "chart design",
+        "charts",
+        "graph design",
+        "empty states",
+        "loading states",
+        "error states",
     ],
     "axon": [
         "axon",
@@ -706,6 +949,41 @@ SKILL_SELECTION_ALIASES = {
         "circular dependencies",
         "dependency graph",
         "what calls this",
+        "what calls",
+        "who calls",
+        "what breaks if",
+        "what will break",
+        "trace dependencies",
+        "trace calls",
+        "dependency map",
+        "map dependencies",
+        "architecture graph",
+        "architecture map",
+        "find unused code",
+        "unused code",
+        "remove dead stuff",
+        "cleanup dead code",
+        "safe refactor",
+        "refactor safety",
+        "change impact",
+        "rename impact",
+        "blast radius check",
+        "affected code",
+        "call chain",
+        "execution flow",
+        "symbol graph",
+        "structural graph",
+        "structural analysis",
+        "dependency tracing",
+        "refactor impact",
+        "affected tests",
+        "affected files",
+        "architectural impact",
+        "code communities",
+        "community detection",
+        "shortest path",
+        "graph query",
+        "cypher",
         "code coupling",
         "mcp server for code",
     ],
@@ -733,6 +1011,25 @@ SKILL_SELECTION_ALIASES = {
         "ocr pdf",
         "scanned pdf",
         "searchable pdf",
+        "scan document",
+        "scanned document",
+        "document ocr",
+        "ocr document",
+        "read scanned pages",
+        "read scanned documents",
+        "pull text from document",
+        "pull text from pdf",
+        "extract tables from document",
+        "make searchable",
+        "searchable document",
+        "read the form",
+        "fill the form",
+        "fill out pdf",
+        "paper form",
+        "digital form",
+        "document pages",
+        "combine documents",
+        "split document",
         "create pdf",
         "generate pdf",
         "qpdf",
@@ -765,11 +1062,200 @@ SKILL_SELECTION_ALIASES = {
         "typescript mcp",
         "node mcp",
         "mcp sdk",
+        "agent tool server",
+        "tool server",
+        "local tool server",
+        "make tools for agent",
+        "agent tools",
+        "expose api as tools",
+        "wrap api as tools",
+        "connect api to agent",
+        "connect service to agent",
+        "server for tools",
+        "tool endpoint",
+        "tool transport",
+        "resources server",
+        "prompt server",
+        "codex tool server",
+        "claude tool server",
         "external api integration",
         "api connector",
         "tool evaluation",
         "tool eval",
     ],
+    "socraticode": [
+        "socraticode",
+        "semantic search",
+        "semantic code search",
+        "semantic codebase search",
+        "codebase search",
+        "codebase exploration",
+        "codebase context",
+        "context artifacts",
+        "index codebase",
+        "index this repo",
+        "index the repo",
+        "where is implemented",
+        "where this lives",
+        "find where",
+        "find in the code",
+        "find in this repo",
+        "search the repo",
+        "search this repo",
+        "search the code",
+        "search codebase",
+        "locate code",
+        "locate function",
+        "locate files",
+        "find the function",
+        "find the module",
+        "find implementation",
+        "where does this happen",
+        "where is this handled",
+        "how is this wired",
+        "how this works in code",
+        "explain this repo",
+        "inspect the codebase",
+        "look through the code",
+        "find relevant files",
+        "relevant files",
+        "understand codebase",
+        "understand this repo",
+        "map codebase",
+        "navigate codebase",
+        "repository exploration",
+        "repo exploration",
+        "api schema search",
+        "database schema search",
+        "dependency context",
+        "codebase_graph",
+        "codebase_search",
+        "codebase_status",
+    ],
+    "gsd": [
+        "gsd",
+        "get shit done",
+        "phase plan",
+        "phase planning",
+        "project plan",
+        "execution plan",
+        "plan the work",
+        "break down the work",
+        "break this down",
+        "task breakdown",
+        "step by step plan",
+        "execution strategy",
+        "work plan",
+        "delivery plan",
+        "sanity plan",
+        "finish plan",
+        "organize the project",
+        "project roadmap",
+        "turn this into tasks",
+        "orchestration plan",
+        "roadmap",
+        "milestone",
+        "milestones",
+        "workstreams",
+        "planning workflow",
+        "autonomous planning",
+        "verification plan",
+        "acceptance criteria",
+        "break this into phases",
+        "plan phase",
+        "execute phase",
+        "review backlog",
+    ],
+    "webot-flow": [
+        "webot flow",
+        "forge flow",
+        "handoff",
+        "current state",
+        "active state",
+        "project map",
+        "backup",
+        "state backup",
+        "state check",
+        "check current state",
+        "orient on state",
+        "orient on repo",
+        "repo orientation",
+        "handoff update",
+        "handoff summary",
+        "protect live",
+        "protect user work",
+        "pre edit backup",
+        "before editing",
+        "before commit",
+        "wrap up",
+        "wrap this up",
+        "verify before done",
+        "verification handshake",
+        "repo state",
+        "working tree",
+        "do not touch live",
+        "handoff notes",
+    ],
+}
+
+SKILL_ALIAS_SUPPRESSIONS = {
+    # These are meaningful inside the MCP skill manual, but too generic as
+    # standalone routing triggers. "auth middleware" should route to
+    # SocratiCode/Axon, not MCP Builder, unless MCP/tool/server language is
+    # present too.
+    "mcp-builder": {
+        "auth",
+        "oauth",
+        "pagination",
+        "connector",
+        "actionable errors",
+        "tool naming",
+        "api tools",
+        "evals",
+    },
+}
+
+SCRAPLING_BROAD_RESEARCH_ALIASES = {
+    "competitive research",
+    "data harvesting",
+    "data mining",
+    "deep research",
+    "detailed search",
+    "harvest data",
+    "information harvesting",
+    "market research",
+}
+SCRAPLING_WEB_CONTEXT_TERMS = {
+    "article",
+    "articles",
+    "browser",
+    "headlines",
+    "internet",
+    "news",
+    "online",
+    "open web",
+    "page",
+    "pages",
+    "public",
+    "site",
+    "sites",
+    "source",
+    "sources",
+    "url",
+    "urls",
+    "web",
+    "website",
+    "websites",
+}
+CODEBASE_CONTEXT_TERMS = {
+    "code",
+    "codebase",
+    "function",
+    "implementation",
+    "module",
+    "repo",
+    "repository",
+    "source code",
 }
 
 
@@ -797,18 +1283,53 @@ def skill_aliases(info):
     aliases.update(SKILL_SELECTION_ALIASES.get(key, []))
     aliases.update(str(item).strip() for item in info.get("keywords", []) if str(item).strip())
     aliases.update(description_skill_aliases(str(info.get("description", ""))))
+    suppressed = {normalize_skill_phrase(item) for item in SKILL_ALIAS_SUPPRESSIONS.get(key, set())}
+    aliases = {alias for alias in aliases if normalize_skill_phrase(alias) not in suppressed}
     return sorted(aliases, key=lambda item: (normalize_skill_phrase(item), len(item)))
 
 
-def skill_alias_matches_text(text, alias):
-    phrase = normalize_skill_phrase(alias)
+def normalized_phrase_matches_text(normalized_text, phrase):
     if not phrase:
         return False
-    normalized_text = normalize_skill_phrase(text)
     if not normalized_text:
         return False
     pattern = r"(?<![a-z0-9])" + re.escape(phrase).replace(r"\ ", r"\s+") + r"(?![a-z0-9])"
     return bool(re.search(pattern, normalized_text))
+
+
+def skill_alias_matches_text(text, alias):
+    return normalized_phrase_matches_text(normalize_skill_phrase(text), normalize_skill_phrase(alias))
+
+
+def skill_alias_context_allows(text, key, alias):
+    phrase = normalize_skill_phrase(alias)
+    if key != "scrapling-official" or phrase not in SCRAPLING_BROAD_RESEARCH_ALIASES:
+        return True
+    normalized_text = normalize_skill_phrase(text)
+    has_code_context = any(normalized_phrase_matches_text(normalized_text, term) for term in CODEBASE_CONTEXT_TERMS)
+    has_web_context = any(normalized_phrase_matches_text(normalized_text, term) for term in SCRAPLING_WEB_CONTEXT_TERMS)
+    return not (has_code_context and not has_web_context)
+
+
+def skill_is_user_facing(info):
+    key = info.get("key") or normalize_skill_key(info.get("name", ""))
+    source = str(info.get("source", "")).strip().lower()
+    return key in CORE_HARNESS_SKILL_KEYS or source in USER_FACING_SKILL_SOURCES
+
+
+def user_facing_skills(skills):
+    return {
+        key: info
+        for key, info in (skills or {}).items()
+        if skill_is_user_facing({**info, "key": key})
+    }
+
+
+def ordered_skill_keys(skills):
+    keys = list((skills or {}).keys())
+    preferred = [key for key in SKILL_CATALOG_ORDER if key in skills]
+    rest = sorted(key for key in keys if key not in preferred)
+    return preferred + rest
 
 
 def resolve_skill_reference(value, skills):
@@ -839,6 +1360,16 @@ def session_skill_text(session):
     return "\n".join(parts).lower()
 
 
+def session_user_source_text(session):
+    if not isinstance(session, dict):
+        return ""
+    parts = [str(session.get("project", ""))]
+    for message in session.get("messages", []) if isinstance(session.get("messages"), list) else []:
+        if str(message.get("role", "")).lower() == "user":
+            parts.append(str(message.get("content", "")))
+    return "\n".join(parts)
+
+
 def requested_skill_keys(session, skills):
     """Scan project text + chat history for skill matches. Matches by:
       1. Explicit `$skill-name` or `skill <name>` mentions.
@@ -846,6 +1377,7 @@ def requested_skill_keys(session, skills):
       3. Built-in aliases for bundled harness skills.
       4. Any keywords / use-case phrases declared by the bundle metadata.
     Returns a sorted list of keys."""
+    skills = user_facing_skills(skills)
     text = session_skill_text(session)
     requested = set()
     for match in re.findall(r"(?:\$|skill\s+)([a-z0-9_.-]+)", text):
@@ -853,7 +1385,10 @@ def requested_skill_keys(session, skills):
         if key in skills:
             requested.add(key)
     for key, info in skills.items():
-        if any(skill_alias_matches_text(text, alias) for alias in skill_aliases(info)):
+        if any(
+            skill_alias_matches_text(text, alias) and skill_alias_context_allows(text, key, alias)
+            for alias in skill_aliases(info)
+        ):
             requested.add(key)
             continue
     return sorted(requested)
@@ -973,6 +1508,7 @@ def resolve_skill_selection(session, skills):
     """
     if not isinstance(session, dict):
         return []
+    skills = user_facing_skills(skills)
 
     context_pick = None
     context_none = False
@@ -1054,19 +1590,24 @@ def write_skill_manifest(workspace_dir, staged):
 
 SKILL_ROLE_GUIDANCE = {
     "scrapling-official": {
-        "role": "web scraping and extraction",
+        "role": "web scraping and extraction, advanced browser, crawling, and web acquisition",
         "guidance": [
-            "Use this when the request asks to scrape, crawl, browse, fetch, research live pages, extract headlines/articles, or handle dynamic/anti-bot sites.",
+            "Use this when the request asks to scrape, crawl, browse, fetch, research live pages, extract headlines/articles, render JavaScript, or handle dynamic/anti-bot sites.",
+            "It is the first browser/scraping option in Gemma Forge: request fetch first, browser rendering when content is thin, stealth when blocked.",
+            "For advanced users, route adaptive selectors, spider/crawl workflows, Cloudflare/Turnstile language, and structured extraction to this skill.",
             "The harness can fetch URLs with Scrapling before execution and will list fetched `research/*.md` artifacts later in this prompt; treat those artifacts as available source material.",
             "Do not say live scraping is impossible when `web_browse`/`web_fetch` is in CAN do or when research artifacts are listed. Build from the fetched artifacts and cite their workspace paths.",
+            "Do not use this for local-only tasks with no URL, site, web research, or scraping requirement.",
         ],
     },
     "ui-ux-pro-max": {
-        "role": "webpage and interface design",
+        "role": "webpage and interface design, UI/UX systems, layouts, states, charts, and accessibility",
         "guidance": [
-            "Use this when the deliverable is a webpage, landing page, dashboard, UI, visual layout, responsive design, typography, color, spacing, or accessibility work.",
+            "Use this when the deliverable is a webpage, landing page, dashboard, app shell, product page, UI, visual layout, responsive design, typography, color, spacing, chart/data display, accessibility, or UX flow.",
+            "Treat it as a full design suite, not a light styling hint: use it for layout systems, visual hierarchy, state design, component patterns, palette/font pairing, UX guidelines, dashboards, and polished responsive presentation.",
             "Apply its guidance directly inside the generated HTML/CSS/JS deliverable; do not produce a separate design plan unless the contract asks for one.",
             "For a news/page request, this skill is the design layer: structure, layout, visual hierarchy, responsive behavior, and polished presentation.",
+            "Do not use this for non-visual scripts, raw data transforms, or codebase graph analysis unless the output is a user-facing interface.",
         ],
     },
     "logo-generator": {
@@ -1076,11 +1617,21 @@ SKILL_ROLE_GUIDANCE = {
             "Generate actual SVG markup in GFORGE_FILE blocks; do not redirect to an external image generator.",
         ],
     },
-    "axon": {
-        "role": "code graph analysis",
+    "code-writer": {
+        "role": "source-code implementation for Python, JavaScript, TypeScript, HTML/CSS, SQL, and shell",
         "guidance": [
-            "Use only when the task asks for code structure, dead code, call graph, dependency graph, impact analysis, or knowledge graph work.",
-            "Do not apply this to ordinary webpage/content generation unless the user explicitly asks for codebase analysis.",
+            "Use when the primary deliverable is a script, CLI, module, test, parser, small web app, API client, SQL file, shell script, or other source-code artifact.",
+            "This is the implementation layer: write complete runnable files, keep dependencies minimal, add error handling, and include a simple validation path.",
+            "Pair with UI/UX Pro Max for interface design, Scrapling for web acquisition, SocratiCode for existing-codebase discovery, and Axon for structural graph/impact analysis.",
+            "Do not use this as a substitute for SocratiCode/Axon when the request is primarily to find, understand, or map an existing codebase.",
+        ],
+    },
+    "axon": {
+        "role": "structural code graph, call graph, dependency, impact, and dead-code analysis",
+        "guidance": [
+            "Use when the task is about structure: dead code, call graph, dependency graph, circular dependencies, blast radius, impact analysis, what calls a symbol, affected tests/files, code communities, or graph queries.",
+            "Axon is higher-level than simple text search; it should be inactive for ordinary webpage/content generation, one-off scripts, or docs unless the user explicitly asks for codebase structure.",
+            "When both semantic discovery and structural impact matter, pair SocratiCode for finding relevant files with Axon for graph/impact reasoning.",
         ],
     },
     "pdf": {
@@ -1099,17 +1650,27 @@ SKILL_ROLE_GUIDANCE = {
             "Design tools around real user workflows, authentication, pagination, structured outputs, and actionable errors; include evaluation when the request asks for quality or correctness.",
         ],
     },
-    "socraticode": {
-        "role": "semantic codebase search",
+    "webot-flow": {
+        "role": "project orientation and verification workflow",
         "guidance": [
-            "Use only when the task asks to inspect or understand an existing codebase with semantic search or dependency context.",
-            "Do not apply this to ordinary webpage/content generation unless the user explicitly asks for codebase exploration.",
+            "Use this when the task touches an existing project, repository state, handoff docs, backups, or verification discipline.",
+            "Read the staged project-state instructions before making claims about current state, and report blockers instead of pretending a step succeeded.",
+        ],
+    },
+    "socraticode": {
+        "role": "semantic codebase search, indexing, context artifacts, and dependency orientation",
+        "guidance": [
+            "Use when the task asks to understand or navigate an existing codebase, find relevant files, locate where a feature lives, index a repo, search schemas/specs/context artifacts, or orient before code changes.",
+            "SocratiCode is higher-level codebase intelligence; it should be inactive for simple fresh-file generation with no existing codebase to inspect.",
+            "For exact strings or known filenames, direct search is acceptable; for concepts, architecture, or unknown implementation locations, use SocratiCode first.",
+            "When the MCP is degraded, report degraded/unavailable instead of pretending semantic search ran.",
         ],
     },
     "gsd": {
-        "role": "project planning workflow",
+        "role": "GSD planning, orchestration, phase routing, roadmap, and verification workflow",
         "guidance": [
-            "Use only when the task asks for GSD, phase planning, roadmap work, or a planning workflow.",
+            "Use when the task asks for GSD, phase planning, roadmaps, milestones, workstreams, autonomous planning, execution routing, or verification strategy.",
+            "GSD should enforce counts, source inputs, tool routing, acceptance criteria, and review gates. It must not allow fewer outputs than the user requested.",
             "Do not turn an execution deliverable into a plan unless the Project Context contract says the deliverable is a plan.",
         ],
     },
@@ -1124,6 +1685,34 @@ def skill_role_guidance(skill_key):
             "If it does not apply to the deliverable, ignore it rather than discussing it.",
         ],
     })
+
+
+def build_skill_capability_catalog_prompt(skills):
+    catalog = user_facing_skills(skills)
+    if not catalog:
+        return "- No user-facing skills are installed."
+    lines = [
+        "Installed user-facing skill capability catalog:",
+        "- Pick skills for capability fit, not because a word sounds nearby.",
+        "- Higher-level code intelligence tools should stay inactive for simple file/content generation.",
+        "- Advanced technical phrasing should activate the exact skill(s) below when it matches their role.",
+    ]
+    for key in ordered_skill_keys(catalog):
+        skill = catalog[key]
+        role = skill_role_guidance(key)
+        aliases = skill_prompt_alias_preview(skill, limit=10)
+        alias_text = ", ".join(aliases) if aliases else "(none)"
+        description = truncate_text(skill.get("description", ""), 260) if skill.get("description") else ""
+        lines.append(f"- `{key}` — {role.get('role', 'supporting instructions')}.")
+        if description:
+            lines.append(f"  Use when: {description}")
+        lines.append(f"  Trigger language: {alias_text}")
+        guidance = role.get("guidance", [])
+        if guidance:
+            lines.append(f"  Routing rule: {guidance[0]}")
+            if len(guidance) > 1:
+                lines.append(f"  Boundary: {guidance[-1]}")
+    return "\n".join(lines)
 
 
 def build_skill_usage_plan(staged):
@@ -2689,17 +3278,69 @@ def call_ollama(model, prompt):
     return content
 
 
+def build_gsd_context_prompt_block(session):
+    if not isinstance(session, dict):
+        session = {"project": str(session or "")}
+    context = session.get("projectContext") if isinstance(session.get("projectContext"), dict) else {}
+    raw_yaml = session.get("projectContextRaw") if isinstance(session.get("projectContextRaw"), str) else ""
+    if not raw_yaml and context:
+        raw_yaml = dump_project_context_yaml(context)
+    source_inputs = context.get("source_inputs") if isinstance(context.get("source_inputs"), list) else []
+    tool_plan = context.get("tool_plan") if isinstance(context.get("tool_plan"), list) else []
+    gsd_directives = context.get("gsd_directives") if isinstance(context.get("gsd_directives"), dict) else {}
+    skill_plan = context.get("skill_plan") if isinstance(context.get("skill_plan"), list) else []
+    lines = [
+        "GSD operating context (binding):",
+        f"- Selected model: `{session.get('model', DEFAULT_MODEL)}`",
+        "- Do not rephrase the user request as the plan. Convert intent into executable phases with tool routing and verification gates.",
+        "- Every stated count is a hard gate. A plan that delivers fewer items than requested is wrong.",
+        "- Every staged skill is an operational instruction source. Use it when it fits; ignore it quietly when it does not.",
+        "- For web research, Scrapling is the first browser/scraping option. Research must create/cite workspace artifacts.",
+        "- For local file/directory references, Execution must use imported workspace-relative source paths and command evidence.",
+        "- Use the GSD suite perspective: discovery/map-codebase/research-phase/plan-phase/execute-phase/verify-work/audit/review as applicable, not a shallow bullet list.",
+        "",
+    ]
+    if raw_yaml:
+        lines.extend(["Project Context contract:", "```yaml", raw_yaml.strip(), "```", ""])
+    if source_inputs:
+        lines.append("Source inputs that GSD must route:")
+        for item in source_inputs:
+            if isinstance(item, dict):
+                lines.append(f"- `{item.get('original_path')}` ({item.get('kind')}) -> workspace import before execution")
+        lines.append("")
+    if skill_plan:
+        lines.append("Skill plan:")
+        for item in skill_plan:
+            if isinstance(item, dict):
+                lines.append(f"- `{item.get('skill')}`: {item.get('role')} at `{item.get('staged_path')}`")
+        lines.append("")
+    if tool_plan:
+        lines.append("Tool plan:")
+        for item in tool_plan:
+            if isinstance(item, dict):
+                lines.append(f"- {item.get('step')}: `{item.get('tool')}` with evidence `{item.get('evidence')}`")
+        lines.append("")
+    if gsd_directives:
+        lines.extend(["GSD directives:", "```json", json.dumps(gsd_directives, indent=2), "```", ""])
+    return "\n".join(lines)
+
+
 def build_planning_prompt(project, checkpoint_mode, resource_state):
+    session = project if isinstance(project, dict) else {"project": project}
+    project_text = session.get("project", "")
     capacity = resource_state.get("agentCapacity", {})
     forge_context = read_forge_context()
-    research_policy = research_budget_text({"project": project})
+    research_policy = research_budget_text(session)
+    gsd_context = build_gsd_context_prompt_block(session)
     return f"""You are the Gemma Forge planning agent.
 This is a work harness, not a chat interface.
 
 {forge_context}
 
 Project to plan:
-{project}
+{project_text}
+
+{gsd_context}
 
 Use these built-in protocol cards:
 - Forge Flow: orient on project state, read project map/context, verify local environment, protect user work.
@@ -2733,6 +3374,7 @@ def build_mode_aware_planning_prompt(session, checkpoint_mode, resource_state):
     project_directory = session.get("projectDirectory", "")
     forge_context = read_forge_context()
     research_policy = research_budget_text(session)
+    gsd_context = build_gsd_context_prompt_block(session)
     base = f"""You are the Gemma Forge planning agent.
 This is a work harness, not a chat interface.
 
@@ -2740,6 +3382,8 @@ This is a work harness, not a chat interface.
 
 Project to plan:
 {session.get('project', '')}
+
+{gsd_context}
 
 Project mode: {project_mode}
 Project directory: {project_directory or 'not provided'}
@@ -3168,42 +3812,29 @@ def repair_execution_after_review(session_id, session, model, result, review, at
 
 
 def repair_verification_after_review(session_id, session, result, review, attempt):
-    # Pass the model + the failed-review object so the rebuilt verification
-    # actually produces a fresh model checklist that names which findings
-    # have / have not been addressed. The previous behaviour passed neither,
-    # which left the Checklist section empty and discarded any user-driven
-    # correction from the prior call to build_verification_details.
+    # Verification is intentionally read-only. It may rebuild the verification
+    # report from the current artifacts, but it must never rerun Project
+    # Execution or rewrite deliverables. A failed deterministic check should
+    # return needs-attention for the Execution card / user, not mutate files
+    # from inside Verification.
     repair_model = session.get("model", DEFAULT_MODEL)
     details, validation = build_verification_details(
         session_id, session, "post-review repair", repair_model, review,
     )
-    upstream_artifact = None
-    if isinstance(validation, dict) and validation.get("passed") is False:
-        workspace_dir = session.get("projectDirectory", "").strip()
-        if workspace_dir and os.path.isdir(workspace_dir):
-            execution = execute_model_authored_project(session_id, session, repair_model, workspace_dir, review)
-            upstream_details = build_model_execution_report(workspace_dir, execution)
-            upstream_artifact = write_artifact(session_id, "execution.md", upstream_details)
-            details, validation = build_verification_details(
-                session_id, session, "post-review repair", repair_model, review,
-            )
 
-    result["summary"] = "Post-review patch rebuilt verification with artifact context and reran deterministic checks."
+    result["summary"] = "Post-review patch rebuilt verification from existing artifacts only."
     result["details"] = details
     result["checkpoint"] = "Inspect the verification report and confirm the generated project meets the requested outcome."
     result["artifact"] = write_artifact(session_id, "verification.md", details)
     result["validation"] = validation
     action = "Rebuilt verification from the actual workspace files, validation artifact, and original user request."
-    if upstream_artifact:
-        action = "Ran continuation repair, then rebuilt verification and reran deterministic checks."
     return {
         "attempt": attempt,
         "card": "verification",
-        "changed": True,
+        "changed": False,
         "action": action,
         "reviewSummary": review.get("summary", ""),
         "artifact": result["artifact"],
-        "upstreamArtifact": upstream_artifact,
         "validation": validation,
     }
 
@@ -3469,6 +4100,12 @@ Post-review repairs:
 Rules:
 - Judge only whether this specific Forge Section met its responsibility. Do not require the section to complete later cards or the full project.
 - If validation data exists and says passed is false, return passed false.
+- If validation data exists and says passed is true, do not fail because a
+  count is greater than the requested minimum. `deliverable.count` and
+  content quantity checks are deterministic contract gates; treat reviewer
+  disagreement about file count, path pattern, PDF validity, or content
+  quantity as a warning unless you can name a specific artifact mismatch not
+  covered by validation.
 - **You CANNOT override a validator-flagged fabrication.** If `validation.failures`
   contains a line starting with "Fabricated-claim guard:" or
   "model-authored execution returned no writable files" or
@@ -3538,6 +4175,42 @@ JSON shape:
                     fixes.append(fix)
         payload["fixesNeeded"] = fixes
 
+    if (
+        isinstance(validation, dict)
+        and validation
+        and validation.get("passed") is True
+        and card_id == "verification"
+        and not payload.get("passed")
+    ):
+        payload["passed"] = True
+        payload["summary"] = (
+            "Verification reviewer concern was downgraded because deterministic validation passed."
+        )
+        findings = listify(payload.get("findings"))
+        findings.append(
+            "Verification is read-only: when deterministic validation passes, reviewer concerns are reported as warnings and must not trigger deliverable repair."
+        )
+        payload["findings"] = findings
+        payload["fixesNeeded"] = []
+
+    if (
+        isinstance(validation, dict)
+        and validation
+        and validation.get("passed") is True
+        and not payload.get("passed")
+        and review_conflicts_with_passed_validation(payload)
+    ):
+        payload["passed"] = True
+        payload["summary"] = (
+            "Reviewer count concern was downgraded because deterministic validation passed."
+        )
+        findings = listify(payload.get("findings"))
+        findings.append(
+            "Deterministic validation is authoritative for file count, path pattern, PDF integrity, and content quantity gates when it passes."
+        )
+        payload["findings"] = findings
+        payload["fixesNeeded"] = []
+
     payload["required"] = True
     payload["model"] = model
     payload["thresholdB"] = SMALL_MODEL_REVIEW_MAX_B
@@ -3546,6 +4219,58 @@ JSON shape:
     artifact = write_artifact(session_id, f"{safe_id(card_id)}-extra-review.md", build_review_artifact(card_id, payload))
     payload["artifact"] = artifact
     return payload
+
+
+def review_conflicts_with_passed_validation(review):
+    text = " ".join(
+        [str(review.get("summary", ""))]
+        + [str(item) for item in listify(review.get("findings"))]
+        + [str(item) for item in listify(review.get("fixesNeeded"))]
+    ).lower()
+    if not text:
+        return False
+    validation_markers = {
+        "validation",
+        "deterministic",
+        "deliverable.count",
+        "content requirement",
+        "file count",
+        "path pattern",
+        "pdf",
+    }
+    count_markers = {
+        "actual",
+        "at least",
+        "count",
+        "exactly",
+        "expected",
+        "file",
+        "files",
+        "generated",
+        "report",
+        "reports",
+        "category",
+        "categories",
+        "wrote",
+    }
+    if not any(marker in text for marker in validation_markers):
+        return False
+    if not any(marker in text for marker in count_markers):
+        return False
+
+    # Keep genuine artifact/content mismatches blocking. This guard is only for
+    # reviewer re-interpretations of gates the deterministic validator already
+    # passed, such as treating "at least 3 categories" as "exactly 3".
+    concrete_blockers = {
+        "broken link",
+        "does not match the requested text",
+        "incorrect phrase",
+        "runtime error",
+        "syntax error",
+        "wrong phrase",
+        "wrong text",
+    }
+    return not any(marker in text for marker in concrete_blockers)
 
 
 def card_review_responsibility(card_id):
@@ -3677,6 +4402,8 @@ CONTEXT_DELIBERATION_OPTIONS = {"temperature": 0.1}
 
 _HARNESS_CAN_DO_BASE = [
     "emit_files",            # write files into the workspace via GFORGE_FILE blocks
+    "import_source_inputs",  # copy user-referenced local files/directories into the workspace
+    "harness_maintenance",   # controlled updates to explicit Gemma Forge install/runtime targets
     "run_local_skill",       # consume a pre-staged skill from ~/.gforge/harness/skills/
     "call_local_gemma",      # talk to the local Ollama model
     "read_forge_context",    # read forge.md and staged skill files
@@ -3733,6 +4460,8 @@ def harness_capabilities():
 
 HARNESS_CAN_DO_DESCRIPTIONS = {
     "emit_files": "write files into the workspace via GFORGE_FILE blocks",
+    "import_source_inputs": "copy explicit local file/directory references into workspace/references/input/ before execution",
+    "harness_maintenance": "apply controlled Gemma Forge maintenance actions only to allowlisted install/runtime targets",
     "run_local_skill": "consume a pre-staged skill from ~/.gforge/harness/skills/",
     "call_local_gemma": "call the local Ollama Gemma model",
     "read_forge_context": "read forge.md and any staged skill files",
@@ -3754,6 +4483,13 @@ HARNESS_CAN_DO, HARNESS_CANNOT_DO = harness_capabilities()
 
 # Regex patterns that signal a capability is required by the user request.
 CAPABILITY_KEYWORDS = {
+    "harness_maintenance": [
+        r"\b(gemma\s+forge|forge\s+harness|forge\s+brain|forge\s+engine|harness)\b.*\b(add|change|default|fix|install|patch|remove|repair|route|set|stage|update)\b",
+        r"\b(add|change|default|fix|install|patch|remove|repair|route|set|stage|update)\b.*\b(gemma\s+forge|forge\s+harness|forge\s+brain|forge\s+engine|harness)\b",
+        r"\b(add|remove|update|stage)\s+(a\s+|the\s+)?(forge\s+)?skill\b",
+        r"\b(set|change|confirm|make)\s+(the\s+)?default\s+(forge\s+brain\s+)?model\b",
+        r"\b(context\s+writer|project\s+context|gsd\s+planning|skill\s+routing|clean[-\s]?install|installer|provision(?:ing)?)\b.*\b(gemma\s+forge|harness|forge)\b",
+    ],
     "git_clone": [
         r"\bgit\s+clone\b",
         r"\bclone\s+(this\s+|that\s+)?(repo|repository)\b",
@@ -3961,6 +4697,108 @@ def add_content_requirement(requirements, seen, count, item, source, tail):
     })
 
 
+SCRIPT_RUNTIME_QUANTITY_ITEM_PATTERN = r"(?:\.[a-z0-9]{1,12}\s+)?(?:files?|directories?|subdirectories?|folders?|subfolders?|dirs?)"
+
+
+def add_script_runtime_requirement(requirements, seen, count, item, source, tail):
+    parsed_count = parse_positive_int(count)
+    if not parsed_count or parsed_count <= 1:
+        return
+    item_clean = re.sub(r"\s+", " ", str(item or "").lower()).strip()
+    source_clean = re.sub(r"\s+", " ", str(source or "")).strip(" ,")
+    scope = re.sub(r"\s+", " ", str(tail or "").strip(" ,")) or "script runtime output"
+    if item_clean in {"file", "files"}:
+        extension_match = re.search(r"\.([a-z0-9]{1,12})\b", f"{source_clean} {scope}", re.IGNORECASE)
+        if extension_match:
+            item_clean = f".{extension_match.group(1).lower()} files"
+    minimum_total = parsed_count
+
+    if "file" in item_clean and re.search(r"\beach\b", f"{source_clean} {scope}", re.IGNORECASE):
+        container_match = re.search(
+            rf"\beach\b[^.!?\n]{{0,80}}\b(?P<count>{COUNT_TOKEN_PATTERN})\s+"
+            r"(?:numbered\s+)?(?:directories|subdirectories|folders|subfolders|dirs)\b",
+            f"{source_clean} {scope}",
+            re.IGNORECASE,
+        )
+        if container_match:
+            container_count = parse_positive_int(container_match.group("count"))
+            if container_count:
+                minimum_total = parsed_count * container_count
+        else:
+            prior_container_counts = [
+                parse_positive_int(req.get("minimum_total")) or parse_positive_int(req.get("count"))
+                for req in requirements
+                if "director" in str(req.get("item", "")) or "folder" in str(req.get("item", "")) or "dir" == str(req.get("item", ""))
+            ]
+            prior_container_counts = [value for value in prior_container_counts if value]
+            if prior_container_counts:
+                minimum_total = parsed_count * max(prior_container_counts)
+
+    key = (parsed_count, minimum_total, item_clean, scope.lower())
+    if key in seen:
+        return
+    seen.add(key)
+    requirements.append({
+        "count": parsed_count,
+        "item": item_clean,
+        "scope": scope,
+        "source": source_clean,
+        "minimum_total": minimum_total,
+        "validation_mode": "script_runtime",
+    })
+
+
+def detect_script_runtime_quantity_requirements(text):
+    """Extract file/directory counts that a generated script must create when run."""
+    if not text:
+        return []
+
+    source_text = str(text)
+    requirements = []
+    seen = set()
+    pattern = re.compile(
+        rf"\b(?:create|creates|created|make|makes|made|generate|generates|generated|"
+        rf"write|writes|written|produce|produces|produced|add|adds|populate|populates|"
+        rf"contain|contains|containing|include|includes|including)?\s*"
+        rf"(?P<count>{COUNT_TOKEN_PATTERN})\s+(?P<item>{SCRIPT_RUNTIME_QUANTITY_ITEM_PATTERN})\b"
+        rf"(?P<tail>(?:\.(?!\s|$)|[^.!?\n]){{0,180}})",
+        re.IGNORECASE,
+    )
+    overlapping_pattern = re.compile(rf"(?=({pattern.pattern}))", re.IGNORECASE)
+    for match in overlapping_pattern.finditer(source_text):
+        full_source = (match.group(1) or "").strip(" ,")
+        add_script_runtime_requirement(
+            requirements,
+            seen,
+            match.group("count"),
+            match.group("item"),
+            full_source,
+            match.group("tail") or "",
+        )
+    return requirements
+
+
+def script_runtime_quantity_requirements_from_context(project_context):
+    if not isinstance(project_context, dict):
+        return []
+    deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+    fmt = str(deliverable.get("format", "")).strip().lower()
+    if fmt not in SCRIPT_RUNTIME_FORMATS:
+        return []
+
+    chunks = []
+    intent = project_context.get("intent") if isinstance(project_context.get("intent"), dict) else {}
+    for key in ("surface_ask", "underlying_need", "success_means"):
+        if intent.get(key):
+            chunks.append(str(intent.get(key)))
+    constraints = project_context.get("constraints") if isinstance(project_context.get("constraints"), dict) else {}
+    hard = constraints.get("hard_requirements") if isinstance(constraints.get("hard_requirements"), list) else []
+    chunks.extend(str(item) for item in hard)
+    acceptance = project_context.get("acceptance") if isinstance(project_context.get("acceptance"), list) else []
+    chunks.extend(str(item) for item in acceptance)
+    return detect_script_runtime_quantity_requirements("\n".join(chunks))
+
+
 def detect_content_quantity_requirements(text):
     """Extract repeated content-item counts from raw user text.
 
@@ -4032,6 +4870,8 @@ def merge_content_quantity_requirements(existing, detected):
             "source": str(item.get("source", "")).strip(),
             "minimum_total": parse_positive_int(item.get("minimum_total")) or count,
         }
+        if item.get("validation_mode"):
+            requirement["validation_mode"] = str(item.get("validation_mode")).strip()
         key = (
             requirement["count"],
             normalize_quantity_item(requirement["item"]),
@@ -4086,6 +4926,15 @@ ANTI_DEFLECTION_REGISTRY = {
         "Markdown is plain text. Write the full document inside GFORGE_FILE blocks. "
         "Do NOT just describe what the document would contain — write the document itself."
     ),
+    "pdf": (
+        "PDF is a binary deliverable. Do NOT emit fake PDF bytes in GFORGE_FILE blocks. "
+        "Write a workspace-safe generator or extraction script inside GFORGE_FILE blocks, "
+        "then list a simple `python ...` command in COMMANDS so the harness creates real "
+        "`.pdf` files on disk. Use the staged PDF skill guidance and reportlab/pypdf/"
+        "pdfplumber where appropriate. If your script imports non-stdlib PDF libraries, "
+        "include a workspace package install command such as `python -m pip install "
+        "pypdf pdfplumber reportlab` before running the script."
+    ),
     "shell": (
         "Shell scripts are plain text. Write the script inside GFORGE_FILE blocks. "
         "If the contract requires running it, list one simple workspace-safe command "
@@ -4133,6 +4982,9 @@ ANTI_DEFLECTION_ALIASES = {
     "documentation": "markdown",
     "readme": "markdown",
     "spec": "markdown",
+    "report": "markdown",
+    "pdf report": "pdf",
+    "portable document format": "pdf",
     "plain text": "txt",
 }
 
@@ -4158,6 +5010,193 @@ def anti_deflection_text_for(fmt):
     return ANTI_DEFLECTION_REGISTRY.get(canonical, "")
 
 
+LOCAL_SOURCE_PATH_PATTERN = re.compile(
+    r"""(?P<quoted>["'`](?:file://|~|/)[^"'`\r\n]+["'`])"""
+    r"""|(?P<bare>(?:file://|~|/)[^\s,;]+)""",
+    re.IGNORECASE,
+)
+
+
+def normalize_local_source_path_candidate(raw):
+    candidate = str(raw or "").strip()
+    if not candidate:
+        return ""
+    if candidate[0:1] in {"'", '"', "`"} and candidate[-1:] == candidate[0:1]:
+        candidate = candidate[1:-1]
+    candidate = candidate.strip().rstrip(".,;:)>]}")
+    if candidate.startswith("file://"):
+        candidate = re.sub(r"^file://(?:localhost)?", "", candidate, flags=re.IGNORECASE)
+        candidate = unquote(candidate)
+    candidate = os.path.expandvars(os.path.expanduser(candidate))
+    return os.path.abspath(candidate)
+
+
+def detect_local_source_paths(text, limit=16):
+    """
+    Detect explicit local file/directory references in user text.
+
+    The harness imports these into the workspace before execution so the
+    model sees stable relative paths instead of inaccessible host paths.
+    """
+    found = []
+    seen = set()
+    for match in LOCAL_SOURCE_PATH_PATTERN.finditer(str(text or "")):
+        raw = match.group("quoted") or match.group("bare") or ""
+        path = normalize_local_source_path_candidate(raw)
+        if not path or not os.path.exists(path):
+            continue
+        try:
+            key = os.path.realpath(path)
+        except OSError:
+            key = path
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append({
+            "original_path": path,
+            "kind": "directory" if os.path.isdir(path) else "file",
+            "exists": True,
+        })
+        if len(found) >= limit:
+            break
+    return found
+
+
+def build_source_inputs_contract(project_text):
+    entries = []
+    for item in detect_local_source_paths(project_text or ""):
+        entry = dict(item)
+        entry["workspace_root"] = f"{SOURCE_INPUTS_ROOT}/<imported-source>"
+        entry["import_policy"] = (
+            "Harness copies this source into the workspace before Execution; "
+            "downstream agents must use the workspace-relative copy."
+        )
+        entries.append(entry)
+    return entries
+
+
+def source_inputs_prompt_block(project_text):
+    entries = build_source_inputs_contract(project_text)
+    if not entries:
+        return "Detected local source paths: none."
+    lines = [
+        "Detected local source paths in the user's request:",
+        "These are SOURCE MATERIAL, not the final deliverable. The harness will copy them into the workspace before Execution.",
+    ]
+    for item in entries:
+        lines.append(f"- {item['kind']}: `{item['original_path']}`")
+    lines.extend([
+        "Context Writer rules for these paths:",
+        "- Add `import_source_inputs` to capabilities_required.",
+        "- Add `shell_exec` when the files must be inspected, parsed, OCR'd, converted, summarized, or validated.",
+        "- Add source_inputs entries so later agents know these paths are binding inputs.",
+        "- Do not invent filenames; downstream agents must use the copied workspace paths listed in `references/source-inputs.md`.",
+    ])
+    return "\n".join(lines)
+
+
+def build_agent_digest(parsed, project_text, model=None):
+    deliverable = parsed.get("deliverable") if isinstance(parsed.get("deliverable"), dict) else {}
+    source_inputs = parsed.get("source_inputs") if isinstance(parsed.get("source_inputs"), list) else []
+    content_requirements = parsed.get("content_requirements") if isinstance(parsed.get("content_requirements"), list) else []
+    capabilities = parsed.get("capabilities_required") if isinstance(parsed.get("capabilities_required"), list) else []
+    skill_plan = parsed.get("skill_plan") if isinstance(parsed.get("skill_plan"), list) else []
+    perspectives = [
+        "Intent perspective: satisfy the user's final artifact request, not a prep-step summary unless that is the requested artifact.",
+        "Tool perspective: use staged skills, imported source paths, research artifacts, and workspace exec only for the roles they actually cover.",
+        "Verifier perspective: every user-stated count, source reference, and file path is a hard gate that must be backed by disk evidence.",
+    ]
+    if source_inputs:
+        perspectives.append("Source perspective: inspect the imported workspace copies before synthesizing or reporting on their content.")
+    if any(c in {"web_browse", "web_fetch"} for c in capabilities):
+        perspectives.append("Research perspective: use Scrapling as the first browser/scraping option and cite harness-fetched research artifacts.")
+    if skill_plan:
+        perspectives.append("Skill perspective: follow the staged skill manuals as operational guidance, not decorative context.")
+    if "harness_maintenance" in capabilities:
+        perspectives.append("Maintenance perspective: inspect allowlisted Gemma Forge target snapshots, then request precise maintenance actions only for those targets.")
+    return {
+        "selected_model": model or DEFAULT_MODEL,
+        "model_profile": "local Gemma/Ollama model; prompts must be explicit, file paths concrete, and validation evidence simple.",
+        "primary_deliverable": {
+            "format": deliverable.get("format"),
+            "count": deliverable.get("count"),
+            "path_pattern": deliverable.get("path_pattern"),
+        },
+        "binding_counts": content_requirements,
+        "binding_source_inputs": source_inputs,
+        "perspectives": perspectives,
+    }
+
+
+def build_tool_plan(parsed):
+    capabilities = parsed.get("capabilities_required") if isinstance(parsed.get("capabilities_required"), list) else []
+    source_inputs = parsed.get("source_inputs") if isinstance(parsed.get("source_inputs"), list) else []
+    skill_plan = parsed.get("skill_plan") if isinstance(parsed.get("skill_plan"), list) else []
+    plan = []
+    if source_inputs:
+        plan.append({
+            "step": "import local source material",
+            "tool": "Gemma Forge source importer",
+            "evidence": SOURCE_INPUTS_MANIFEST,
+            "instruction": "Use copied workspace-relative inputs, never invented filenames or original absolute paths in commands.",
+        })
+    if any(c in {"web_browse", "web_fetch"} for c in capabilities):
+        plan.append({
+            "step": "fetch live web sources",
+            "tool": "scrapling-official",
+            "evidence": "research/*.md",
+            "instruction": "Scrapling is the first browser/scraping path: request, then browser, then stealth if needed.",
+        })
+    if "harness_maintenance" in capabilities:
+        plan.append({
+            "step": "maintain Gemma Forge target files",
+            "tool": "Gemma Forge maintenance allowlist",
+            "evidence": MAINTENANCE_ACTIONS_FILE,
+            "instruction": "Inspect references/maintenance-targets snapshots and emit only validated actions for allowlisted targets.",
+        })
+    for skill in skill_plan:
+        if not isinstance(skill, dict):
+            continue
+        plan.append({
+            "step": f"use staged skill {skill.get('skill')}",
+            "tool": skill.get("staged_path"),
+            "evidence": skill.get("staged_path"),
+            "instruction": skill.get("role"),
+        })
+    if "shell_exec" in capabilities:
+        plan.append({
+            "step": "run workspace command evidence",
+            "tool": "sandboxed workspace exec",
+            "evidence": "artifacts/model-execution.json commandRuns",
+            "instruction": "Use simple commands to inspect/process/validate workspace files; do not claim command results without commandRun evidence.",
+        })
+    return plan
+
+
+def build_gsd_directives(parsed):
+    deliverable = parsed.get("deliverable") if isinstance(parsed.get("deliverable"), dict) else {}
+    source_inputs = parsed.get("source_inputs") if isinstance(parsed.get("source_inputs"), list) else []
+    content_requirements = parsed.get("content_requirements") if isinstance(parsed.get("content_requirements"), list) else []
+    capabilities = parsed.get("capabilities_required") if isinstance(parsed.get("capabilities_required"), list) else []
+    return {
+        "planner_standard": "Plan as an operator, not a summarizer: bind intent, tools, source material, counts, and verification before execution.",
+        "counts_are_hard_gates": bool(parse_positive_int(deliverable.get("count")) and parse_positive_int(deliverable.get("count")) > 1 or content_requirements),
+        "source_inputs_are_hard_gates": bool(source_inputs),
+        "research_routing": (
+            "If web research is required, Scrapling is the first browser/scraping option and fetched artifacts must be cited."
+            if any(c in {"web_browse", "web_fetch"} for c in capabilities)
+            else "No live web research capability was requested by the contract."
+        ),
+        "execution_routing": "Use workspace exec for source inspection, conversion, OCR, generation, and validation when shell_exec is present.",
+        "failure_rule": "A plan that drops a requested count, source path, skill role, or verification gate is not complete.",
+        "maintenance_routing": (
+            "For Gemma Forge maintenance, plan against exact allowlisted install/runtime targets and require evidence from maintenance-actions.json plus verification commands."
+            if "harness_maintenance" in capabilities
+            else "No Gemma Forge maintenance capability was requested by the contract."
+        ),
+    }
+
+
 def skill_prompt_alias_preview(skill, limit=14):
     aliases = []
     seen = set()
@@ -4177,7 +5216,8 @@ def skill_prompt_alias_preview(skill, limit=14):
     return aliases
 
 
-def build_project_context_prompt(project, mode, staged_skills, previous_attempt=None, validation_errors=None):
+def build_project_context_prompt(project, mode, staged_skills, model=None, previous_attempt=None, validation_errors=None):
+    skill_catalog_block = build_skill_capability_catalog_prompt(discover_installed_skills())
     skills_block = "(none staged)"
     if staged_skills:
         lines = []
@@ -4216,6 +5256,7 @@ Your previous output (do not repeat verbatim, fix the errors):
 """
 
     can_now, cannot_now = harness_capabilities()
+    source_inputs_block = source_inputs_prompt_block(project)
     capabilities_block = f"""
 Harness capabilities (the next agent only has these):
   CAN do: {", ".join(can_now)}
@@ -4233,7 +5274,7 @@ If the user's request needs anything in CANNOT, you MUST:
 
 Your job: take the user's natural-language request, understand what they REALLY need, and produce a strict structured contract that every later card in the harness will follow. The next agents are small local models and will pattern-match against your YAML keys. Make the contract unambiguous.
 
-Take a moment. Reason carefully through six steps in order:
+Take a moment. Reason carefully through seven steps in order:
 
 1. RESTATE the user's request literally (quote it, no paraphrase).
 2. IDENTIFY THE PRIMARY DELIVERABLE — the FINAL artifact the user wants in hand.
@@ -4248,7 +5289,7 @@ Take a moment. Reason carefully through six steps in order:
    - Reports / briefs / explanations / docs → doc.
    - Research-only outputs (literature reviews, summaries of sources) → research.
 4. INFER underlying need (one sentence) AND success_means (what counts as DONE for the PRIMARY deliverable, not for any prep step).
-5. PICK deliverable.format from the canonical list (svg | html | css | javascript | typescript | python | json | yaml | markdown | shell | sql | dockerfile | mermaid | txt). The format MUST match the primary deliverable, not a prep step. Logos → svg. Webpages → html. Scripts → python (or shell/javascript). Never "tbd" or "various".
+5. PICK deliverable.format from the canonical list (svg | html | css | javascript | typescript | python | json | yaml | markdown | pdf | shell | sql | dockerfile | mermaid | txt). The format MUST match the primary deliverable, not a prep step. Logos → svg. Webpages → html. Scripts → python (or shell/javascript). PDF reports → pdf. Never "tbd" or "various".
 
 5b. WRITE path_pattern as a SINGLE relative path or simple glob — never a phrase, range, or comma list.
    Correct examples:
@@ -4256,6 +5297,7 @@ Take a moment. Reason carefully through six steps in order:
      - output/favicon-*.svg
      - index.html
      - src/cli.py
+     - output/report-NN.pdf
    WRONG examples (do NOT do these):
      - "output/file-01.svg to output/file-10.svg"     (phrase with 'to')
      - "output/a.svg, output/b.svg, output/c.svg"     (comma list)
@@ -4267,7 +5309,12 @@ Take a moment. Reason carefully through six steps in order:
      or "2 screenshots per category" are CONTENT requirements inside the deliverable.
    - Preserve those phrases in content_requirements, constraints.hard_requirements,
      and acceptance. Do NOT collapse them into vague wording like "structured content".
-6. EMIT the YAML between the markers. Output a one-paragraph rationale BEFORE the begin marker, then the YAML between markers, then nothing else.
+6. MAP source material and tools into agent-digestible context.
+   - If the user names a local file or directory, treat it as binding source material. The harness imports it to the workspace.
+   - Downstream agents must use copied workspace-relative paths, not original absolute paths, in commands.
+   - Choose skills for operational fit, not keyword theater.
+   - If web research is needed, Scrapling is the first browser/scraping option.
+7. EMIT the YAML between the markers. Output a one-paragraph rationale BEFORE the begin marker, then the YAML between markers, then nothing else.
 
 CRITICAL: `deliverable.partial: true` is ONLY for capability gaps. If the user lists multiple steps and the harness CAN do them all, partial is FALSE — the harness will execute the prep steps internally and then produce the primary deliverable in one Execution pass. Multi-step requests are normal; they are NOT partial.
 
@@ -4277,9 +5324,14 @@ Project request (raw, unedited):
 {project}
 
 Harness mode: {mode}
+Selected model: {model or DEFAULT_MODEL}
+
+{source_inputs_block}
 
 Available staged skills (you may name ONE in skill.use, or "none"):
 {skills_block}
+
+{skill_catalog_block}
 {capabilities_block}
 {repair_block}
 You MUST emit exactly this structure between the two markers (replace each <placeholder>):
@@ -4295,7 +5347,7 @@ intent:
   underlying_need: <one sentence>
   success_means: <one sentence describing the verifiable definition of done>
 deliverable:
-  format: <svg|html|css|javascript|typescript|python|json|yaml|markdown|shell|sql|dockerfile|mermaid|txt>
+  format: <svg|html|css|javascript|typescript|python|json|yaml|markdown|pdf|shell|sql|dockerfile|mermaid|txt>
   count: <integer; how many files of this format the harness should write>
   path_pattern: <relative path, e.g. output/logo-NN.svg or index.html>
   encoding: gforge_file_block
@@ -4320,8 +5372,27 @@ constraints:
     - <one-word style cue>
     - <one-word style cue>
 skill:
-  use: <staged skill key, or "none">
+  use: <installed skill key from the catalog, or "none">
   staged_path: <staged path or "n/a">
+source_inputs:
+  - original_path: <absolute path the user named, or omit this list if none>
+    kind: <file|directory>
+    import_policy: <copy into workspace before execution>
+tool_plan:
+  - step: <concrete tool step>
+    tool: <staged skill/capability/workspace tool>
+    evidence: <workspace path or artifact that proves it happened>
+    instruction: <one direct instruction to the execution agent>
+agent_digest:
+  selected_model: <selected local model>
+  model_profile: <how to prompt this model>
+  perspectives:
+    - <intent/tool/verifier/source perspective>
+gsd_directives:
+  planner_standard: <how GSD should plan this request>
+  counts_are_hard_gates: <true|false>
+  source_inputs_are_hard_gates: <true|false>
+  execution_routing: <when to use workspace exec / skills>
 acceptance:
   - <verifiable check, e.g. "6 files exist under output/">
   - <verifiable check>
@@ -4333,10 +5404,18 @@ Rules:
 - Quote the user verbatim in intent.surface_ask, in double-quotes.
 - deliverable.format must be one concrete canonical value from the list above.
 - deliverable.count is FILE count only. Put repeated content counts in content_requirements.
+- For runnable script requests, file/directory counts the script should create are
+  script behavior requirements. Preserve them in content_requirements/acceptance,
+  but keep deliverable.count as the number of script files to write.
+- If the user points to a local file or directory, source_inputs must list it and capabilities_required must include `import_source_inputs` plus `shell_exec` when content inspection/conversion/OCR/validation is needed.
 - Preserve every user-stated quantity above 1 in content_requirements and acceptance.
 - capabilities_required must list every capability the user's request implies.
   If any of those are in the harness CANNOT list, you MUST set partial: true,
   populate open_questions, and shrink scope to the partial deliverable.
+- skill.use should name the strongest single matching installed skill from the catalog. The harness may add more matching skills deterministically during staging.
+- SocratiCode and Axon are higher-level codebase tools. Use them for existing-codebase discovery/structure/impact/dead-code work, not simple fresh content/file tasks.
+- UI/UX Pro Max is the design-system/interface suite. Use it for UI, dashboards, layout, states, charts, accessibility, and responsive presentation.
+- Scrapling is the first browser/scraping option. Use it for web fetch, crawling, JS-rendered pages, anti-bot/stealth, adaptive selectors, and structured website extraction.
 - acceptance must contain at least two items, each something a deterministic script could check.
 - Do NOT claim the harness will do something it cannot. Be honest about scope.
 - Output NOTHING after {CONTEXT_END_MARKER}.
@@ -4361,7 +5440,7 @@ def extract_context_yaml_block(text):
     return inner, None
 
 
-def parse_project_context(text, project_text=""):
+def parse_project_context(text, project_text="", model=None):
     raw_yaml, marker_error = extract_context_yaml_block(text)
     if marker_error:
         return None, raw_yaml, [marker_error]
@@ -4372,7 +5451,7 @@ def parse_project_context(text, project_text=""):
     if not isinstance(parsed, dict):
         return None, raw_yaml, ["YAML did not parse to a mapping at top level"]
 
-    enrich_project_context(parsed, project_text)
+    enrich_project_context(parsed, project_text, model=model)
     return parsed, dump_project_context_yaml(parsed), validate_project_context(parsed)
 
 
@@ -4434,7 +5513,7 @@ def build_project_context_skill_plan(selected_keys, skills):
     return plan
 
 
-def enrich_project_context(parsed, project_text):
+def enrich_project_context(parsed, project_text, model=None):
     """
     Post-process a freshly-parsed Project Context to guarantee correctness:
       - anti_deflection is overwritten with the canonical registry text.
@@ -4464,8 +5543,43 @@ def enrich_project_context(parsed, project_text):
         declared = []
     declared_keys = {str(k).strip() for k in declared if str(k).strip()}
 
+    source_inputs = build_source_inputs_contract(project_text or "")
+    existing_source_inputs = parsed.get("source_inputs") if isinstance(parsed.get("source_inputs"), list) else []
+    if existing_source_inputs:
+        for item in existing_source_inputs:
+            if not isinstance(item, dict):
+                continue
+            original = str(item.get("original_path", "")).strip()
+            if not original:
+                continue
+            normalized = normalize_local_source_path_candidate(original)
+            if not normalized or not os.path.exists(normalized):
+                continue
+            if not any(entry.get("original_path") == normalized for entry in source_inputs):
+                source_inputs.append({
+                    "original_path": normalized,
+                    "kind": "directory" if os.path.isdir(normalized) else "file",
+                    "exists": True,
+                    "workspace_root": f"{SOURCE_INPUTS_ROOT}/<imported-source>",
+                    "import_policy": (
+                        "Harness copies this source into the workspace before Execution; "
+                        "downstream agents must use the workspace-relative copy."
+                    ),
+                })
+    parsed["source_inputs"] = source_inputs
+
     auto_detected = detect_required_capabilities(project_text or "")
     union = declared_keys.union(auto_detected) | {"emit_files"}
+    if source_inputs:
+        union.update({"import_source_inputs", "shell_exec"})
+    if "harness_maintenance" in union:
+        union.add("shell_exec")
+    if fmt == "pdf" and "shell_exec" in union:
+        # PDF work routinely needs workspace-local Python libraries
+        # (pypdf/pdfplumber/reportlab). Expose package installation so the
+        # execution model can install dependencies inside the sandbox instead
+        # of assuming the host Python already has them.
+        union.add("install_package")
 
     # Strip false-positive `image_generation` when the deliverable is a
     # text-based format. Logos / icons / banners in SVG are plain text — the
@@ -4481,9 +5595,15 @@ def enrich_project_context(parsed, project_text):
     parsed["capabilities_required"] = union
     reconcile_project_context_skill(parsed, project_text)
 
+    detected_content_requirements = detect_content_quantity_requirements(project_text or "")
+    if fmt in SCRIPT_RUNTIME_FORMATS:
+        detected_content_requirements = merge_content_quantity_requirements(
+            detected_content_requirements,
+            detect_script_runtime_quantity_requirements(project_text or ""),
+        )
     content_requirements = merge_content_quantity_requirements(
         parsed.get("content_requirements"),
-        detect_content_quantity_requirements(project_text or ""),
+        detected_content_requirements,
     )
     parsed["content_requirements"] = content_requirements
     if content_requirements:
@@ -4541,6 +5661,9 @@ def enrich_project_context(parsed, project_text):
                 project["type"] = format_default_task_type(fmt)
 
     parsed["open_questions"] = open_questions
+    parsed["tool_plan"] = build_tool_plan(parsed)
+    parsed["agent_digest"] = build_agent_digest(parsed, project_text, model=model)
+    parsed["gsd_directives"] = build_gsd_directives(parsed)
     return parsed
 
 
@@ -4549,7 +5672,7 @@ def format_default_task_type(fmt):
         return "design_deliverable"
     if fmt in {"html", "css", "javascript", "typescript", "python", "shell", "sql", "dockerfile", "json", "yaml"}:
         return "code"
-    if fmt in {"markdown", "txt"}:
+    if fmt in {"markdown", "pdf", "txt"}:
         return "doc"
     if fmt == "mermaid":
         return "design_deliverable"
@@ -4567,7 +5690,7 @@ def validate_project_context(parsed):
     deliverable = parsed.get("deliverable") if isinstance(parsed.get("deliverable"), dict) else {}
     fmt = str(deliverable.get("format", "")).strip().lower()
     if not fmt or fmt in {"tbd", "any", "various", "unknown"}:
-        errors.append("deliverable.format must be one concrete value (svg/html/markdown/python/etc)")
+        errors.append("deliverable.format must be one concrete value (svg/html/markdown/pdf/python/etc)")
     if not str(deliverable.get("path_pattern", "")).strip():
         errors.append("deliverable.path_pattern must be set (a relative path)")
     if not str(deliverable.get("anti_deflection", "")).strip():
@@ -4601,6 +5724,8 @@ def render_project_context_artifact(parsed, raw_yaml, transport, repaired):
     deliverable = parsed.get("deliverable") if isinstance(parsed, dict) and isinstance(parsed.get("deliverable"), dict) else {}
     content_requirements = parsed.get("content_requirements") if isinstance(parsed, dict) and isinstance(parsed.get("content_requirements"), list) else []
     skill_plan = parsed.get("skill_plan") if isinstance(parsed, dict) and isinstance(parsed.get("skill_plan"), list) else []
+    source_inputs = parsed.get("source_inputs") if isinstance(parsed, dict) and isinstance(parsed.get("source_inputs"), list) else []
+    tool_plan = parsed.get("tool_plan") if isinstance(parsed, dict) and isinstance(parsed.get("tool_plan"), list) else []
     open_questions = parsed.get("open_questions") if isinstance(parsed, dict) else []
     if not isinstance(open_questions, list):
         open_questions = []
@@ -4633,6 +5758,7 @@ def render_project_context_artifact(parsed, raw_yaml, transport, repaired):
         f"- File count: `{deliverable.get('count', 'unknown')}`",
         f"- Encoding: `{deliverable.get('encoding', 'unknown')}`",
         f"- Content counts: `{len(content_requirements)}`",
+        f"- Source inputs: `{len(source_inputs)}`",
         "",
         "## Content quantity requirements",
         "",
@@ -4645,6 +5771,22 @@ def render_project_context_artifact(parsed, raw_yaml, transport, repaired):
             for item in skill_plan
             if isinstance(item, dict)
         ) if skill_plan else "- None.",
+        "",
+        "## Source inputs",
+        "",
+        "\n".join(
+            f"- `{item.get('original_path')}` ({item.get('kind')}) -> `{item.get('workspace_root', SOURCE_INPUTS_ROOT)}`"
+            for item in source_inputs
+            if isinstance(item, dict)
+        ) if source_inputs else "- None.",
+        "",
+        "## Tool plan",
+        "",
+        "\n".join(
+            f"- {item.get('step')}: `{item.get('tool')}`; evidence `{item.get('evidence')}`"
+            for item in tool_plan
+            if isinstance(item, dict)
+        ) if tool_plan else "- None.",
         "",
         "## Anti-deflection anchor for downstream cards",
         "",
@@ -4664,9 +5806,9 @@ def run_intake_card(session_id, session, model, mode):
     skill_context = prepare_workspace_skill_context(workspace_dir, session)
     staged_skills = skill_context.get("staged", []) if isinstance(skill_context, dict) else []
 
-    prompt = build_project_context_prompt(project, mode, staged_skills)
+    prompt = build_project_context_prompt(project, mode, staged_skills, model=model)
     raw, transport = call_ollama_with_transport(model, prompt, options_override=CONTEXT_DELIBERATION_OPTIONS)
-    parsed, raw_yaml, errors = parse_project_context(raw, project_text=project)
+    parsed, raw_yaml, errors = parse_project_context(raw, project_text=project, model=model)
 
     repaired = False
     repair_raw = ""
@@ -4674,13 +5816,14 @@ def run_intake_card(session_id, session, model, mode):
     if errors:
         repair_prompt = build_project_context_prompt(
             project, mode, staged_skills,
+            model=model,
             previous_attempt=raw,
             validation_errors=errors,
         )
         repair_raw, repair_transport = call_ollama_with_transport(
             model, repair_prompt, options_override=CONTEXT_DELIBERATION_OPTIONS,
         )
-        repair_parsed, repair_yaml, repair_errors = parse_project_context(repair_raw, project_text=project)
+        repair_parsed, repair_yaml, repair_errors = parse_project_context(repair_raw, project_text=project, model=model)
         if repair_parsed is not None and not repair_errors:
             parsed = repair_parsed
             raw_yaml = repair_yaml
@@ -4784,6 +5927,7 @@ def build_pre_execution_orientation(session, workspace, project_directory):
     context = session.get("projectContext") if isinstance(session.get("projectContext"), dict) else None
     deliverable = (context or {}).get("deliverable") if isinstance((context or {}).get("deliverable"), dict) else {}
     content_requirements = (context or {}).get("content_requirements") if isinstance((context or {}).get("content_requirements"), list) else []
+    source_inputs = (context or {}).get("source_inputs") if isinstance((context or {}).get("source_inputs"), list) else []
     capabilities = (context or {}).get("capabilities_required") if isinstance((context or {}).get("capabilities_required"), list) else []
     can_now, cannot_now = harness_capabilities()
 
@@ -4807,6 +5951,7 @@ def build_pre_execution_orientation(session, workspace, project_directory):
         f"- Deliverable count: `{deliverable.get('count', 'unknown')}`",
         f"- Path pattern: `{deliverable.get('path_pattern', 'unknown')}`",
         f"- Content count requirements: `{len(content_requirements)}`",
+        f"- Source inputs: `{len(source_inputs)}`",
         f"- Partial scope: `{bool(deliverable.get('partial'))}`",
         "",
         "## Capabilities",
@@ -4820,6 +5965,13 @@ def build_pre_execution_orientation(session, workspace, project_directory):
     if content_requirements:
         lines.extend(["", "## Content quantity requirements", ""])
         lines.extend(f"- {content_requirement_line(item)}" for item in content_requirements)
+    if source_inputs:
+        lines.extend(["", "## Source inputs", ""])
+        lines.extend(
+            f"- `{item.get('original_path')}` ({item.get('kind')})"
+            for item in source_inputs
+            if isinstance(item, dict)
+        )
     return "\n".join(lines)
 
 
@@ -4831,6 +5983,7 @@ def build_workspace_orientation(target_directory, session, workspace, mode):
     path_pattern = str(deliverable.get("path_pattern", "")).strip()
     expected_count = deliverable.get("count")
     content_requirements = (context or {}).get("content_requirements") if isinstance((context or {}).get("content_requirements"), list) else []
+    source_inputs = (context or {}).get("source_inputs") if isinstance((context or {}).get("source_inputs"), list) else []
     project_type = (context or {}).get("project", {}).get("type", "") if isinstance((context or {}).get("project"), dict) else ""
 
     lines = [
@@ -4873,6 +6026,7 @@ def build_workspace_orientation(target_directory, session, workspace, mode):
         f"- Expected count: `{expected_count if expected_count is not None else 'unknown'}`",
         f"- Files present: `{len(actual_deliverable_files)}`",
         f"- Content count requirements: `{len(content_requirements)}`",
+        f"- Source inputs: `{len(source_inputs)}`",
     ])
     if actual_deliverable_files:
         lines.append("- Listing:")
@@ -4883,6 +6037,13 @@ def build_workspace_orientation(target_directory, session, workspace, mode):
     if content_requirements:
         lines.extend(["", "## Content quantity requirements", ""])
         lines.extend(f"- {content_requirement_line(item)}" for item in content_requirements)
+    if source_inputs:
+        lines.extend(["", "## Source inputs", ""])
+        lines.extend(
+            f"- `{item.get('original_path')}` ({item.get('kind')})"
+            for item in source_inputs
+            if isinstance(item, dict)
+        )
 
     # Research artifacts (scrapling pre-fetch).
     research_dir = os.path.join(target_directory, "research")
@@ -4989,7 +6150,7 @@ def run_gsd_card(session_id, session, model, mode):
     resource_state = scan_workspace()
     details = call_ollama(
         model,
-        build_planning_prompt(session.get("project", ""), mode, resource_state),
+        build_planning_prompt(session, mode, resource_state),
     )
     artifact = write_artifact(session_id, "gsd-plan.md", details)
     return card_result(
@@ -5695,18 +6856,13 @@ def build_verification_context(session):
             context["storedValidation"] = {"error": str(error)}
     context["validation"] = validate_model_authored_workspace(workspace_dir, context.get("storedValidation", {}), session)
 
-    # Surface Axon dead-code findings into the verification's deterministic
-    # validation so the small-model reviewer sees them and the post-review
-    # repair loop gets a chance to fix unused symbols. Without this the
-    # verifier passes a project even when Axon reported real dead code in
-    # the model's deliverable.
+    # Axon/SocratiCode are advisory support tools for simple fresh-script
+    # deliverables. Do not convert their findings into deterministic validation
+    # failures here; doing so lets a support-tool interpretation trigger a
+    # Verification repair, which can destroy an already-good deliverable.
     axon_findings = extract_axon_dead_code_findings(session)
     if axon_findings:
-        existing_failures = list(context["validation"].get("failures", []) or [])
-        existing_failures.extend(axon_findings)
-        context["validation"]["failures"] = existing_failures
-        context["validation"]["passed"] = False
-        context["validation"]["axonDeadCode"] = axon_findings
+        context["validation"]["axonDeadCodeAdvisory"] = axon_findings
     return context
 
 
@@ -6014,18 +7170,21 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
         "verification": ["Rerun Project Execution after checking the local model."],
     }
     skill_context = prepare_workspace_skill_context(workspace_dir, session)
+    source_inputs = prepare_workspace_source_inputs(workspace_dir, session)
+    maintenance_context = prepare_harness_maintenance_context(workspace_dir, session)
     research = prepare_workspace_research(workspace_dir, session)
     git_references = prepare_workspace_git_references(workspace_dir, session)
     payload, raw, transport = call_ollama_execution_payload(
         model,
-        build_model_execution_prompt(session, workspace_dir, review, skill_context, research, git_references),
+        build_model_execution_prompt(session, workspace_dir, review, skill_context, research, git_references, source_inputs, maintenance_context),
         fallback,
     )
     if not isinstance(payload, dict):
         payload = fallback
 
-    commands = listify(payload.get("commands"))
     files, rejected = normalize_model_files(payload.get("files", []))
+    commands = augment_workspace_commands_for_dependencies(workspace_dir, session, files, listify(payload.get("commands")))
+    stale_deliverables = quarantine_existing_deliverables(workspace_dir, session)
     written = []
     for item in files:
         path = write_project_file(workspace_dir, item["path"], item["content"])
@@ -6039,10 +7198,20 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
     run_capabilities = set(session_capabilities_required(session))
     if run_capabilities.intersection({"shell_exec", "install_package"}) and commands:
         emit_event("tool", f"workspace exec requested: {len(commands)} command(s)")
-        command_runs = tool_workspace.run_workspace_commands(workspace_dir, commands)
+        command_runs = tool_workspace.run_workspace_commands(
+            workspace_dir,
+            commands,
+            maintenance_targets=maintenance_context,
+        )
         for item in command_runs:
             status = "ok" if item.get("ok") else ("skipped" if item.get("skipped") else "failed")
             emit_event("tool", f"workspace exec {status}: {item.get('command')}")
+
+    maintenance_actions = apply_harness_maintenance_actions(workspace_dir, maintenance_context)
+
+    generated_deliverables = discover_deliverable_files(workspace_dir, session, known_paths={item["path"] for item in written})
+    if generated_deliverables:
+        written.extend(generated_deliverables)
 
     metadata = {
         "model": model,
@@ -6051,11 +7220,29 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
         "summary": payload.get("summary", ""),
         "files": written,
         "rejectedFiles": rejected,
+        "staleDeliverables": stale_deliverables,
         "commands": commands,
         "commandRuns": command_runs,
         "notes": listify(payload.get("notes")),
         "verification": listify(payload.get("verification")),
         "gitReferences": git_references,
+        "sourceInputs": source_inputs,
+        "harnessMaintenance": {
+            "requested": maintenance_context.get("requested"),
+            "manifest": maintenance_context.get("manifest"),
+            "actionsFile": maintenance_context.get("actionsFile"),
+            "targets": [
+                {
+                    "path": item.get("path"),
+                    "kind": item.get("kind"),
+                    "exists": item.get("exists"),
+                    "snapshot_root": item.get("snapshot_root"),
+                    "reason": item.get("reason"),
+                }
+                for item in maintenance_context.get("targets", [])
+            ],
+            "actions": maintenance_actions,
+        },
         "skillContext": {
             "root": skill_context.get("root"),
             "staged": [
@@ -6090,6 +7277,7 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
         "rejectedFiles": rejected,
         "commands": metadata["commands"],
         "commandRuns": command_runs,
+        "maintenanceActions": maintenance_actions,
         "notes": metadata["notes"],
         "verification": metadata["verification"],
         "validation": validation,
@@ -6097,6 +7285,264 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
         "gitReferences": git_references,
         "metadata": metadata,
     }
+
+
+PYTHON_IMPORT_PACKAGE_OVERRIDES = {
+    "bs4": "beautifulsoup4",
+    "cv2": "opencv-python",
+    "dateutil": "python-dateutil",
+    "docx": "python-docx",
+    "fitz": "PyMuPDF",
+    "PIL": "pillow",
+    "pptx": "python-pptx",
+    "sklearn": "scikit-learn",
+    "yaml": "PyYAML",
+}
+PDF_WORKSPACE_DEPENDENCY_PACKAGES = ["pypdf", "pdfplumber", "reportlab"]
+WORKSPACE_DEPENDENCY_INSTALL_LIMIT = 12
+
+
+def session_deliverable(session):
+    context = session.get("projectContext") if isinstance(session, dict) else None
+    if isinstance(context, dict) and isinstance(context.get("deliverable"), dict):
+        return context.get("deliverable")
+    return {}
+
+
+def session_deliverable_format(session):
+    return str(session_deliverable(session).get("format", "")).strip().lower()
+
+
+def command_runs_python_script(command):
+    try:
+        args = command if isinstance(command, list) else shlex.split(str(command or ""))
+    except ValueError:
+        return False
+    if not args:
+        return False
+    executable = os.path.basename(str(args[0])).lower()
+    if executable not in {"python", "python3"}:
+        return False
+    return any(str(arg).lower().endswith(".py") for arg in args[1:])
+
+
+def python_script_paths_from_command(command):
+    try:
+        args = command if isinstance(command, list) else shlex.split(str(command or ""))
+    except ValueError:
+        return []
+    if not args:
+        return []
+    executable = os.path.basename(str(args[0])).lower()
+    if executable not in {"python", "python3"}:
+        return []
+    paths = []
+    for arg in args[1:]:
+        value = str(arg)
+        if value.lower().endswith(".py"):
+            safe = safe_workspace_relative_path(value)
+            if safe:
+                paths.append(safe)
+    return paths
+
+
+def command_installs_packages(command):
+    try:
+        args = command if isinstance(command, list) else shlex.split(str(command or ""))
+    except ValueError:
+        return False
+    return tool_workspace.is_package_install_command([str(arg) for arg in args])
+
+
+def collect_python_imports(source):
+    imports = set()
+    try:
+        tree = ast.parse(source or "")
+    except SyntaxError:
+        for match in re.finditer(r"^\s*(?:import|from)\s+([A-Za-z_][A-Za-z0-9_]*)", source or "", re.MULTILINE):
+            imports.add(match.group(1))
+        return imports
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add((alias.name or "").split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imports.add(node.module.split(".", 1)[0])
+    return {name for name in imports if name}
+
+
+def local_python_module_exists(workspace_dir, script_path, module_name):
+    candidates = []
+    module_parts = module_name.split(".")
+    module_rel = os.path.join(*module_parts)
+    candidates.extend([
+        os.path.join(workspace_dir, module_rel + ".py"),
+        os.path.join(workspace_dir, module_rel, "__init__.py"),
+    ])
+    script_dir = os.path.dirname(os.path.join(workspace_dir, script_path))
+    candidates.extend([
+        os.path.join(script_dir, module_rel + ".py"),
+        os.path.join(script_dir, module_rel, "__init__.py"),
+    ])
+    return any(os.path.exists(path) for path in candidates)
+
+
+def package_for_python_import(module_name):
+    if not module_name:
+        return None
+    if module_name in sys.builtin_module_names:
+        return None
+    stdlib = getattr(sys, "stdlib_module_names", set())
+    if module_name in stdlib:
+        return None
+    return PYTHON_IMPORT_PACKAGE_OVERRIDES.get(module_name, module_name)
+
+
+def infer_workspace_python_packages(workspace_dir, files, commands):
+    script_paths = []
+    for command in commands:
+        script_paths.extend(python_script_paths_from_command(command))
+    if not script_paths:
+        return []
+
+    file_sources = {
+        item["path"]: item.get("content", "")
+        for item in files
+        if isinstance(item, dict) and str(item.get("path", "")).endswith(".py")
+    }
+    packages = []
+    seen = set()
+    for script_path in script_paths:
+        source = file_sources.get(script_path)
+        if source is None:
+            full_path = os.path.join(workspace_dir, script_path)
+            try:
+                with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+                    source = f.read()
+            except OSError:
+                source = ""
+        for module_name in sorted(collect_python_imports(source)):
+            if local_python_module_exists(workspace_dir, script_path, module_name):
+                continue
+            package = package_for_python_import(module_name)
+            if not package or package in seen:
+                continue
+            seen.add(package)
+            packages.append(package)
+
+    return packages[:WORKSPACE_DEPENDENCY_INSTALL_LIMIT]
+
+
+def augment_workspace_commands_for_dependencies(workspace_dir, session, files, commands):
+    commands = listify(commands)
+    caps = set(session_capabilities_required(session))
+    can_auto_install = "install_package" in caps or ("shell_exec" in caps and tool_workspace.can_install_packages())
+    if not can_auto_install:
+        return commands
+    if not any(command_runs_python_script(command) for command in commands):
+        return commands
+    if any(command_installs_packages(command) for command in commands):
+        return commands
+    packages = infer_workspace_python_packages(workspace_dir, files, commands)
+    if session_deliverable_format(session) == "pdf":
+        for package in PDF_WORKSPACE_DEPENDENCY_PACKAGES:
+            if package not in packages:
+                packages.append(package)
+    if not packages:
+        return commands
+    packages = packages[:WORKSPACE_DEPENDENCY_INSTALL_LIMIT]
+    install_command = "python -m pip install " + " ".join(packages)
+    emit_event("tool", "workspace exec auto-provision: Python packages", packages=", ".join(packages))
+    return [install_command, *commands]
+
+
+def deliverable_walk_skip_dirs():
+    return {
+        ".gforge",
+        ".gforge-installs",
+        "artifacts",
+        ".git",
+        ".venv",
+        "__pycache__",
+        "node_modules",
+        "references",
+        "research",
+        "screenshots",
+        "venv",
+    }
+
+
+def quarantine_existing_deliverables(workspace_dir, session):
+    deliverable = session_deliverable(session)
+    if not deliverable:
+        return []
+    quarantined = []
+    root_path = os.path.abspath(workspace_dir)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_root = os.path.join(root_path, ".gforge", "attempt-backups", stamp, "deliverables")
+    for root, dirs, files in os.walk(root_path):
+        dirs[:] = [name for name in dirs if name not in deliverable_walk_skip_dirs()]
+        for filename in sorted(files):
+            full_path = os.path.join(root, filename)
+            relative_path = os.path.relpath(full_path, root_path).replace(os.sep, "/")
+            if not file_matches_deliverable(relative_path, deliverable):
+                continue
+            destination = os.path.join(backup_root, relative_path)
+            try:
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                shutil.move(full_path, destination)
+                quarantined.append({
+                    "path": relative_path,
+                    "backup": os.path.relpath(destination, root_path).replace(os.sep, "/"),
+                })
+            except OSError as error:
+                quarantined.append({
+                    "path": relative_path,
+                    "error": str(error),
+                })
+    if quarantined:
+        emit_event("tool", f"workspace deliverable cleanup: {len(quarantined)} stale file(s)")
+    return quarantined
+
+
+def discover_deliverable_files(workspace_dir, session, known_paths=None):
+    """
+    Find deliverable files created by model-authored commands.
+
+    This matters for binary outputs such as PDFs: the model writes a generator
+    script in a GFORGE_FILE block, the harness runs `python ...`, and the real
+    `.pdf` appears on disk after command execution.
+    """
+    context = session.get("projectContext") if isinstance(session, dict) else None
+    if not isinstance(context, dict):
+        return []
+    deliverable = context.get("deliverable") if isinstance(context.get("deliverable"), dict) else {}
+    if not deliverable:
+        return []
+    known = {str(path).replace(os.sep, "/") for path in (known_paths or set())}
+    discovered = []
+    root_path = os.path.abspath(workspace_dir)
+    for root, dirs, files in os.walk(root_path):
+        dirs[:] = [name for name in dirs if name not in deliverable_walk_skip_dirs()]
+        for filename in sorted(files):
+            full_path = os.path.join(root, filename)
+            relative_path = os.path.relpath(full_path, root_path).replace(os.sep, "/")
+            if relative_path in known:
+                continue
+            if not file_matches_deliverable(relative_path, deliverable):
+                continue
+            try:
+                discovered.append({
+                    "path": relative_path,
+                    "sha256": file_sha256(full_path),
+                    "bytes": os.path.getsize(full_path),
+                    "generatedByCommand": True,
+                })
+                known.add(relative_path)
+            except OSError:
+                continue
+    return discovered
 
 
 def capture_html_screenshots(workspace_dir, written_files):
@@ -6128,7 +7574,12 @@ def capture_html_screenshots(workspace_dir, written_files):
 def session_capabilities_required(session):
     context = session.get("projectContext") if isinstance(session, dict) else None
     if isinstance(context, dict) and isinstance(context.get("capabilities_required"), list):
-        return [str(item).strip() for item in context.get("capabilities_required") if str(item).strip()]
+        caps = [str(item).strip() for item in context.get("capabilities_required") if str(item).strip()]
+        deliverable = context.get("deliverable") if isinstance(context.get("deliverable"), dict) else {}
+        fmt = str(deliverable.get("format", "")).strip().lower()
+        if fmt == "pdf" and "shell_exec" in caps and "install_package" not in caps:
+            caps.append("install_package")
+        return caps
     return []
 
 
@@ -6192,10 +7643,636 @@ def build_git_reference_context_block(git_references):
     return "\n".join(lines)
 
 
-def build_workspace_exec_policy_block(session):
+def source_input_slug(path, index):
+    base = os.path.basename(os.path.normpath(path)) or f"source-{index}"
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-").lower() or f"source-{index}"
+    digest = hashlib.sha1(path.encode("utf-8", errors="replace")).hexdigest()[:8]
+    return f"{index:02d}-{base}-{digest}"
+
+
+def path_is_inside(child, parent):
+    try:
+        return os.path.commonpath([os.path.abspath(child), os.path.abspath(parent)]) == os.path.abspath(parent)
+    except ValueError:
+        return False
+
+
+MAINTENANCE_SKIP_DIRS = SOURCE_INPUT_SKIP_DIRS | {
+    ".axon",
+    ".gforge",
+    ".gforge-installs",
+    ".pytest_cache",
+    ".ruff_cache",
+    "chat/session-data",
+    "session-data",
+}
+MAINTENANCE_SKIP_FILES = SOURCE_INPUT_SKIP_FILES | {
+    "crash_log.txt",
+}
+
+
+def detect_harness_maintenance_intent(text):
+    return "harness_maintenance" in detect_required_capabilities(text or "")
+
+
+def maintenance_request_flags(text):
+    lowered = (text or "").lower()
+    model_requested = bool(re.search(
+        r"\b(default\s+model|forge\s+brain|ollama|model\s+(route|registry|alias|pull|create|remove|rm)|gemma[-\s]?\d|gemma4|e4b)\b",
+        lowered,
+    ))
+    destructive_requested = bool(re.search(r"\b(delete|remove|rm|uninstall|wipe|clear)\b", lowered))
+    return {
+        "allowOllama": model_requested,
+        "allowDestructive": destructive_requested,
+    }
+
+
+def maintenance_slug(path, index):
+    base = os.path.basename(os.path.normpath(path)) or f"target-{index}"
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-").lower() or f"target-{index}"
+    digest = hashlib.sha1(path.encode("utf-8", errors="replace")).hexdigest()[:8]
+    return f"{index:02d}-{base}-{digest}"
+
+
+def build_harness_maintenance_targets(session):
+    text = session_user_source_text(session) if isinstance(session, dict) else str(session or "")
+    if not detect_harness_maintenance_intent(text):
+        return {
+            "requested": False,
+            "targets": [],
+            "allowOllama": False,
+            "allowDestructive": False,
+            "actionsFile": MAINTENANCE_ACTIONS_FILE,
+            "manifest": MAINTENANCE_TARGETS_MANIFEST,
+        }
+
+    lowered = text.lower()
+    flags = maintenance_request_flags(text)
+    targets = []
+    seen = set()
+
+    def add_target(path, reason, kind=None):
+        if not path:
+            return
+        expanded = os.path.abspath(os.path.expanduser(path))
+        if expanded in seen:
+            return
+        seen.add(expanded)
+        resolved_kind = kind or ("directory" if os.path.isdir(expanded) else "file")
+        targets.append({
+            "path": expanded,
+            "kind": resolved_kind,
+            "reason": reason,
+            "exists": os.path.exists(expanded),
+        })
+
+    model_terms = bool(re.search(r"\b(default\s+model|forge\s+brain|ollama|model\s+(route|registry|alias|pull|create|remove|rm)|gemma[-\s]?\d|gemma4|e4b)\b", lowered))
+    skill_terms = bool(re.search(r"\b(skill|skills|socraticode|axon|gsd|scrapling|ui/ux|logo|pdf|mcp|code-writer|code\s+writer)\b", lowered))
+    installer_terms = bool(re.search(r"\b(clean[-\s]?install|installer|install\s+script|provision|provisioning|launcher|launch_forge|requirements|pyproject)\b", lowered))
+    routing_terms = bool(re.search(r"\b(context\s+writer|project\s+context|skill\s+routing|agent\s+guide|forge\.md|operating\s+guide|planning|gsd)\b", lowered))
+    ui_terms = bool(re.search(r"\b(ui|ux|interface|sidebar|settings|button|card|css|javascript|frontend|page)\b", lowered))
+    test_terms = bool(re.search(r"\b(test|tests|validate|validation|check|verify|verification)\b", lowered))
+
+    if model_terms:
+        add_target(os.path.join(PROJECT_ROOT, "chat", "server.py"), "default model, model route, and model registry logic")
+        add_target(os.path.join(PROJECT_ROOT, "launch_forge.command"), "launcher default model pull and alias setup")
+        add_target(MODEL_ROUTE_FILE, "live model-route status")
+        add_target(MODELS_FILE, "live harness model registry")
+    if skill_terms:
+        add_target(os.path.join(PROJECT_ROOT, "skills"), "installable bundled Forge skills", kind="directory")
+        add_target(os.path.join(GFORGE_DATA_ROOT, "skills"), "live staged harness skills", kind="directory")
+        add_target(os.path.join(PROJECT_ROOT, "tools", "provision_clean_install.py"), "clean-install skill provisioning checks")
+    if installer_terms:
+        add_target(os.path.join(PROJECT_ROOT, "launch_forge.command"), "macOS launcher and install flow")
+        add_target(os.path.join(PROJECT_ROOT, "tools", "provision_clean_install.py"), "first-use provisioning flow")
+        add_target(os.path.join(PROJECT_ROOT, "tools", "verify_clean_install.sh"), "clean-install verification script")
+        add_target(os.path.join(PROJECT_ROOT, "tools", "run_clean_install_test.sh"), "clean VM test runner")
+        add_target(os.path.join(PROJECT_ROOT, "requirements.txt"), "Python runtime dependency list")
+        add_target(os.path.join(PROJECT_ROOT, "pyproject.toml"), "Python package metadata")
+    if routing_terms:
+        add_target(os.path.join(PROJECT_ROOT, "chat", "server.py"), "Project Context, GSD, routing, and execution prompts")
+        add_target(os.path.join(PROJECT_ROOT, "tests", "skill_routing_test.py"), "deterministic skill-routing coverage")
+        add_target(os.path.join(PROJECT_ROOT, "tests", "model_route_test.py"), "route and harness behavior coverage")
+        add_target(os.path.join(PROJECT_ROOT, "SKILL.md"), "repo-level Gemma Forge skill guide")
+        add_target(os.path.join(PROJECT_ROOT, "forge.md"), "installable hidden Forge operating guide source")
+        add_target(os.path.join(PROJECT_ROOT, "docs", "harness-agent-operating-guide.md"), "agent-facing harness operating guide")
+        add_target(FORGE_CONTEXT_FILE, "live hidden Forge operating guide")
+    if ui_terms:
+        add_target(os.path.join(PROJECT_ROOT, "chat", "static"), "Forge Harness frontend assets", kind="directory")
+        add_target(os.path.join(PROJECT_ROOT, "chat", "templates"), "Forge Harness HTML templates", kind="directory")
+    if test_terms:
+        add_target(os.path.join(PROJECT_ROOT, "tests"), "harness test suite", kind="directory")
+        add_target(os.path.join(PROJECT_ROOT, "package.json"), "npm check command")
+
+    if not targets:
+        add_target(os.path.join(PROJECT_ROOT, "chat", "server.py"), "primary harness backend")
+        add_target(os.path.join(PROJECT_ROOT, "launch_forge.command"), "launcher/install entrypoint")
+        add_target(os.path.join(PROJECT_ROOT, "forge.md"), "installable hidden Forge operating guide source")
+        add_target(os.path.join(PROJECT_ROOT, "docs", "harness-agent-operating-guide.md"), "agent-facing harness operating guide")
+
+    return {
+        "requested": True,
+        "targets": targets,
+        "allowOllama": flags["allowOllama"],
+        "allowDestructive": flags["allowDestructive"],
+        "actionsFile": MAINTENANCE_ACTIONS_FILE,
+        "manifest": MAINTENANCE_TARGETS_MANIFEST,
+        "snapshotRoot": MAINTENANCE_TARGETS_ROOT,
+    }
+
+
+def iter_maintenance_target_files(target_path):
+    if os.path.isfile(target_path):
+        yield target_path, os.path.basename(target_path)
+        return
+    if not os.path.isdir(target_path):
+        return
+    for root, dirs, files in os.walk(target_path):
+        dirs[:] = [
+            name for name in dirs
+            if name not in MAINTENANCE_SKIP_DIRS and os.path.join(os.path.relpath(root, target_path), name).strip("./") not in MAINTENANCE_SKIP_DIRS
+        ]
+        for filename in sorted(files):
+            if filename in MAINTENANCE_SKIP_FILES:
+                continue
+            full_path = os.path.join(root, filename)
+            try:
+                relative_path = os.path.relpath(full_path, target_path)
+            except ValueError:
+                continue
+            yield full_path, relative_path
+
+
+def prepare_harness_maintenance_context(workspace_dir, session):
+    context = build_harness_maintenance_targets(session)
+    if not context.get("requested"):
+        return context
+
+    dest_root = safe_workspace_child(workspace_dir, MAINTENANCE_TARGETS_ROOT)
+    if os.path.isdir(dest_root):
+        shutil.rmtree(dest_root)
+    os.makedirs(dest_root, exist_ok=True)
+
+    copied = []
+    skipped = []
+    total_files = 0
+    total_bytes = 0
+    for index, target in enumerate(context.get("targets", []), start=1):
+        target_path = target.get("path")
+        snapshot_root = safe_workspace_child(dest_root, maintenance_slug(target_path, index))
+        target["snapshot_root"] = os.path.relpath(snapshot_root, workspace_dir).replace(os.sep, "/")
+        if not target.get("exists"):
+            skipped.append({"target": target_path, "reason": "target does not exist yet"})
+            continue
+        os.makedirs(snapshot_root, exist_ok=True)
+        for full_path, rel_path in iter_maintenance_target_files(target_path):
+            if total_files >= MAINTENANCE_MAX_FILES:
+                skipped.append({"target": target_path, "path": rel_path, "reason": f"file limit reached ({MAINTENANCE_MAX_FILES})"})
+                continue
+            try:
+                size = os.path.getsize(full_path)
+            except OSError as error:
+                skipped.append({"target": target_path, "path": rel_path, "reason": str(error)})
+                continue
+            if total_bytes + size > MAINTENANCE_MAX_BYTES:
+                skipped.append({"target": target_path, "path": rel_path, "bytes": size, "reason": f"byte limit reached ({MAINTENANCE_MAX_BYTES})"})
+                continue
+            safe_rel = safe_workspace_relative_path(rel_path)
+            if not safe_rel:
+                skipped.append({"target": target_path, "path": rel_path, "reason": "unsafe relative path"})
+                continue
+            dest_path = safe_workspace_child(snapshot_root, safe_rel)
+            try:
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(full_path, dest_path)
+            except OSError as error:
+                skipped.append({"target": target_path, "path": rel_path, "reason": str(error)})
+                continue
+            total_files += 1
+            total_bytes += size
+            copied.append({
+                "target": target_path,
+                "snapshot": os.path.relpath(dest_path, workspace_dir).replace(os.sep, "/"),
+                "bytes": size,
+            })
+
+    context["copied"] = copied
+    context["skipped"] = skipped
+    write_workspace_support_file(workspace_dir, MAINTENANCE_TARGETS_MANIFEST, render_maintenance_targets_manifest(context))
+    emit_event("tool", f"harness maintenance target snapshot: {len(context.get('targets', []))} target(s)")
+    return context
+
+
+def render_maintenance_targets_manifest(context):
+    lines = [
+        "# Gemma Forge Maintenance Targets",
+        "",
+        "The user requested Gemma Forge maintenance. The harness copied exact allowlisted targets into this workspace for inspection.",
+        "",
+        f"- Snapshot root: `{MAINTENANCE_TARGETS_ROOT}`",
+        f"- Actions file: `{MAINTENANCE_ACTIONS_FILE}`",
+        f"- Ollama commands allowed: `{context.get('allowOllama')}`",
+        f"- Destructive actions allowed: `{context.get('allowDestructive')}`",
+        "",
+    ]
+    for target in context.get("targets", []):
+        lines.extend([
+            f"## {target.get('path')}",
+            "",
+            f"- Kind: `{target.get('kind')}`",
+            f"- Exists: `{target.get('exists')}`",
+            f"- Snapshot: `{target.get('snapshot_root') or 'n/a'}`",
+            f"- Reason: {target.get('reason')}",
+            "",
+        ])
+    skipped = context.get("skipped") or []
+    if skipped:
+        lines.extend(["## Skipped", ""])
+        for item in skipped[:100]:
+            lines.append(f"- `{item.get('target')}` / `{item.get('path', '')}`: {item.get('reason')}")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_harness_maintenance_context_block(context):
+    if not isinstance(context, dict) or not context.get("requested"):
+        return ""
+    lines = [
+        "",
+        "Gemma Forge maintenance access is active (controlled allowlist).",
+        f"- Manifest: `{context.get('manifest')}`",
+        f"- Snapshot root: `{context.get('snapshotRoot', MAINTENANCE_TARGETS_ROOT)}`",
+        f"- Maintenance actions file: `{context.get('actionsFile', MAINTENANCE_ACTIONS_FILE)}`",
+        "- You may inspect only the workspace snapshots listed below.",
+        "- To change Gemma Forge outside this workspace, write `artifacts/maintenance-actions.json`; the harness applies only validated actions to the exact allowlisted target paths.",
+        "- Supported action types: `copy_file`, `write_file`, `copy_tree`.",
+        "- Do not put absolute host paths in normal COMMANDS except `ollama` model names; file changes must go through the maintenance actions file.",
+        "- If the target you need is not listed, stop and explain the missing target in NOTES instead of guessing.",
+        "",
+        "Allowed targets:",
+    ]
+    for target in context.get("targets", []):
+        lines.append(
+            f"- `{target.get('path')}` ({target.get('kind')}, exists={target.get('exists')}) "
+            f"snapshot `{target.get('snapshot_root') or 'n/a'}` - {target.get('reason')}"
+        )
+    if context.get("allowOllama"):
+        lines.extend([
+            "",
+            "Ollama maintenance commands may be listed in COMMANDS for model state checks or pulls:",
+            "- Allowed: `ollama list`, `ollama show`, `ollama pull`, `ollama cp`, `ollama create`, `ollama ps`, `ollama stop`.",
+            "- `ollama rm` is allowed only when the user explicitly requested removal.",
+        ])
+    lines.extend([
+        "",
+        "Example `artifacts/maintenance-actions.json`:",
+        '{"actions":[{"type":"copy_file","source":"output/server.py","target":"/absolute/allowed/target.py"}]}',
+        "",
+    ])
+    return "\n".join(lines)
+
+
+def maintenance_target_allows(target, desired_path):
+    target_path = os.path.abspath(os.path.expanduser(str(target.get("path", ""))))
+    desired = os.path.abspath(os.path.expanduser(str(desired_path or "")))
+    if not target_path or not desired:
+        return False
+    if target.get("kind") == "directory":
+        return desired == target_path or path_is_inside(desired, target_path)
+    return desired == target_path
+
+
+def maintenance_path_allowed(context, desired_path):
+    return any(maintenance_target_allows(target, desired_path) for target in context.get("targets", []))
+
+
+def maintenance_backup_slug(path, index):
+    base = os.path.basename(os.path.normpath(path)) or f"target-{index}"
+    base = re.sub(r"[^A-Za-z0-9._-]+", "-", base).strip("-").lower() or f"target-{index}"
+    return f"{index:02d}-{base}"
+
+
+def backup_maintenance_target(path, backup_root, index):
+    if not os.path.exists(path):
+        return None
+    os.makedirs(backup_root, exist_ok=True)
+    backup_path = os.path.join(backup_root, maintenance_backup_slug(path, index))
+    if os.path.isdir(path):
+        shutil.copytree(path, backup_path, dirs_exist_ok=True)
+    else:
+        os.makedirs(os.path.dirname(backup_path), exist_ok=True)
+        shutil.copy2(path, backup_path)
+    return backup_path
+
+
+def apply_harness_maintenance_actions(workspace_dir, context):
+    result = {
+        "requested": bool(isinstance(context, dict) and context.get("requested")),
+        "actionsFile": MAINTENANCE_ACTIONS_FILE,
+        "applied": [],
+        "skipped": [],
+    }
+    if not result["requested"]:
+        return result
+
+    actions_path = safe_workspace_child(workspace_dir, MAINTENANCE_ACTIONS_FILE)
+    if not os.path.exists(actions_path):
+        result["skipped"].append({"reason": f"`{MAINTENANCE_ACTIONS_FILE}` was not written"})
+        return result
+    try:
+        with open(actions_path, "r") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError) as error:
+        result["skipped"].append({"reason": f"could not read maintenance actions: {error}"})
+        return result
+
+    actions = payload.get("actions") if isinstance(payload, dict) else payload
+    if not isinstance(actions, list):
+        result["skipped"].append({"reason": "maintenance actions payload must be a list or an object with an actions list"})
+        return result
+
+    backup_root = os.path.join(MAINTENANCE_BACKUP_ROOT, datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+    for index, action in enumerate(actions, start=1):
+        if not isinstance(action, dict):
+            result["skipped"].append({"index": index, "reason": "action was not an object"})
+            continue
+        action_type = str(action.get("type", "")).strip().lower()
+        target = os.path.abspath(os.path.expanduser(str(action.get("target", "")).strip()))
+        if action_type in {"delete", "remove", "rm", "delete_file", "delete_tree"} and not context.get("allowDestructive"):
+            result["skipped"].append({"index": index, "target": target, "reason": "destructive action requires explicit remove/delete request"})
+            continue
+        if action_type not in {"copy_file", "write_file", "copy_tree"}:
+            result["skipped"].append({"index": index, "target": target, "reason": f"unsupported action type `{action_type}`"})
+            continue
+        if not maintenance_path_allowed(context, target):
+            result["skipped"].append({"index": index, "target": target, "reason": "target is not in the maintenance allowlist"})
+            continue
+
+        try:
+            backup_path = backup_maintenance_target(target, backup_root, index)
+            if action_type == "write_file":
+                content = action.get("content")
+                if not isinstance(content, str):
+                    result["skipped"].append({"index": index, "target": target, "reason": "write_file content must be a string"})
+                    continue
+                if len(content.encode("utf-8", errors="replace")) > MAINTENANCE_MAX_BYTES:
+                    result["skipped"].append({"index": index, "target": target, "reason": "write_file content exceeds maintenance byte limit"})
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with open(target, "w") as f:
+                    f.write(content)
+            else:
+                source_rel = safe_workspace_relative_path(str(action.get("source", "")).strip())
+                if not source_rel:
+                    result["skipped"].append({"index": index, "target": target, "reason": "source must be a safe workspace-relative path"})
+                    continue
+                source = safe_workspace_child(workspace_dir, source_rel)
+                if action_type == "copy_file":
+                    if not os.path.isfile(source):
+                        result["skipped"].append({"index": index, "target": target, "reason": "copy_file source is not a file"})
+                        continue
+                    if os.path.getsize(source) > MAINTENANCE_MAX_BYTES:
+                        result["skipped"].append({"index": index, "target": target, "reason": "copy_file source exceeds maintenance byte limit"})
+                        continue
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    shutil.copy2(source, target)
+                elif action_type == "copy_tree":
+                    if not os.path.isdir(source):
+                        result["skipped"].append({"index": index, "target": target, "reason": "copy_tree source is not a directory"})
+                        continue
+                    copied_files = 0
+                    copied_bytes = 0
+                    for full_path, _rel in iter_maintenance_target_files(source):
+                        copied_files += 1
+                        copied_bytes += os.path.getsize(full_path)
+                        if copied_files > MAINTENANCE_MAX_FILES or copied_bytes > MAINTENANCE_MAX_BYTES:
+                            raise ValueError("copy_tree source exceeds maintenance limits")
+                    os.makedirs(target, exist_ok=True)
+                    shutil.copytree(source, target, dirs_exist_ok=True)
+            result["applied"].append({
+                "index": index,
+                "type": action_type,
+                "target": target,
+                "backup": backup_path,
+            })
+            emit_event("tool", f"harness maintenance applied: {action_type} -> {target}")
+        except (OSError, ValueError) as error:
+            result["skipped"].append({"index": index, "target": target, "reason": str(error)})
+    return result
+
+
+def iter_source_input_files(source_path):
+    if os.path.isfile(source_path):
+        yield source_path, os.path.basename(source_path)
+        return
+    if not os.path.isdir(source_path):
+        return
+    for root, dirs, files in os.walk(source_path):
+        dirs[:] = [name for name in dirs if name not in SOURCE_INPUT_SKIP_DIRS]
+        for filename in sorted(files):
+            if filename in SOURCE_INPUT_SKIP_FILES:
+                continue
+            full_path = os.path.join(root, filename)
+            try:
+                relative_path = os.path.relpath(full_path, source_path)
+            except ValueError:
+                continue
+            yield full_path, relative_path
+
+
+def prepare_workspace_source_inputs(workspace_dir, session):
+    """
+    Copy explicit user-referenced local files/directories into the workspace.
+
+    This is generic by design: PDF, images, CSVs, docs, code folders, and any
+    other file type follow the same import path. Skills then decide how to
+    inspect/process those workspace-relative copies.
+    """
+    project_text = session_user_source_text(session) if isinstance(session, dict) else ""
+    detected = detect_local_source_paths(project_text)
+    result = {
+        "requested": bool(detected),
+        "root": SOURCE_INPUTS_ROOT,
+        "manifest": SOURCE_INPUTS_MANIFEST,
+        "detected": detected,
+        "sources": [],
+        "copied": [],
+        "skipped": [],
+        "limits": {
+            "maxFiles": SOURCE_INPUTS_MAX_FILES,
+            "maxBytes": SOURCE_INPUTS_MAX_BYTES,
+        },
+    }
+    if not detected:
+        return result
+
+    dest_root = safe_workspace_child(workspace_dir, SOURCE_INPUTS_ROOT)
+    if os.path.isdir(dest_root):
+        shutil.rmtree(dest_root)
+    os.makedirs(dest_root, exist_ok=True)
+
+    workspace_abs = os.path.abspath(workspace_dir)
+    total_files = 0
+    total_bytes = 0
+
+    emit_event("tool", f"source input import requested: {len(detected)} path(s)")
+    for index, item in enumerate(detected, start=1):
+        original = item["original_path"]
+        source_record = {
+            "original_path": original,
+            "kind": item.get("kind"),
+            "workspace_root": None,
+            "files": [],
+        }
+        if path_is_inside(original, workspace_abs):
+            rel = os.path.relpath(original, workspace_abs).replace(os.sep, "/")
+            source_record["workspace_root"] = rel
+            for full_path, rel_path in iter_source_input_files(original):
+                try:
+                    size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
+                except OSError:
+                    size = 0
+                source_record["files"].append({
+                    "path": os.path.join(rel, rel_path).replace(os.sep, "/") if os.path.isdir(original) else rel,
+                    "bytes": size,
+                    "imported": False,
+                    "reason": "already inside workspace",
+                })
+            result["sources"].append(source_record)
+            continue
+
+        slug = source_input_slug(original, index)
+        source_dest_root = safe_workspace_child(dest_root, slug)
+        source_record["workspace_root"] = os.path.relpath(source_dest_root, workspace_dir).replace(os.sep, "/")
+
+        for full_path, rel_path in iter_source_input_files(original):
+            if total_files >= SOURCE_INPUTS_MAX_FILES:
+                result["skipped"].append({
+                    "source": original,
+                    "path": rel_path,
+                    "reason": f"file limit reached ({SOURCE_INPUTS_MAX_FILES})",
+                })
+                continue
+            if os.path.islink(full_path):
+                result["skipped"].append({"source": original, "path": rel_path, "reason": "symlink skipped"})
+                continue
+            try:
+                size = os.path.getsize(full_path)
+            except OSError as error:
+                result["skipped"].append({"source": original, "path": rel_path, "reason": str(error)})
+                continue
+            if total_bytes + size > SOURCE_INPUTS_MAX_BYTES:
+                result["skipped"].append({
+                    "source": original,
+                    "path": rel_path,
+                    "bytes": size,
+                    "reason": f"byte limit reached ({SOURCE_INPUTS_MAX_BYTES})",
+                })
+                continue
+            safe_rel = safe_workspace_relative_path(rel_path)
+            if not safe_rel:
+                result["skipped"].append({"source": original, "path": rel_path, "reason": "unsafe relative path"})
+                continue
+            dest_path = safe_workspace_child(source_dest_root, safe_rel)
+            try:
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(full_path, dest_path)
+            except OSError as error:
+                result["skipped"].append({"source": original, "path": rel_path, "reason": str(error)})
+                continue
+            total_files += 1
+            total_bytes += size
+            workspace_rel = os.path.relpath(dest_path, workspace_dir).replace(os.sep, "/")
+            file_record = {"path": workspace_rel, "bytes": size}
+            source_record["files"].append(file_record)
+            result["copied"].append(file_record)
+
+        result["sources"].append(source_record)
+        emit_event(
+            "tool",
+            f"source import {source_record['workspace_root']}: {len(source_record['files'])} file(s)",
+            source=original,
+            files=len(source_record["files"]),
+        )
+
+    write_workspace_support_file(workspace_dir, SOURCE_INPUTS_MANIFEST, render_source_inputs_manifest(result))
+    return result
+
+
+def render_source_inputs_manifest(source_inputs):
+    lines = [
+        "# Source Inputs Imported By Gemma Forge",
+        "",
+        "The user named local file/directory paths. The harness copied source material into this workspace so downstream agents can operate on relative paths.",
+        "",
+        f"- Import root: `{SOURCE_INPUTS_ROOT}`",
+        f"- File limit: `{source_inputs.get('limits', {}).get('maxFiles')}`",
+        f"- Byte limit: `{source_inputs.get('limits', {}).get('maxBytes')}`",
+        "",
+    ]
+    sources = source_inputs.get("sources") or []
+    if not sources:
+        lines.append("- No sources imported.")
+    for source in sources:
+        lines.extend([
+            f"## {source.get('workspace_root')}",
+            "",
+            f"- Original: `{source.get('original_path')}`",
+            f"- Kind: `{source.get('kind')}`",
+            "",
+        ])
+        files = source.get("files") or []
+        if not files:
+            lines.append("- No files copied from this source.")
+        else:
+            for item in files[:200]:
+                suffix = " (already in workspace)" if not item.get("imported", True) else ""
+                lines.append(f"- `{item.get('path')}` ({item.get('bytes', 0)} bytes){suffix}")
+            if len(files) > 200:
+                lines.append(f"- ...and {len(files) - 200} more file(s)")
+        lines.append("")
+    skipped = source_inputs.get("skipped") or []
+    if skipped:
+        lines.extend(["## Skipped", ""])
+        for item in skipped[:100]:
+            lines.append(f"- `{item.get('source')}` / `{item.get('path')}`: {item.get('reason')}")
+        if len(skipped) > 100:
+            lines.append(f"- ...and {len(skipped) - 100} more skipped file(s)")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def build_source_inputs_context_block(source_inputs):
+    if not isinstance(source_inputs, dict) or not source_inputs.get("requested"):
+        return ""
+    sources = source_inputs.get("sources") or []
+    lines = [
+        "",
+        "Harness-imported source inputs (binding).",
+        f"- Manifest: `{source_inputs.get('manifest')}`",
+        "- Use these copied workspace-relative paths. Do NOT invent input filenames.",
+        "- Do NOT put original absolute `/Users/...` paths in COMMANDS; sandboxed commands must use the copied paths below.",
+        "- If the source files are binary, scanned, tabular, or numerous, write a small inspection/extraction/generation script and list a simple `python ...` command in COMMANDS.",
+        "",
+    ]
+    for source in sources:
+        files = source.get("files") or []
+        lines.append(f"- `{source.get('original_path')}` -> `{source.get('workspace_root')}` ({len(files)} file(s))")
+        for item in files[:40]:
+            lines.append(f"  * `{item.get('path')}` ({item.get('bytes', 0)} bytes)")
+        if len(files) > 40:
+            lines.append(f"  * ...and {len(files) - 40} more file(s); see `{source_inputs.get('manifest')}`")
+    skipped = source_inputs.get("skipped") or []
+    if skipped:
+        lines.append(f"- Skipped inputs: {len(skipped)}; see `{source_inputs.get('manifest')}` before claiming complete coverage.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_workspace_exec_policy_block(session, maintenance_context=None):
     caps = set(session_capabilities_required(session))
     wants_exec = "shell_exec" in caps
     wants_install = "install_package" in caps
+    wants_maintenance = isinstance(maintenance_context, dict) and maintenance_context.get("requested")
     if not wants_exec and not wants_install:
         return ""
     can_exec = tool_workspace.can_run_workspace_commands()
@@ -6208,12 +8285,21 @@ def build_workspace_exec_policy_block(session):
 - Pip installs are automatically targeted into `.gforge-installs/python` unless you provide a safe relative `--target`.
 - Do not request `brew`, `apt`, `sudo`, `cargo install`, global installs, deploy, publish, push, credentials, absolute paths, parent directory traversal, pipes, redirection, or multiline shell.
 """
+    maintenance_lines = ""
+    if wants_maintenance:
+        maintenance_lines = """
+- For Gemma Forge maintenance, normal COMMANDS still run in the workspace sandbox. Do not use commands to edit host files.
+- File changes outside the workspace must be requested through `artifacts/maintenance-actions.json`.
+"""
+        if maintenance_context.get("allowOllama"):
+            maintenance_lines += "- Ollama model maintenance commands are allowed for this run: `ollama list`, `ollama show`, `ollama pull`, `ollama cp`, `ollama create`, `ollama ps`, `ollama stop`; `ollama rm` only when removal was explicit.\n"
     return """
 Workspace command execution is available for this run.
 - If the contract requires a local command, include a COMMANDS section after your file blocks.
 - Commands run after files are written, from the workspace root, through a sandbox that can write only inside the workspace.
 - Use simple validation/build commands such as `python -m unittest`, `python script.py`, `node script.js`, `npm test`, `npm run build`, `pytest`, `make test`, or `git status`.
-""" + install_lines + """
+- When source inputs are listed, use commands to inspect/process the copied workspace-relative paths and then validate the generated deliverable.
+""" + install_lines + maintenance_lines + """
 - Do not claim a command ran unless the final execution report shows a completed command run.
 """
 
@@ -6318,7 +8404,7 @@ def build_execution_context_block(session):
         "",
         "How to satisfy the contract:",
         f"- deliverable.format = `{fmt}` — produce files of this format only.",
-        f"- deliverable.path_pattern = `{path_pattern}` — every file you write must match this pattern.",
+        f"- deliverable.path_pattern = `{path_pattern}` — every final deliverable file you write or generate must match this pattern.",
     ]
     if count:
         parts.append(f"- deliverable.count = `{count}` — write exactly this many files of the format.")
@@ -6329,6 +8415,11 @@ def build_execution_context_block(session):
             "- These are NOT file counts. They are repeated content units the user asked for.",
             "- If a requirement says each/per category, repeat that count for every category you include.",
         ])
+        if fmt in SCRIPT_RUNTIME_FORMATS:
+            parts.append(
+                "- For a runnable script deliverable, file/directory counts are behavior the script must "
+                "produce when run in a temp test space; do NOT emit those generated outputs as extra deliverables."
+            )
         for requirement in content_requirements:
             parts.append(f"- {content_requirement_line(requirement)}")
 
@@ -6546,14 +8637,16 @@ Reviewer findings (structured):
 """
 
 
-def build_model_execution_prompt(session, workspace_dir, review=None, skill_context=None, research=None, git_references=None):
+def build_model_execution_prompt(session, workspace_dir, review=None, skill_context=None, research=None, git_references=None, source_inputs=None, maintenance_context=None):
     review_block = build_repair_continuation_block(session, workspace_dir, review)
     skill_block = (skill_context or {}).get("prompt", "No Gemma Forge skills are staged for this workspace.")
 
     context_block = build_execution_context_block(session)
     research_block = build_research_context_block(research)
     git_reference_block = build_git_reference_context_block(git_references)
-    workspace_exec_block = build_workspace_exec_policy_block(session)
+    source_inputs_block = build_source_inputs_context_block(source_inputs)
+    maintenance_block = build_harness_maintenance_context_block(maintenance_context)
+    workspace_exec_block = build_workspace_exec_policy_block(session, maintenance_context)
 
     return f"""You are Gemma Forge Project Execution.
 
@@ -6569,6 +8662,8 @@ Workspace root:
 
 Gemma Forge skill context:
 {skill_block}
+{source_inputs_block}
+{maintenance_block}
 {research_block}
 {git_reference_block}
 {workspace_exec_block}
@@ -6587,7 +8682,8 @@ VERIFICATION:
 - specific checks that prove the contract was satisfied (optional)
 
 Rules:
-- Every file path must be relative to the workspace root and must match deliverable.path_pattern from the contract.
+- Every file path must be relative to the workspace root.
+- Final deliverable files must match deliverable.path_pattern from the contract. Support scripts/manifests may live under `scripts/`, `tools/`, or `artifacts/` only when needed to inspect imported sources, generate binary deliverables, or validate the result.
 - Do not use absolute paths or parent directory traversal.
 - Do not write into `.gforge/`; it is reserved for harness-provided support context.
 - Include complete file contents, not patches.
@@ -7111,6 +9207,7 @@ DELIVERABLE_FORMAT_EXTENSIONS = {
     "json": {".json"},
     "yaml": {".yaml", ".yml"},
     "markdown": {".md", ".markdown"},
+    "pdf": {".pdf"},
     "shell": {".sh", ".bash", ".zsh"},
     "sql": {".sql"},
     "dockerfile": {"", ".dockerfile"},
@@ -7123,6 +9220,17 @@ TEXT_CONTENT_EXTENSIONS = {
     ".py", ".svg", ".json", ".yaml", ".yml", ".md", ".markdown",
     ".sh", ".bash", ".zsh", ".sql", ".txt",
 }
+
+SCRIPT_RUNTIME_FORMATS = {"python"}
+SCRIPT_RUNTIME_SIDE_EFFECT_TERMS = (
+    ".txt", ".md", ".json", ".csv", ".pdf", ".html",
+    "directory", "directories", "folder", "folders", "file", "files",
+)
+SCRIPT_RUNTIME_SIDE_EFFECT_VERBS = (
+    "create", "creates", "created", "make", "makes", "made", "generate",
+    "generates", "generated", "write", "writes", "written", "populate",
+    "populates", "save", "saves", "emit", "emits",
+)
 
 
 def path_pattern_parts(deliverable):
@@ -7180,6 +9288,208 @@ def validate_deliverable_file_count(files, project_context):
     ]
 
 
+def code_deliverable_files(files, project_context, extension):
+    deliverable = project_context.get("deliverable") if isinstance(project_context, dict) and isinstance(project_context.get("deliverable"), dict) else {}
+    matching = [
+        item for item in files
+        if isinstance(item, dict)
+        and str(item.get("path", "")).lower().endswith(extension)
+        and file_matches_deliverable(item.get("path", ""), deliverable)
+    ]
+    if matching:
+        return matching
+    return [
+        item for item in files
+        if isinstance(item, dict) and str(item.get("path", "")).lower().endswith(extension)
+    ]
+
+
+def validate_code_file_integrity(workspace_dir, files, project_context):
+    failures = []
+    deliverable = project_context.get("deliverable") if isinstance(project_context, dict) and isinstance(project_context.get("deliverable"), dict) else {}
+    fmt = str(deliverable.get("format", "")).strip().lower()
+    if fmt != "python":
+        return failures
+
+    for item in code_deliverable_files(files, project_context, ".py"):
+        relative_path = item.get("path", "")
+        safe_path = safe_workspace_relative_path(relative_path)
+        if not safe_path:
+            continue
+        path = os.path.join(workspace_dir, safe_path)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                source = f.read()
+            ast.parse(source, filename=safe_path)
+        except SyntaxError as error:
+            failures.append(
+                f"invalid Python deliverable `{safe_path}`: syntax error on line {error.lineno} "
+                f"({error.msg})"
+            )
+        except OSError as error:
+            failures.append(f"invalid Python deliverable `{safe_path}`: could not read file ({error})")
+    return failures
+
+
+def first_nonempty_line(text, limit=220):
+    for line in str(text or "").splitlines():
+        cleaned = line.strip()
+        if cleaned:
+            return cleaned[:limit]
+    return ""
+
+
+def validate_workspace_command_runs(metadata, capabilities_required):
+    failures = []
+    commands = listify(metadata.get("commands")) if isinstance(metadata, dict) else []
+    command_runs = metadata.get("commandRuns") if isinstance(metadata, dict) else None
+    needs_shell = "shell_exec" in set(capabilities_required or [])
+
+    if needs_shell and not commands:
+        failures.append("shell_exec was required, but execution metadata listed no workspace commands")
+        return failures
+    if commands and not isinstance(command_runs, list):
+        failures.append("workspace command(s) were requested, but no commandRuns evidence was recorded")
+        return failures
+    if not isinstance(command_runs, list):
+        return failures
+
+    for item in command_runs:
+        if not isinstance(item, dict):
+            continue
+        command = str(item.get("command") or "(unknown command)")
+        if item.get("skipped"):
+            reason = first_nonempty_line(item.get("reason") or item.get("stderr"))
+            suffix = f": {reason}" if reason else ""
+            failures.append(f"workspace command skipped: `{command}`{suffix}")
+            continue
+        if not item.get("ok"):
+            detail = first_nonempty_line(item.get("stderr")) or first_nonempty_line(item.get("stdout"))
+            rc = item.get("returncode")
+            rc_text = f" rc={rc}" if rc is not None else ""
+            suffix = f": {detail}" if detail else ""
+            failures.append(f"workspace command failed{rc_text}: `{command}`{suffix}")
+    return failures
+
+
+def validate_pdf_file(path, relative_path):
+    try:
+        with open(path, "rb") as f:
+            header = f.read(5)
+            if header != b"%PDF-":
+                return f"invalid PDF deliverable `{relative_path}`: missing %PDF header"
+            try:
+                f.seek(max(os.path.getsize(path) - 2048, 0))
+            except OSError:
+                f.seek(0)
+            tail = f.read()
+            if b"%%EOF" not in tail:
+                return f"invalid PDF deliverable `{relative_path}`: missing %%EOF marker"
+    except OSError as error:
+        return f"invalid PDF deliverable `{relative_path}`: could not read file ({error})"
+
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except ImportError:
+        pdfinfo = shutil.which("pdfinfo")
+        if pdfinfo:
+            try:
+                proc = subprocess.run(
+                    [pdfinfo, path],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as error:
+                return f"invalid PDF deliverable `{relative_path}`: pdfinfo could not inspect file ({error})"
+            if proc.returncode != 0:
+                detail = first_nonempty_line(proc.stderr) or first_nonempty_line(proc.stdout)
+                suffix = f": {detail}" if detail else ""
+                return f"invalid PDF deliverable `{relative_path}`: pdfinfo rejected file{suffix}"
+            return ""
+
+        try:
+            with open(path, "rb") as f:
+                data = f.read(2_000_000)
+                f.seek(max(os.path.getsize(path) - 4096, 0))
+                tail = f.read()
+        except OSError as error:
+            return f"invalid PDF deliverable `{relative_path}`: could not inspect structure ({error})"
+        has_classic_xref = b"xref" in data and b"trailer" in data and b"startxref" in tail
+        has_xref_stream = b"/Type /XRef" in data and b"startxref" in tail
+        if not (has_classic_xref or has_xref_stream):
+            return f"invalid PDF deliverable `{relative_path}`: missing xref/trailer structure"
+        return ""
+
+    try:
+        reader = PdfReader(path, strict=True)
+        if len(reader.pages) < 1:
+            return f"invalid PDF deliverable `{relative_path}`: no pages found"
+    except Exception as error:
+        return f"invalid PDF deliverable `{relative_path}`: pypdf rejected file ({type(error).__name__}: {error})"
+    return ""
+
+
+def extract_pdf_validation_text(path, relative_path):
+    try:
+        from pypdf import PdfReader  # type: ignore
+    except ImportError:
+        pass
+    else:
+        try:
+            reader = PdfReader(path, strict=False)
+            chunks = []
+            for page in reader.pages[:20]:
+                chunks.append(page.extract_text() or "")
+            text = "\n".join(chunk for chunk in chunks if chunk)
+            if text.strip():
+                return text
+        except Exception:
+            pass
+
+    pdftotext = shutil.which("pdftotext")
+    if not pdftotext:
+        return ""
+    try:
+        proc = subprocess.run(
+            [pdftotext, path, "-"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return proc.stdout if proc.returncode == 0 else ""
+
+
+def validate_deliverable_file_integrity(workspace_dir, files, project_context):
+    failures = []
+    deliverable = project_context.get("deliverable") if isinstance(project_context, dict) and isinstance(project_context.get("deliverable"), dict) else {}
+    fmt = str(deliverable.get("format", "")).strip().lower()
+    for item in files:
+        relative_path = item.get("path", "") if isinstance(item, dict) else ""
+        safe_path = safe_workspace_relative_path(relative_path)
+        if not safe_path:
+            continue
+        ext = os.path.splitext(safe_path)[1].lower()
+        if ext != ".pdf" and fmt != "pdf":
+            continue
+        if fmt and not file_matches_deliverable(safe_path, deliverable):
+            continue
+        path = os.path.join(workspace_dir, safe_path)
+        if not os.path.isfile(path):
+            continue
+        if ext == ".pdf":
+            failure = validate_pdf_file(path, safe_path)
+            if failure:
+                failures.append(failure)
+    return failures
+
+
 def read_validation_text_files(workspace_dir, files):
     chunks = []
     for item in files:
@@ -7188,10 +9498,15 @@ def read_validation_text_files(workspace_dir, files):
         if not safe_path:
             continue
         ext = os.path.splitext(safe_path)[1].lower()
-        if ext not in TEXT_CONTENT_EXTENSIONS:
+        if ext not in TEXT_CONTENT_EXTENSIONS and ext != ".pdf":
             continue
         path = os.path.join(workspace_dir, safe_path)
         if not os.path.isfile(path):
+            continue
+        if ext == ".pdf":
+            text = extract_pdf_validation_text(path, safe_path)
+            if text.strip():
+                chunks.append(f"\n<!-- {safe_path} -->\n" + text)
             continue
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
@@ -7203,6 +9518,186 @@ def read_validation_text_files(workspace_dir, files):
 
 def regex_count(pattern, text):
     return len(re.findall(pattern, text or "", re.IGNORECASE | re.MULTILINE | re.DOTALL))
+
+
+def content_requirement_text(requirement):
+    if not isinstance(requirement, dict):
+        return ""
+    return " ".join(
+        str(requirement.get(key, "") or "")
+        for key in ("item", "scope", "source")
+    ).lower()
+
+
+def content_requirement_is_script_runtime_side_effect(requirement, project_context):
+    if not isinstance(project_context, dict):
+        return False
+    deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+    fmt = str(deliverable.get("format", "")).strip().lower()
+    if fmt not in SCRIPT_RUNTIME_FORMATS:
+        return False
+    if requirement.get("validation_mode") == "script_runtime":
+        return True
+
+    text = content_requirement_text(requirement)
+    if not text:
+        return False
+    has_side_effect_term = any(term in text for term in SCRIPT_RUNTIME_SIDE_EFFECT_TERMS)
+    has_creation_verb = any(re.search(rf"\b{re.escape(verb)}\b", text) for verb in SCRIPT_RUNTIME_SIDE_EFFECT_VERBS)
+    return has_side_effect_term and has_creation_verb
+
+
+def script_runtime_requirement_key(requirement):
+    text = content_requirement_text(requirement)
+    item_text = str(requirement.get("item", "") or "").lower()
+    expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
+    if "director" in item_text or "folder" in item_text or re.search(r"\bdirs?\b", item_text):
+        return ("directory", expected)
+    extension_match = re.search(r"\.([a-z0-9]{1,12})\b", item_text) or re.search(r"\.([a-z0-9]{1,12})\b", text)
+    if extension_match:
+        return ("extension", extension_match.group(1).lower(), expected)
+    if "director" in text or "folder" in text or re.search(r"\bdirs?\b", text):
+        return ("directory", expected)
+    if "file" in text:
+        return ("file", expected)
+    return ("other", normalize_quantity_item(requirement.get("item", "items")), expected)
+
+
+def count_runtime_filesystem_units(root_dir, requirement, ignored_files=None):
+    text = content_requirement_text(requirement)
+    if not text:
+        return 0
+    ignored_files = set(ignored_files or [])
+
+    directory_names = set(re.findall(r"\bdir\d+\b", text))
+    for start, end in re.findall(r"\bdir(\d+)\s*(?:through|thru|to|-)\s*dir(\d+)\b", text):
+        start_num = int(start)
+        end_num = int(end)
+        if 0 < start_num <= end_num <= 100:
+            directory_names.update(f"dir{index}" for index in range(start_num, end_num + 1))
+    directory_names = sorted(directory_names)
+    if directory_names:
+        found = set()
+        for current_root, dirs, _files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d not in {"__pycache__", ".gforge-installs"}]
+            for dirname in dirs:
+                if dirname.lower() in directory_names:
+                    found.add(dirname.lower())
+        return len(found)
+
+    extension_match = re.search(r"\.([a-z0-9]{1,12})\b", text)
+    if extension_match:
+        wanted_ext = "." + extension_match.group(1).lower()
+        total = 0
+        for current_root, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d not in {"__pycache__", ".gforge-installs"}]
+            for name in files:
+                rel = os.path.relpath(os.path.join(current_root, name), root_dir).replace(os.sep, "/")
+                if rel in ignored_files or name in ignored_files:
+                    continue
+                if name.lower().endswith(wanted_ext):
+                    total += 1
+        return total
+
+    if "director" in text or "folder" in text:
+        total = 0
+        for current_root, dirs, _files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d not in {"__pycache__", ".gforge-installs"}]
+            total += len(dirs)
+        return total
+
+    if "file" in text:
+        total = 0
+        for current_root, dirs, files in os.walk(root_dir):
+            dirs[:] = [d for d in dirs if d not in {"__pycache__", ".gforge-installs"}]
+            for name in files:
+                rel = os.path.relpath(os.path.join(current_root, name), root_dir).replace(os.sep, "/")
+                if rel in ignored_files or name in ignored_files:
+                    continue
+                total += 1
+        return total
+
+    return 0
+
+
+def validate_python_script_runtime_side_effects(workspace_dir, files, project_context, requirements):
+    candidates = code_deliverable_files(files, project_context, ".py")
+    if not candidates:
+        return {
+            "ok": False,
+            "mode": "script_runtime",
+            "failure": "script runtime validation could not find a Python deliverable to run",
+        }
+
+    safe_path = safe_workspace_relative_path(candidates[0].get("path", ""))
+    if not safe_path:
+        return {
+            "ok": False,
+            "mode": "script_runtime",
+            "failure": f"script runtime validation found an unsafe Python path: {candidates[0].get('path', '')}",
+        }
+
+    source_path = os.path.join(workspace_dir, safe_path)
+    if not os.path.isfile(source_path):
+        return {
+            "ok": False,
+            "mode": "script_runtime",
+            "failure": f"script runtime validation could not find Python file `{safe_path}`",
+        }
+
+    if not tool_workspace.can_run_workspace_commands():
+        return {
+            "ok": False,
+            "mode": "script_runtime",
+            "failure": "script runtime validation could not run because workspace exec is unavailable",
+        }
+
+    with tempfile.TemporaryDirectory(prefix="gforge-script-validate-") as tmpdir:
+        validation_script = os.path.basename(safe_path)
+        shutil.copy2(source_path, os.path.join(tmpdir, validation_script))
+        command = f"python {validation_script}"
+        runs = tool_workspace.run_workspace_commands(tmpdir, [command], limit=1, timeout=30)
+        run = runs[0] if runs else {}
+        if not run or run.get("skipped") or not run.get("ok"):
+            detail = first_nonempty_line(run.get("reason") or run.get("stderr") or run.get("stdout"))
+            suffix = f": {detail}" if detail else ""
+            return {
+                "ok": False,
+                "mode": "script_runtime",
+                "root": tmpdir,
+                "failure": f"script runtime validation failed for `{safe_path}`{suffix}",
+                "commandRun": run,
+            }
+
+        results = []
+        failures = []
+        for requirement in requirements:
+            expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
+            if not expected or expected <= 1:
+                continue
+            actual = count_runtime_filesystem_units(tmpdir, requirement, ignored_files={validation_script})
+            result = {
+                "item": requirement.get("item", "items"),
+                "expected": expected,
+                "actual": actual,
+                "scope": requirement.get("scope", "whole deliverable"),
+                "source": requirement.get("source", ""),
+                "mode": "script_runtime",
+            }
+            results.append(result)
+            if actual < expected:
+                failures.append(
+                    f"script runtime validation expected at least {expected} `{requirement.get('item', 'items')}` "
+                    f"after running `{safe_path}` ({requirement.get('scope', 'whole deliverable')}), "
+                    f"but the isolated test run produced {actual}. Source: {requirement.get('source', '')}"
+                )
+        return {
+            "ok": True,
+            "mode": "script_runtime",
+            "results": results,
+            "failures": failures,
+            "commandRun": run,
+        }
 
 
 def count_content_units(text, item):
@@ -7249,7 +9744,15 @@ def count_content_units(text, item):
             regex_count(rf"\b{re.escape(normalized_item)}\s*(?:#|no\.?|number)?\s*\d+\b", text),
         )
 
-    if normalized_item in {"section", "category"}:
+    if normalized_item == "category":
+        return max(
+            regex_count(r"<section\b", text),
+            regex_count(r"\bcategory\s+report\s*[:\-]", text),
+            regex_count(r"\breport\s+category\s*[:\-]", text),
+            regex_count(rf"\b{re.escape(normalized_item)}\s*(?:#|no\.?|number)?\s*\d+\b", text),
+        )
+
+    if normalized_item == "section":
         return max(
             regex_count(r"<section\b", text),
             regex_count(rf"\b{re.escape(normalized_item)}\s*(?:#|no\.?|number)?\s*\d+\b", text),
@@ -7262,8 +9765,14 @@ def count_content_units(text, item):
 
 
 def validate_content_quantity_requirements(workspace_dir, files, project_context):
+    context_requirements = project_context.get("content_requirements") if isinstance(project_context, dict) else []
+    if isinstance(project_context, dict):
+        context_requirements = merge_content_quantity_requirements(
+            context_requirements,
+            script_runtime_quantity_requirements_from_context(project_context),
+        )
     requirements = merge_content_quantity_requirements(
-        project_context.get("content_requirements") if isinstance(project_context, dict) else [],
+        context_requirements,
         [],
     )
     if not requirements:
@@ -7272,7 +9781,48 @@ def validate_content_quantity_requirements(workspace_dir, files, project_context
     combined_text = read_validation_text_files(workspace_dir, files)
     results = []
     failures = []
+    script_runtime_requirements = []
+    seen_script_runtime = set()
     for requirement in requirements:
+        if not content_requirement_is_script_runtime_side_effect(requirement, project_context):
+            continue
+        key = script_runtime_requirement_key(requirement)
+        if key in seen_script_runtime:
+            continue
+        seen_script_runtime.add(key)
+        script_runtime_requirements.append(requirement)
+    if script_runtime_requirements:
+        runtime_result = validate_python_script_runtime_side_effects(
+            workspace_dir,
+            files,
+            project_context,
+            script_runtime_requirements,
+        )
+        if not runtime_result.get("ok"):
+            failures.append(runtime_result.get("failure") or "script runtime validation failed")
+            for requirement in script_runtime_requirements:
+                expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
+                if not expected or expected <= 1:
+                    continue
+                results.append({
+                    "item": requirement.get("item", "items"),
+                    "expected": expected,
+                    "actual": 0,
+                    "scope": requirement.get("scope", "whole deliverable"),
+                    "source": requirement.get("source", ""),
+                    "mode": runtime_result.get("mode", "script_runtime"),
+                })
+        else:
+            results.extend(runtime_result.get("results") or [])
+            failures.extend(runtime_result.get("failures") or [])
+
+    script_runtime_ids = {
+        id(requirement) for requirement in requirements
+        if content_requirement_is_script_runtime_side_effect(requirement, project_context)
+    }
+    for requirement in requirements:
+        if id(requirement) in script_runtime_ids:
+            continue
         expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
         if not expected or expected <= 1:
             continue
@@ -7306,17 +9856,22 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
         failures.append("model-authored execution returned no writable files")
 
     project_context = session.get("projectContext") if isinstance(session, dict) else {}
-    capabilities_required = (
-        project_context.get("capabilities_required")
-        if isinstance(project_context, dict) and isinstance(project_context.get("capabilities_required"), list)
-        else []
-    )
+    capabilities_required = session_capabilities_required(session)
     claim_text = collect_claim_text(metadata)
     claim_failures = validate_claims_against_disk(claim_text, capabilities_required, workspace_dir=workspace_dir)
     failures.extend(claim_failures)
 
+    command_failures = validate_workspace_command_runs(metadata, capabilities_required)
+    failures.extend(command_failures)
+
     file_count_failures = validate_deliverable_file_count(files, project_context)
     failures.extend(file_count_failures)
+
+    file_integrity_failures = validate_deliverable_file_integrity(workspace_dir, files, project_context)
+    failures.extend(file_integrity_failures)
+
+    code_integrity_failures = validate_code_file_integrity(workspace_dir, files, project_context)
+    failures.extend(code_integrity_failures)
 
     # Catch hallucinated local-relative href/src/url() targets in any
     # HTML / CSS / Markdown deliverable. Small models often fabricate

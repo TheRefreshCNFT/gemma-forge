@@ -8,7 +8,7 @@ Last updated: 2026-05-24 (UTC) — SSD backup and GitHub alignment.
 - Branch: `main` tracking `origin/main`; current branch head is the
   installable repo state for this backup pass once pushed to GitHub.
   Runtime/generated/private harness state remains local/SSD-only.
-- Harness Flask server source: `chat/server.py` (8,120 lines).
+- Harness Flask server source: `chat/server.py` (9,100 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -82,6 +82,43 @@ the contest demo path works end-to-end.** Driving doc:
     deliverable under-delivers extracted content counts such as
     articles, headlines, options, variants, cards, images, logos,
     sections, features, products, examples, slides, charts, or rows.
+    Python script deliverables are syntax-checked and, when their content
+    requirements, contract, or acceptance describe files/directories the
+    script should create, the verifier runs the script in a temporary
+    workspace, counts the produced outputs there, and deletes the temp run
+    instead of requiring those outputs as final deliverables.
+  - Verification is now read-only against deliverables. A failed
+    small-model review on the Verification card may rebuild the verification
+    report from existing artifacts, but it cannot rerun Project Execution or
+    rewrite model-authored files. If deterministic validation passes,
+    Verification reviewer concerns are downgraded to warnings. Axon/SocratiCode
+    findings remain advisory for simple fresh-script deliverables and are no
+    longer injected as deterministic validation failures.
+  - The live harness now has one canonical macOS service control path:
+    `tools/harness_service.sh`, exposed through `npm run harness:start`,
+    `harness:stop`, `harness:restart`, `harness:status`, `harness:logs`,
+    and `harness:open`. It writes/validates the LaunchAgent and manages the
+    launchd KeepAlive service `com.webot.gemma-forge.harness` instead of
+    relying on fragile background shell processes.
+  - Workspace execution now has a controlled "workspace yolo" path. When
+    a model-authored Python script imports non-stdlib packages, the
+    harness infers them and prepends a workspace-local pip install into
+    `.gforge-installs/python` before running the script. PDF/OCR jobs also
+    get the known `pypdf`/`pdfplumber`/`reportlab` packages, including
+    older sessions at runtime. Package installs and script-file commands
+    now get a bounded 300-second workspace timeout while ordinary commands
+    stay at 60 seconds. Before each retry, stale matching deliverables are
+    moved to `.gforge/attempt-backups` so old bad outputs cannot satisfy
+    validation. Deterministic validation now fails on skipped/failed command
+    runs, rejects `.pdf` outputs that do not parse as real PDFs, and can
+    extract generated PDF text for content-count checks such as category
+    reports.
+  - Small-model extra review can still force repair for real artifact
+    mismatches, but it no longer gets to reinterpret a passed deterministic
+    validation count gate as failure. Count/path/PDF/content-quantity
+    concerns are downgraded to non-blocking reviewer warnings when
+    deterministic validation passed, preventing a good output from being
+    destroyed by a spurious continuation repair.
   - Skill staging now puts a concise "Skill Usage Plan" before long
     skill manuals. For scraping + page tasks, it tells the model:
     `scrapling-official` is the web scraping/extraction layer and
@@ -90,6 +127,52 @@ the contest demo path works end-to-end.** Driving doc:
     messages now. Prior agent messages / manifests no longer self-poison
     reruns into staging unrelated support skills like Axon/GSD/SocratiCode
     just because a previous agent mentioned them.
+  - Project Context now injects a user-facing skill capability catalog so
+    the Writer sees what each harness skill is for. Deterministic skill
+    routing tests cover simple no-tool tasks, UI/UX interface/design
+    work, Scrapling browser/scraping work, SocratiCode semantic codebase
+    discovery, Axon structural graph/impact analysis, combined
+    code-intelligence requests, logo generation, runnable code, PDF/OCR,
+    and MCP server/tool-schema work. Generic MCP terms like bare `auth` no
+    longer hijack ordinary codebase search requests.
+  - Skill routing aliases now cover more human phrasing across every
+    bundled skill: data mining/harvesting/deep research for Scrapling,
+    make it look professional/mobile friendly for UI/UX, little command
+    line utility/process files for Code Writer, brand symbol/app icon for
+    Logo Generator, pull text from scanned documents for PDF, local tool
+    server/API as agent tools for MCP, find in this repo for SocratiCode,
+    what breaks if for Axon, task breakdown/milestones for GSD, and
+    orient/backup/protect live for Webot Flow. Broad web-research phrases
+    are guarded so codebase requests still route to SocratiCode.
+  - A bundled `code-writer` Forge skill now covers runnable source-code
+    deliverables in Python, JavaScript, TypeScript, HTML/CSS, SQL, shell,
+    tests, parsers, CLIs, API clients, and small web apps. It is staged in
+    the current harness skills dir and included in clean-install skill
+    provisioning checks.
+  - The harness operating guide now treats Gemma Forge self-maintenance as
+    a normal project task. Requests such as add/remove/default model,
+    add/update/remove skill, installer changes, readiness repair, routing
+    updates, or harness UI work should create/use a Gemma Forge maintenance
+    project, run the normal context/planning/execution/verification flow,
+    and verify via model route/Ollama state, staged skills, routing tests,
+    clean-install checks, `npm run check`, or UI proof as applicable.
+  - Gemma Forge self-maintenance now has a controlled allowlist path instead
+    of raw host access. Execution snapshots exact repo/runtime targets into
+    `references/maintenance-targets/`; outside-workspace changes must be
+    requested through `artifacts/maintenance-actions.json` using validated
+    `copy_file`, `write_file`, or `copy_tree` actions. The harness applies
+    only allowlisted targets, records maintenance backups, and gates Ollama
+    CLI commands to explicit model-maintenance requests.
+  - Project Context now detects explicit local file/directory paths as
+    binding source inputs. Project Execution imports any file type into
+    workspace `references/input/`, writes
+    `references/source-inputs.md`, and prompts the model to use those
+    copied workspace-relative paths plus command evidence instead of
+    inventing filenames or using original absolute host paths.
+  - GSD planning now receives the Project Context contract, source inputs,
+    skill plan, tool plan, model profile, and hard count/source gates. The
+    bundled `skills/gsd/` install state contains the full suite of
+    workflows, prompts, agents, references, templates, and hooks.
   - Failed-review execution retries now enter a generic "continuation
     repair mode." The retry prompt tells the model not to start over
     unless the human explicitly requested a restart, names the exact
@@ -216,20 +299,58 @@ the contest demo path works end-to-end.** Driving doc:
   - Live harness restart after the install-capability change is clean:
     launchd reports PID `60777`, harness root returns `200`, and
     `/api/workspace/status` returns `200`.
+  - Clean-install provisioning patch is applied locally: the launcher now
+    uses/recreates a Python 3.13 venv, stages bundled `webot-flow`, `gsd`,
+    and `socraticode` skills, pulls `nomic-embed-text:latest`, and runs
+    SocratiCode/Qdrant plus Axon indexing before launching unless
+    `GFORGE_ALLOW_DEGRADED_TOOLS=1` is explicitly set.
+  - Final sidebar polish is applied locally: desktop `.app-shell-top` now
+    has a viewport-height floor so the left session rail reaches the bottom
+    even when the Start panel is collapsed. Mobile/tablet order now shows
+    the main work area first and moves the project/session rail below it.
+    Playwright/Chrome verification passed with Start forced collapsed:
+    desktop viewport height `900`, sidebar bottom `1019`, horizontal
+    overflow `false`; mobile width `390` showed main top `0`, sidebar top
+    `3268`, horizontal overflow `false`.
 - Latest files touched for this accepted state:
   `chat/server.py`, `chat/tool_workspace.py`, `chat/workspace_scan.py`,
-  `chat/templates/index.html`, `tests/model_route_test.py`,
-  `tests/integration_test.py`, `README.md`, `SKILL.md`, `CONTEXT.md`,
+  `chat/templates/index.html`, `chat/static/css/style.css`,
+  `tests/model_route_test.py`,
+  `tests/integration_test.py`, `tests/skill_routing_test.py`,
+  `tests/maintenance_access_test.py`, `README.md`, `SKILL.md`, `CONTEXT.md`,
   `PROJECT_PLAN.md`, `SUBMISSION_DRAFT.md`, `forge.md`,
   `docs/model-routing-proof.md`, `docs/harness-agent-operating-guide.md`,
   `docs/submission-media/demo-recording-guide.md`, `launch_forge.command`,
   `.handoffs/CURRENT_STATE.md`, `project-map.md`, `skills/pdf/`,
-  `skills/mcp-builder/`.
+  `skills/mcp-builder/`, `tools/provision_clean_install.py`,
+  `tools/verify_clean_install.sh`, `tools/run_clean_install_test.sh`,
+  `skills/webot-flow/`, `skills/gsd/`, `skills/socraticode/`.
 - GitHub alignment note: the latest installable repo state on `main`
   contains the chat worker-action, per-session runner isolation,
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T175311Z-full-live-local-working-state/`
+    (verified full live local working state with restore archive; checksum
+    `09f2f1444df42b81125ba37de48f108073d96702725f0dc1c314e99ed8050360`;
+    includes repo, harness runtime, `~/.gforge/models`, and LaunchAgent;
+    omits recoverable 68G Ollama blob cache)
+  - `/Users/webot/Backups/gemma-forge/20260524T-final-polish-pre/`
+    (`chat/static/css/style.css`, `chat/static/js/chat.js`,
+    `chat/templates/index.html`, `chat/server.py`,
+    `tests/skill_routing_test.py`, `package.json`, `project-map.md`,
+    `.handoffs/CURRENT_STATE.md` before final polish)
+  - `/Users/webot/Backups/gemma-forge/20260524T-final-polish-live-forge-pre/`
+    (live `~/.gforge/harness/forge.md` before final polish sync)
+  - `/Users/webot/Backups/gemma-forge/20260524T-maintenance-access-pre/`
+    (`chat/server.py`, `chat/tool_workspace.py`, `package.json`,
+    `project-map.md` before controlled maintenance access patch)
+  - `/Users/webot/Backups/gemma-forge/20260524T-maintenance-access-live-forge-pre/`
+    (live `~/.gforge/harness/forge.md` before sync from repo `forge.md`)
+  - `/Users/webot/Backups/gemma-forge/20260524T120943Z-pre-skill-guidance/`
+  - `/Users/webot/Backups/gemma-forge/20260524T120841Z-pre-vm-test-script-note/`
+  - `/Users/webot/Backups/gemma-forge/20260524T120608Z-pre-installer-doc-state/`
+  - `/Users/webot/Backups/gemma-forge/20260524T120527Z-pre-installer-provisioning/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T024959Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed; includes repo, harness runtime, and model cache)
   - `/Users/webot/Backups/gemma-forge/20260524T023601Z-pre-workspace-installs/`
   - `/Users/webot/Backups/gemma-forge/20260524T021610Z-pre-anthropic-skills/`
@@ -278,12 +399,13 @@ the contest demo path works end-to-end.** Driving doc:
 
 - **2026-05-24 — SSD backup and GitHub alignment.**
   Full live local working state was backed up to external SSD at
-  `/Volumes/PHIXERO/Backups/gemma-forge/20260524T024959Z-full-live-local-working-state/`.
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260524T175311Z-full-live-local-working-state/`.
   The backup includes the repo snapshot, ignored repo/runtime files,
-  `~/.gforge/harness`, `~/.gforge/models`, metadata snapshots, and a
-  `restore-archive.tar.gz`; checksum verification passed. GitHub
-  alignment for the installable repo state was requested in the same
-  pass; runtime/private data remains excluded from the repo.
+  `~/.gforge/harness`, `~/.gforge/models`, LaunchAgent metadata, and a
+  restore archive; checksum verification passed with SHA-256
+  `09f2f1444df42b81125ba37de48f108073d96702725f0dc1c314e99ed8050360`.
+  GitHub alignment for the installable repo state was requested in the
+  same pass; runtime/private data remains excluded from the repo.
 
 - **2026-05-24 — Workspace package installs enabled.**
   Allowed bounded project dependency installs as a real

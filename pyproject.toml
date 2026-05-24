@@ -13,7 +13,13 @@ dependencies = [
     "flask",
     "flask-cors",
     "huggingface_hub",
+    "pdfplumber>=0.11",
+    "pypdf>=4.0",
+    "pypdfium2>=4.30",
+    "PyYAML>=6.0",
+    "reportlab>=4.0",
     "requests",
+    "scrapling[all]>=0.4.5",
 ]
 
 [project.optional-dependencies]

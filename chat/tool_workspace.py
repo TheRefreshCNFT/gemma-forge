@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -42,6 +43,17 @@ ALLOWED_COMMANDS = {
     "sh",
     "yarn",
 }
+OLLAMA_COMMANDS = {
+    "cp",
+    "create",
+    "list",
+    "pull",
+    "ps",
+    "rm",
+    "show",
+    "stop",
+}
+OLLAMA_NETWORK_COMMANDS = {"cp", "create", "list", "pull", "ps", "rm", "show", "stop"}
 BLOCKED_SUBCOMMANDS = {
     ("git", "push"),
     ("git", "credential"),
@@ -50,6 +62,10 @@ BLOCKED_SUBCOMMANDS = {
     ("pnpm", "publish"),
     ("yarn", "publish"),
 }
+DEFAULT_WORKSPACE_COMMAND_TIMEOUT = 60
+LONG_WORKSPACE_COMMAND_TIMEOUT = 300
+SCRIPT_COMMANDS = {"bash", "node", "python", "python3", "sh"}
+SCRIPT_EXTENSIONS = (".bash", ".cjs", ".js", ".mjs", ".py", ".sh", ".ts")
 
 
 def _utc_now() -> str:
@@ -301,16 +317,60 @@ def _profile_string(workspace_dir: str, tmp_dir: str, allow_network: bool = Fals
     def esc(value: str) -> str:
         return value.replace("\\", "\\\\").replace('"', '\\"')
 
+    network_rule = "\n(allow network-outbound)" if allow_network else ""
+    home = os.path.expanduser("~")
     denied_read_roots = [
-        os.path.expanduser("~"),
         "/Volumes",
+        os.path.join(home, ".aws"),
+        os.path.join(home, ".azure"),
+        os.path.join(home, ".config", "gh"),
+        os.path.join(home, ".docker"),
+        os.path.join(home, ".gnupg"),
+        os.path.join(home, ".gforge"),
+        os.path.join(home, ".kube"),
+        os.path.join(home, ".ollama"),
+        os.path.join(home, ".ssh"),
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "Documents"),
+        os.path.join(home, "Downloads"),
+        os.path.join(home, "Library"),
     ]
     deny_rules = "\n".join(
         f'  (subpath "{esc(path)}")'
         for path in denied_read_roots
-        if os.path.exists(path)
+        if os.path.exists(path) and not os.path.commonpath([os.path.abspath(path), os.path.abspath(sys.prefix)]) == os.path.abspath(path)
     )
-    network_rule = "\n(allow network-outbound)" if allow_network else ""
+    system_read_roots = [
+        "/System",
+        "/Library",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/etc",
+        "/dev",
+        "/opt/homebrew",
+        "/opt/local",
+        "/private/var",
+        "/var",
+    ]
+    python_read_roots = [
+        os.path.realpath(getattr(sys, "base_prefix", sys.prefix)),
+        os.path.realpath(getattr(sys, "exec_prefix", sys.prefix)),
+        os.path.realpath(sys.prefix),
+        os.path.realpath(os.path.dirname(sys.executable)),
+        os.path.realpath(sys.executable),
+    ]
+    read_roots = system_read_roots + python_read_roots + [
+        workspace_dir,
+        tmp_dir,
+        os.path.realpath(workspace_dir),
+        os.path.realpath(tmp_dir),
+    ]
+    python_read_rules = "\n".join(
+        f'  (subpath "{esc(path)}")'
+        for path in sorted(set(read_roots))
+        if path and os.path.exists(path)
+    )
     return f"""(version 1)
 (deny default)
 (allow process*)
@@ -319,11 +379,11 @@ def _profile_string(workspace_dir: str, tmp_dir: str, allow_network: bool = Fals
 (allow mach-lookup)
 {network_rule}
 (allow file-read*)
+(allow file-map-executable)
 (deny file-read*
 {deny_rules})
 (allow file-read*
-  (subpath "{esc(workspace_dir)}")
-  (subpath "{esc(tmp_dir)}"))
+{python_read_rules})
 (allow file-write*
   (subpath "{esc(workspace_dir)}")
   (subpath "{esc(tmp_dir)}"))
@@ -373,7 +433,51 @@ def package_install_targeted_args(args: list[str]) -> list[str]:
     return args
 
 
-def normalize_workspace_command(command) -> tuple[list[str] | None, str]:
+def command_runs_script_file(args: list[str]) -> bool:
+    if not args:
+        return False
+    executable = os.path.basename(args[0]).lower()
+    if executable not in SCRIPT_COMMANDS:
+        return False
+    return any(str(arg).lower().endswith(SCRIPT_EXTENSIONS) for arg in args[1:])
+
+
+def workspace_command_timeout(args: list[str], default: int = DEFAULT_WORKSPACE_COMMAND_TIMEOUT) -> int:
+    if is_package_install_command(args) or command_runs_script_file(args):
+        return max(default, LONG_WORKSPACE_COMMAND_TIMEOUT)
+    return default
+
+
+def _maintenance_flag(maintenance_targets, key: str) -> bool:
+    if not isinstance(maintenance_targets, dict):
+        return False
+    return bool(maintenance_targets.get(key))
+
+
+def validate_ollama_command(args: list[str], maintenance_targets=None) -> str:
+    if not _maintenance_flag(maintenance_targets, "allowOllama"):
+        return "`ollama` commands are only allowed for explicit Gemma Forge model maintenance"
+    if len(args) < 2:
+        return "`ollama` requires a subcommand"
+    subcommand = args[1].lower()
+    if subcommand not in OLLAMA_COMMANDS:
+        return f"`ollama {subcommand}` is not allowed in workspace exec"
+    if subcommand == "rm" and not _maintenance_flag(maintenance_targets, "allowDestructive"):
+        return "`ollama rm` is destructive and requires an explicit remove/delete request"
+    if subcommand in {"pull", "cp", "create", "rm", "stop"} and len(args) < 3:
+        return f"`ollama {subcommand}` requires a model argument"
+    return ""
+
+
+def is_ollama_command(args: list[str]) -> bool:
+    return bool(args) and os.path.basename(args[0]).lower() == "ollama"
+
+
+def is_ollama_network_command(args: list[str]) -> bool:
+    return is_ollama_command(args) and len(args) > 1 and args[1].lower() in OLLAMA_NETWORK_COMMANDS
+
+
+def normalize_workspace_command(command, maintenance_targets=None) -> tuple[list[str] | None, str]:
     if isinstance(command, list):
         args = [str(item).strip() for item in command if str(item).strip()]
     else:
@@ -393,8 +497,16 @@ def normalize_workspace_command(command) -> tuple[list[str] | None, str]:
     if executable == "pip" and not shutil.which(args[0]) and shutil.which("pip3"):
         args[0] = "pip3"
         executable = "pip3"
-    if executable not in ALLOWED_COMMANDS:
+    allowed_commands = set(ALLOWED_COMMANDS)
+    if _maintenance_flag(maintenance_targets, "allowOllama"):
+        allowed_commands.add("ollama")
+    if executable not in allowed_commands:
         return None, f"`{executable}` is not in the workspace command allowlist"
+
+    if executable == "ollama":
+        reason = validate_ollama_command(args, maintenance_targets)
+        if reason:
+            return None, reason
 
     if executable in {"bash", "sh"} and any(arg in {"-c", "-lc"} for arg in args[1:]):
         return None, "inline shell execution is blocked; run a relative script file instead"
@@ -417,7 +529,7 @@ def normalize_workspace_command(command) -> tuple[list[str] | None, str]:
     return args, ""
 
 
-def run_workspace_commands(workspace_dir: str, commands, limit: int = 6, timeout: int = 60) -> list[dict]:
+def run_workspace_commands(workspace_dir: str, commands, limit: int = 6, timeout: int = DEFAULT_WORKSPACE_COMMAND_TIMEOUT, maintenance_targets=None) -> list[dict]:
     if not commands:
         return []
     items = commands if isinstance(commands, list) else [commands]
@@ -433,7 +545,7 @@ def run_workspace_commands(workspace_dir: str, commands, limit: int = 6, timeout
 
     workspace_abs = os.path.realpath(os.path.abspath(workspace_dir))
     for command in items[:limit]:
-        args, reason = normalize_workspace_command(command)
+        args, reason = normalize_workspace_command(command, maintenance_targets=maintenance_targets)
         display = command if isinstance(command, str) else " ".join(str(item) for item in command)
         if not args:
             results.append({
@@ -444,6 +556,7 @@ def run_workspace_commands(workspace_dir: str, commands, limit: int = 6, timeout
             })
             continue
 
+        command_timeout = workspace_command_timeout(args, timeout)
         started = time.time()
         with tempfile.TemporaryDirectory(prefix="gforge-workspace-exec-") as tmp:
             install_root = os.path.join(workspace_abs, ".gforge-installs")
@@ -451,13 +564,20 @@ def run_workspace_commands(workspace_dir: str, commands, limit: int = 6, timeout
             os.makedirs(workspace_tmp, exist_ok=True)
             profile_path = os.path.join(tmp, "sandbox.sb")
             with open(profile_path, "w") as f:
-                f.write(_profile_string(workspace_abs, workspace_tmp, allow_network=is_package_install_command(args)))
+                f.write(_profile_string(
+                    workspace_abs,
+                    workspace_tmp,
+                    allow_network=is_package_install_command(args) or is_ollama_network_command(args),
+                ))
+            python_bin_dir = os.path.dirname(sys.executable)
+            install_python = os.path.join(install_root, "python")
             env = {
                 "HOME": workspace_abs,
                 "TMPDIR": workspace_tmp,
-                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
+                "PATH": f"{python_bin_dir}:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin",
                 "PIP_CACHE_DIR": os.path.join(install_root, "pip-cache"),
                 "PYTHONUSERBASE": os.path.join(install_root, "python-user"),
+                "PYTHONPATH": install_python,
                 "NPM_CONFIG_CACHE": os.path.join(install_root, "npm-cache"),
                 "PNPM_HOME": os.path.join(install_root, "pnpm-home"),
                 "YARN_CACHE_FOLDER": os.path.join(install_root, "yarn-cache"),
@@ -470,7 +590,7 @@ def run_workspace_commands(workspace_dir: str, commands, limit: int = 6, timeout
                     cwd=workspace_abs,
                     capture_output=True,
                     text=True,
-                    timeout=timeout,
+                    timeout=command_timeout,
                     check=False,
                     env=env,
                 )
@@ -491,7 +611,7 @@ def run_workspace_commands(workspace_dir: str, commands, limit: int = 6, timeout
                     "returncode": 124,
                     "elapsedMs": int((time.time() - started) * 1000),
                     "stdout": _redact(error.stdout or ""),
-                    "stderr": _redact(error.stderr or f"command timed out after {timeout}s"),
+                    "stderr": _redact(error.stderr or f"command timed out after {command_timeout}s"),
                 })
             except (FileNotFoundError, subprocess.SubprocessError) as error:
                 results.append({
