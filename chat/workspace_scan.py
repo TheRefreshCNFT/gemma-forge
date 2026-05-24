@@ -46,17 +46,17 @@ GSD_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "gsd", "SKILL.md")
 SOCRATICODE_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "socraticode")
 AXON_FALLBACK_PATH = os.path.join(HOME, ".local", "bin", "axon")
 SOCRATICODE_FALLBACK_PATH = os.path.join(HOME, ".local", "bin", "socraticode")
-DEFAULT_MODEL = os.environ.get("GFORGE_DEFAULT_MODEL", "gemma-4")
+DEFAULT_MODEL = os.environ.get("GFORGE_DEFAULT_MODEL", "gemma-4-e4b-it")
 
 
 MODEL_OPTIONS = [
     {
-        "id": "google/gemma-4-E2B-it",
-        "label": "Gemma 4 E2B",
-        "ollamaName": "gemma-4",
-        "description": "Smallest default model for broad local compatibility.",
-        "requiredRamGb": 4,
-        "requiredDiskGb": 5,
+        "id": "google/gemma-4-E4B-it",
+        "label": "Gemma 4 E4B",
+        "ollamaName": "gemma-4-e4b-it",
+        "description": "Default edge model with stronger harness reasoning and broad local compatibility.",
+        "requiredRamGb": 8,
+        "requiredDiskGb": 10,
         "baseline": True,
         "recommended": True,
     },

@@ -29,6 +29,11 @@ try:
 except ImportError:
     import tool_screenshot  # type: ignore
 
+try:
+    from . import tool_workspace  # type: ignore
+except ImportError:
+    import tool_workspace  # type: ignore
+
 import collections
 import contextlib
 import contextvars
@@ -277,7 +282,7 @@ WORKSPACE_SKILLS_ROOT = os.path.join(".gforge", "skills")
 LEGACY_SESSIONS_FILE = os.path.join(CHAT_ROOT, "sessions.json")
 LEGACY_MODELS_FILE = os.path.join(CHAT_ROOT, "models.json")
 LEGACY_SESSION_ROOT = os.path.join(CHAT_ROOT, "session-data")
-DEFAULT_MODEL = os.environ.get("GFORGE_DEFAULT_MODEL", "gemma-4")
+DEFAULT_MODEL = os.environ.get("GFORGE_DEFAULT_MODEL", "gemma-4-e4b-it")
 HF_MODEL_SEARCH_PAGE_SIZE = 5
 HF_MODEL_SEARCH_MAX_OFFSET = 250
 HF_MODEL_SEARCH_MAX_QUERY_CHARS = 120
@@ -704,6 +709,67 @@ SKILL_SELECTION_ALIASES = {
         "code coupling",
         "mcp server for code",
     ],
+    "pdf": [
+        "pdf",
+        ".pdf",
+        "portable document format",
+        "read pdf",
+        "extract pdf",
+        "extract pdf text",
+        "pdf text",
+        "pdf table",
+        "pdf tables",
+        "pdf form",
+        "fillable pdf",
+        "fill pdf",
+        "merge pdf",
+        "combine pdf",
+        "split pdf",
+        "rotate pdf",
+        "crop pdf",
+        "watermark pdf",
+        "encrypt pdf",
+        "decrypt pdf",
+        "ocr pdf",
+        "scanned pdf",
+        "searchable pdf",
+        "create pdf",
+        "generate pdf",
+        "qpdf",
+        "pypdf",
+        "pdfplumber",
+        "reportlab",
+    ],
+    "mcp-builder": [
+        "mcp",
+        "model context protocol",
+        "mcp builder",
+        "mcp server",
+        "build mcp",
+        "build an mcp",
+        "create mcp",
+        "create an mcp",
+        "implement mcp",
+        "mcp tool",
+        "mcp tools",
+        "tool schema",
+        "tool schemas",
+        "mcp resource",
+        "mcp resources",
+        "mcp prompt",
+        "mcp prompts",
+        "stdio transport",
+        "streamable http",
+        "fastmcp",
+        "python mcp",
+        "typescript mcp",
+        "node mcp",
+        "mcp sdk",
+        "external api integration",
+        "api connector",
+        "tool evaluation",
+        "tool eval",
+    ],
 }
 
 
@@ -1017,6 +1083,22 @@ SKILL_ROLE_GUIDANCE = {
             "Do not apply this to ordinary webpage/content generation unless the user explicitly asks for codebase analysis.",
         ],
     },
+    "pdf": {
+        "role": "PDF reading, extraction, forms, conversion, and generation",
+        "guidance": [
+            "Use this whenever the request mentions a PDF, .pdf file, PDF form, OCR, page splitting/merging/rotation, text/table extraction, or creating a PDF deliverable.",
+            "For PDF forms, inspect whether fields are fillable before writing form-filling code; follow the staged `forms.md` and `scripts/` workflow.",
+            "Prefer the staged references for tool choice: pypdf for basic manipulation, pdfplumber for extraction, reportlab for creation, qpdf/poppler for command-line operations, and OCR only for scanned PDFs.",
+        ],
+    },
+    "mcp-builder": {
+        "role": "MCP server design, implementation, and evaluation",
+        "guidance": [
+            "Use this when the user asks to create, update, review, or evaluate a Model Context Protocol server, tool schema, resource, prompt, transport, or API connector.",
+            "Check the staged reference docs before implementation: best practices first, then the TypeScript or Python guide that matches the project.",
+            "Design tools around real user workflows, authentication, pagination, structured outputs, and actionable errors; include evaluation when the request asks for quality or correctness.",
+        ],
+    },
     "socraticode": {
         "role": "semantic codebase search",
         "guidance": [
@@ -1071,7 +1153,7 @@ def build_skill_context_prompt(workspace_dir, staged):
         f"- Skills root: `{WORKSPACE_SKILLS_ROOT}`",
         "- Use the staged skill instructions below when they match the project request.",
         "- Do not report `/Users/...` skill paths as inaccessible when a matching staged skill is listed here.",
-        "- Do not claim a script, API, or external model ran unless the harness actually runs it later; list needed commands instead.",
+        "- Do not claim a script, API, or external model ran unless the harness actually runs it later; use the COMMANDS section only for workspace-safe commands required by the contract.",
         "- When you generate deliverables from staged skill instructions, say you used the staged skill instructions. Do not describe that as simulated skill execution.",
         "",
         *build_skill_usage_plan(staged),
@@ -1099,7 +1181,7 @@ def read_skill_prompt_snippets(skill_dir, remaining):
     snippets = []
     used = 0
     candidate_paths = [os.path.join(skill_dir, "SKILL.md")]
-    for folder in ("references", "assets"):
+    for folder in ("references", "reference", "assets"):
         folder_path = os.path.join(skill_dir, folder)
         if not os.path.isdir(folder_path):
             continue
@@ -1252,7 +1334,7 @@ def selected_model_size_b(model):
                 return size
 
     if normalize_model_name(model) == DEFAULT_MODEL:
-        return 4.6
+        return 8.0
     return None
 
 
@@ -1265,7 +1347,7 @@ def small_model_review_required(model):
     size_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*b", selected)
     if size_match:
         return float(size_match.group(1)) <= SMALL_MODEL_REVIEW_MAX_B
-    return selected in {DEFAULT_MODEL, "gemma-4"}
+    return selected in {DEFAULT_MODEL, "gemma-4", "gemma4:e4b", "gemma-4-e4b-it"}
 
 
 def project_research_budget(session):
@@ -2462,8 +2544,8 @@ def plan():
 
 OLLAMA_REQUEST_TIMEOUT_SECONDS = 1200
 OLLAMA_KEEP_ALIVE = "30m"
-# Harness-wide temperature for card work in the flow. Modelfile defaults
-# (gemma-4 = 1.0) were too high for instruction-following — the model
+# Harness-wide temperature for card work in the flow. Some Modelfile defaults
+# are too high for instruction-following, and the model
 # drifted on structured outputs (e.g. small-model reviewer generating
 # the project's files in the review step). 0.6 keeps prose / code natural
 # enough without the drift.
@@ -3421,9 +3503,8 @@ JSON shape:
     }
     # Reviewer runs at low temperature (same as Context Writer) so the small
     # model doesn't drift off the JSON instruction and start generating the
-    # project's actual files in the reviewer step. Default temperature for
-    # gemma-4 is 1.0 per its Modelfile — too high for a structured-output
-    # task. 0.1 keeps it deterministic and JSON-focused.
+    # project's actual files in the reviewer step. 0.1 keeps it
+    # deterministic and JSON-focused.
     payload, raw, transport = call_ollama_json(
         model, prompt, fallback, options_override=CONTEXT_DELIBERATION_OPTIONS,
     )
@@ -3603,9 +3684,7 @@ _HARNESS_CAN_DO_BASE = [
 ]
 
 _HARNESS_CANNOT_DO_BASE = [
-    "git_clone",             # cannot clone arbitrary GitHub / GitLab / Bitbucket repos
-    "shell_exec",            # cannot run shell commands on the user's machine
-    "install_package",       # cannot npm/pip/brew/apt install
+    "system_package_install", # cannot brew/apt/sudo/global system install
     "external_api",          # cannot call OpenAI/Anthropic/Gemini/Midjourney/etc
     "send_message",          # cannot send email / sms / slack
     "deploy",                # cannot deploy / publish to a registry / push code
@@ -3635,6 +3714,20 @@ def harness_capabilities():
         can.append("screenshot_capture")
     else:
         cannot.append("screenshot_capture")
+    if tool_workspace.can_clone_repositories():
+        can.append("git_clone")
+        if tool_workspace.is_gh_authenticated():
+            can.append("github_auth")
+    else:
+        cannot.append("git_clone")
+    if tool_workspace.can_run_workspace_commands():
+        can.append("shell_exec")
+    else:
+        cannot.append("shell_exec")
+    if tool_workspace.can_install_packages():
+        can.append("install_package")
+    else:
+        cannot.append("install_package")
     return can, cannot
 
 
@@ -3647,6 +3740,10 @@ HARNESS_CAN_DO_DESCRIPTIONS = {
     "web_browse": "fetch / scrape web pages via scrapling (request, browser, or stealth modes)",
     "web_fetch": "GET arbitrary URLs into workspace/research/ files (alias of web_browse)",
     "screenshot_capture": "render a URL or local HTML file via headless Playwright and save a PNG to workspace/screenshots/",
+    "git_clone": "clone GitHub/GitLab/Bitbucket repositories into workspace/references/repos/ using git or authenticated gh when available",
+    "github_auth": "use the host GitHub CLI authentication for GitHub clone operations; never print tokens",
+    "shell_exec": "run bounded validation/build commands inside the workspace sandbox; no deploy, push, system install, or path escape",
+    "install_package": "install project dependencies inside the workspace sandbox with npm/pnpm/yarn or pip --target .gforge-installs/python",
 }
 
 
@@ -3682,13 +3779,23 @@ CAPABILITY_KEYWORDS = {
     ],
     "shell_exec": [
         r"\brun\s+(this\s+|that\s+)?(command|script|shell|terminal)\b",
+        r"\brun\s+(the\s+)?(script|tests?|test suite|build)\b",
+        r"\brun\s+[A-Za-z0-9_.-]+\.(py|js|sh|bash|zsh)\b",
         r"\bexecute\s+(this\s+|that\s+)?(command|script)\b",
-        r"\b(npm|pip|brew|apt|pnpm|yarn|cargo)\s+install\b",
+        r"\b(npm|pip|pip3|pnpm|yarn)\s+(install|add)\b",
+        r"\bpython3?\s+-m\s+pip\s+install\b",
         r"\bbash\s+-c\b",
     ],
     "install_package": [
         r"\b(install|add)\s+(the\s+)?(package|module|library|dependency)\b",
-        r"\b(npm|pip|brew|apt|pnpm|yarn|cargo)\s+(install|add)\b",
+        r"\binstall\s+[A-Za-z0-9_.@/-]{2,}\b",
+        r"\b(npm|pip|pip3|pnpm|yarn)\s+(install|add)\b",
+        r"\bpython3?\s+-m\s+pip\s+install\b",
+    ],
+    "system_package_install": [
+        r"\b(brew|apt|apt-get|sudo|yum|dnf|pacman)\s+(install|add)\b",
+        r"\bcargo\s+install\b",
+        r"\b(global|system(?:-wide)?)\s+(install|package|dependency)\b",
     ],
     "external_api": [
         r"\b(openai|anthropic|gemini|google\s+ai|midjourney|dall-?e|stable\s+diffusion|nano\s+banana)\s+(api|call)?\b",
@@ -3981,7 +4088,8 @@ ANTI_DEFLECTION_REGISTRY = {
     ),
     "shell": (
         "Shell scripts are plain text. Write the script inside GFORGE_FILE blocks. "
-        "Do NOT execute the script — the user runs it later."
+        "If the contract requires running it, list one simple workspace-safe command "
+        "in COMMANDS so the harness sandbox can attempt it after writing files."
     ),
     "sql": (
         "SQL is plain text. Write the full schema / queries inside GFORGE_FILE blocks. "
@@ -5907,14 +6015,16 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
     }
     skill_context = prepare_workspace_skill_context(workspace_dir, session)
     research = prepare_workspace_research(workspace_dir, session)
+    git_references = prepare_workspace_git_references(workspace_dir, session)
     payload, raw, transport = call_ollama_execution_payload(
         model,
-        build_model_execution_prompt(session, workspace_dir, review, skill_context, research),
+        build_model_execution_prompt(session, workspace_dir, review, skill_context, research, git_references),
         fallback,
     )
     if not isinstance(payload, dict):
         payload = fallback
 
+    commands = listify(payload.get("commands"))
     files, rejected = normalize_model_files(payload.get("files", []))
     written = []
     for item in files:
@@ -5925,6 +6035,15 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
             "bytes": os.path.getsize(path),
         })
 
+    command_runs = []
+    run_capabilities = set(session_capabilities_required(session))
+    if run_capabilities.intersection({"shell_exec", "install_package"}) and commands:
+        emit_event("tool", f"workspace exec requested: {len(commands)} command(s)")
+        command_runs = tool_workspace.run_workspace_commands(workspace_dir, commands)
+        for item in command_runs:
+            status = "ok" if item.get("ok") else ("skipped" if item.get("skipped") else "failed")
+            emit_event("tool", f"workspace exec {status}: {item.get('command')}")
+
     metadata = {
         "model": model,
         "modelAuthored": True,
@@ -5932,9 +6051,11 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
         "summary": payload.get("summary", ""),
         "files": written,
         "rejectedFiles": rejected,
-        "commands": listify(payload.get("commands")),
+        "commands": commands,
+        "commandRuns": command_runs,
         "notes": listify(payload.get("notes")),
         "verification": listify(payload.get("verification")),
+        "gitReferences": git_references,
         "skillContext": {
             "root": skill_context.get("root"),
             "staged": [
@@ -5968,10 +6089,12 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
         "files": written,
         "rejectedFiles": rejected,
         "commands": metadata["commands"],
+        "commandRuns": command_runs,
         "notes": metadata["notes"],
         "verification": metadata["verification"],
         "validation": validation,
         "screenshots": screenshots,
+        "gitReferences": git_references,
         "metadata": metadata,
     }
 
@@ -6000,6 +6123,13 @@ def capture_html_screenshots(workspace_dir, written_files):
         except Exception as error:
             log_error("tool-screenshot", f"auto-screenshot failed for {rel_path}", error)
     return shots
+
+
+def session_capabilities_required(session):
+    context = session.get("projectContext") if isinstance(session, dict) else None
+    if isinstance(context, dict) and isinstance(context.get("capabilities_required"), list):
+        return [str(item).strip() for item in context.get("capabilities_required") if str(item).strip()]
+    return []
 
 
 def build_research_context_block(research):
@@ -6036,6 +6166,58 @@ def build_research_context_block(research):
     return "\n".join(lines)
 
 
+def build_git_reference_context_block(git_references):
+    if not isinstance(git_references, dict):
+        return ""
+    cloned = git_references.get("cloned") or []
+    if not git_references.get("requested") and not cloned:
+        return ""
+    if not cloned:
+        reason = git_references.get("error") or "no repository URLs were cloned"
+        return f"\nGit reference step skipped: {reason}\n"
+    lines = [
+        "",
+        "Harness-cloned repository references (already on disk; cite by path, do NOT claim you cloned these yourself).",
+        f"- GitHub CLI authenticated: `{git_references.get('ghAuthenticated')}`",
+        f"- Manifest: `{git_references.get('artifact') or 'n/a'}`",
+        "",
+    ]
+    for item in cloned:
+        marker = "ok" if item.get("ok") else "FAIL"
+        path = item.get("path") or "(no path)"
+        url = item.get("url") or "(no url)"
+        auth = item.get("auth") or "git"
+        lines.append(f"- [{marker} via {auth}] {path} ({url})")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def build_workspace_exec_policy_block(session):
+    caps = set(session_capabilities_required(session))
+    wants_exec = "shell_exec" in caps
+    wants_install = "install_package" in caps
+    if not wants_exec and not wants_install:
+        return ""
+    can_exec = tool_workspace.can_run_workspace_commands()
+    if not can_exec:
+        return "\nWorkspace command execution was requested, but the sandbox runner is unavailable. List commands in NOTES instead of claiming they ran.\n"
+    install_lines = ""
+    if wants_install:
+        install_lines = """
+- Package installs are allowed only for project/workspace dependencies: `npm install`, `npm add`, `pnpm install`, `pnpm add`, `yarn install`, `yarn add`, `pip install`, `pip3 install`, or `python -m pip install`.
+- Pip installs are automatically targeted into `.gforge-installs/python` unless you provide a safe relative `--target`.
+- Do not request `brew`, `apt`, `sudo`, `cargo install`, global installs, deploy, publish, push, credentials, absolute paths, parent directory traversal, pipes, redirection, or multiline shell.
+"""
+    return """
+Workspace command execution is available for this run.
+- If the contract requires a local command, include a COMMANDS section after your file blocks.
+- Commands run after files are written, from the workspace root, through a sandbox that can write only inside the workspace.
+- Use simple validation/build commands such as `python -m unittest`, `python script.py`, `node script.js`, `npm test`, `npm run build`, `pytest`, `make test`, or `git status`.
+""" + install_lines + """
+- Do not claim a command ran unless the final execution report shows a completed command run.
+"""
+
+
 def prepare_workspace_research(workspace_dir, session):
     """
     If the user's project text contains URLs AND web_browse is part of the
@@ -6047,12 +6229,7 @@ def prepare_workspace_research(workspace_dir, session):
         return {"fetched": [], "skipped_reason": "scrapling not installed"}
 
     project_text = session.get("project", "") if isinstance(session, dict) else ""
-    context = session.get("projectContext") if isinstance(session, dict) else None
-    caps_required = (
-        context.get("capabilities_required")
-        if isinstance(context, dict) and isinstance(context.get("capabilities_required"), list)
-        else []
-    )
+    caps_required = session_capabilities_required(session)
     wants_browse = any(c in {"web_browse", "web_fetch"} for c in caps_required)
     urls = tool_browse.extract_urls(project_text or "", limit=8)
 
@@ -6075,6 +6252,43 @@ def prepare_workspace_research(workspace_dir, session):
             emit_event("error", f"browse failed: {url} — {error}")
             fetched.append({"url": url, "ok": False, "error": str(error)})
     return {"fetched": fetched, "skipped_reason": None}
+
+
+def prepare_workspace_git_references(workspace_dir, session):
+    """
+    If the contract needs git_clone or the request names repo URLs, clone
+    repositories into <workspace>/references/repos using host git/gh auth.
+    """
+    project_text = session.get("project", "") if isinstance(session, dict) else ""
+    caps_required = session_capabilities_required(session)
+    wants_git = "git_clone" in caps_required
+    repos = tool_workspace.extract_repo_urls(project_text or "", limit=4)
+    if not wants_git and not repos:
+        return {"requested": False, "available": tool_workspace.can_clone_repositories(), "cloned": []}
+    if not repos:
+        return {
+            "requested": True,
+            "available": tool_workspace.can_clone_repositories(),
+            "cloned": [],
+            "error": "git_clone required but no repository URL was found in the request",
+        }
+
+    emit_event("tool", "git clone references: " + ", ".join(item["display_url"] for item in repos))
+    try:
+        result = tool_workspace.clone_repositories_into_workspace(workspace_dir, project_text, limit=4)
+        for item in result.get("cloned", []):
+            status = "ok" if item.get("ok") else "failed"
+            emit_event("tool", f"git clone {status}: {item.get('url')} -> {item.get('path')}")
+        return result
+    except Exception as error:
+        log_error("tool-git", "workspace git clone failed", error)
+        emit_event("error", f"git clone failed: {error}")
+        return {
+            "requested": True,
+            "available": tool_workspace.can_clone_repositories(),
+            "cloned": [],
+            "error": str(error),
+        }
 
 
 def build_execution_context_block(session):
@@ -6332,12 +6546,14 @@ Reviewer findings (structured):
 """
 
 
-def build_model_execution_prompt(session, workspace_dir, review=None, skill_context=None, research=None):
+def build_model_execution_prompt(session, workspace_dir, review=None, skill_context=None, research=None, git_references=None):
     review_block = build_repair_continuation_block(session, workspace_dir, review)
     skill_block = (skill_context or {}).get("prompt", "No Gemma Forge skills are staged for this workspace.")
 
     context_block = build_execution_context_block(session)
     research_block = build_research_context_block(research)
+    git_reference_block = build_git_reference_context_block(git_references)
+    workspace_exec_block = build_workspace_exec_policy_block(session)
 
     return f"""You are Gemma Forge Project Execution.
 
@@ -6354,10 +6570,15 @@ Workspace root:
 Gemma Forge skill context:
 {skill_block}
 {research_block}
+{git_reference_block}
+{workspace_exec_block}
 After your file blocks you may optionally add these sections (each prefix in ALL CAPS at the start of a line):
 
 SUMMARY:
 one or two sentences about what you produced.
+
+COMMANDS:
+- optional simple workspace command(s) only when the contract requires shell_exec.
 
 NOTES:
 - short implementation notes (optional)
@@ -6527,9 +6748,10 @@ def validate_claims_against_disk(claim_text, capabilities_required, workspace_di
         return failures
     can_now, _ = harness_capabilities()
     can_now_set = set(can_now)
+    evidence_required_even_when_available = {"git_clone", "shell_exec", "install_package", "web_browse", "skill_author"}
     for capability, pattern, evidence_kind in CLAIM_PATTERNS:
         for match in pattern.finditer(claim_text):
-            if capability in can_now_set:
+            if capability in can_now_set and capability not in evidence_required_even_when_available:
                 continue
             # Honest disclaimers like "was not performed", "lacks the capability"
             # should never be flagged as fabrications.
@@ -6541,7 +6763,7 @@ def validate_claims_against_disk(claim_text, capabilities_required, workspace_di
             m_url = re.search(r"https?://[^\s,)>'\"]+", quote)
             if m_url and workspace_dir and url_already_fetched(workspace_dir, m_url.group(0).rstrip(".,;:)>]'\"")):
                 continue
-            evidence_ok, detail = check_claim_evidence(evidence_kind, match, claim_text)
+            evidence_ok, detail = check_claim_evidence(evidence_kind, match, claim_text, workspace_dir=workspace_dir)
             if evidence_ok:
                 continue
             # Dedupe identical fabrication quotes — the same URL is often repeated
@@ -6550,10 +6772,13 @@ def validate_claims_against_disk(claim_text, capabilities_required, workspace_di
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
+            if capability in can_now_set:
+                reason = f"requires on-disk evidence for `{capability}` and none was found ({detail})"
+            else:
+                reason = f"cannot `{capability}` and there is no on-disk evidence ({detail})"
             failures.append(
                 f"Fabricated-claim guard: model said \"{quote[:160]}\" but the harness "
-                f"cannot `{capability}` and there is no on-disk evidence ({detail}). "
-                "Remove the claim or shrink scope honestly."
+                f"{reason}. Remove the claim or shrink scope honestly."
             )
     return failures
 
@@ -6605,7 +6830,7 @@ def url_already_fetched(workspace_dir, url):
     return os.path.isfile(research_path)
 
 
-def check_claim_evidence(kind, match, claim_text):
+def check_claim_evidence(kind, match, claim_text, workspace_dir=None):
     """
     Best-effort filesystem check that a load-bearing claim has evidence.
     Returns (ok, detail). Errs on the side of returning False (fabrication
@@ -6629,6 +6854,16 @@ def check_claim_evidence(kind, match, claim_text):
             token = (hyphenated[-1] if hyphenated else (concrete[-1] if concrete else None))
         if not token:
             return False, "claim names no concrete tool/repo identifier; only generic words like 'tool' or 'library'"
+        if workspace_dir:
+            repo_root = os.path.join(workspace_dir, "references", "repos")
+            if os.path.isdir(repo_root):
+                try:
+                    for entry in os.listdir(repo_root):
+                        full = os.path.join(repo_root, entry)
+                        if os.path.isdir(full) and os.path.isdir(os.path.join(full, ".git")) and token.lower() in entry.lower():
+                            return True, f"workspace repo checkout at {full}"
+                except OSError:
+                    pass
         for root in (
             os.path.expanduser("~/Projects"),
             os.path.expanduser("~/.gforge"),
@@ -6685,12 +6920,60 @@ def check_claim_evidence(kind, match, claim_text):
             n = int(match.group(2))
         except (ValueError, IndexError, TypeError):
             n = 1
-        # We don't know which workspace dir to look in here without
-        # threading it through; settle for the cheap "no research file exists
-        # anywhere named research/sources/citations" check via the claim text itself.
-        return False, f"harness has no web-fetch tool; claim of researching {n} sources cannot be substantiated"
+        if workspace_dir:
+            research_dir = os.path.join(workspace_dir, "research")
+            try:
+                artifacts = [
+                    name for name in os.listdir(research_dir)
+                    if name.lower().endswith(".md") and os.path.isfile(os.path.join(research_dir, name))
+                ]
+            except OSError:
+                artifacts = []
+            if len(artifacts) >= n:
+                return True, f"{len(artifacts)} research artifact(s) exist in {research_dir}"
+            if artifacts:
+                return False, f"only {len(artifacts)} research artifact(s) exist; claim needs {n}"
+        return False, f"no research artifacts found for claim of researching {n} source(s)"
 
-    if kind in ("command_log", "package_evidence", "external_call_evidence", "message_evidence", "deploy_evidence"):
+    if kind == "command_log":
+        if workspace_dir:
+            metadata_path = os.path.join(workspace_dir, "artifacts", "model-execution.json")
+            try:
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                metadata = {}
+            command_runs = metadata.get("commandRuns") if isinstance(metadata, dict) else None
+            if isinstance(command_runs, list):
+                ran = [item for item in command_runs if isinstance(item, dict) and not item.get("skipped")]
+                ok = [item for item in ran if item.get("ok")]
+                if ok:
+                    return True, f"{len(ok)} workspace command(s) completed successfully"
+                if ran:
+                    return False, f"{len(ran)} workspace command(s) ran but none completed successfully"
+        return False, "no completed workspace command run was recorded"
+
+    if kind == "package_evidence":
+        if workspace_dir:
+            metadata_path = os.path.join(workspace_dir, "artifacts", "model-execution.json")
+            try:
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                metadata = {}
+            command_runs = metadata.get("commandRuns") if isinstance(metadata, dict) else None
+            if isinstance(command_runs, list):
+                install_runs = [
+                    item for item in command_runs
+                    if isinstance(item, dict)
+                    and item.get("ok")
+                    and re.search(r"\b(npm|pnpm|yarn|pip|pip3|python3?)\b.*\b(install|add)\b", str(item.get("command", "")), re.IGNORECASE)
+                ]
+                if install_runs:
+                    return True, f"{len(install_runs)} package install command(s) completed successfully"
+        return False, "no completed workspace package install run was recorded"
+
+    if kind in ("external_call_evidence", "message_evidence", "deploy_evidence"):
         return False, f"harness cannot {kind.replace('_', ' ')}; no tool runtime is present"
 
     return False, f"unhandled claim evidence kind: {kind}"
@@ -7144,6 +7427,38 @@ def build_model_execution_report(workspace_dir, execution):
             ms = shot.get("elapsed_ms") or 0
             screenshot_lines.append(f"- [{ok}] of `{of}` → `{path}` ({size} bytes, {ms} ms)")
 
+    git_references = execution.get("gitReferences") or metadata.get("gitReferences") or {}
+    git_lines = []
+    if isinstance(git_references, dict) and (git_references.get("requested") or git_references.get("cloned")):
+        git_lines = ["", "## Git Repository References", ""]
+        artifact = git_references.get("artifact") or "n/a"
+        git_lines.append(f"- Manifest: `{artifact}`")
+        git_lines.append(f"- GitHub CLI authenticated: `{git_references.get('ghAuthenticated')}`")
+        for item in git_references.get("cloned", []):
+            if not isinstance(item, dict):
+                continue
+            marker = "ok" if item.get("ok") else "FAIL"
+            git_lines.append(f"- [{marker}] `{item.get('path')}` from {item.get('url')} via {item.get('auth')}")
+
+    command_runs = execution.get("commandRuns") or metadata.get("commandRuns") or []
+    command_lines = []
+    if command_runs:
+        command_lines = ["", "## Workspace Command Runs", ""]
+        for item in command_runs:
+            if not isinstance(item, dict):
+                continue
+            marker = "ok" if item.get("ok") else ("skipped" if item.get("skipped") else "FAIL")
+            command = item.get("command") or "(no command)"
+            rc = item.get("returncode", "n/a")
+            ms = item.get("elapsedMs", 0)
+            command_lines.append(f"- [{marker}] `{command}` rc=`{rc}` ({ms} ms)")
+            if item.get("reason"):
+                command_lines.append(f"  Reason: {item.get('reason')}")
+            if item.get("stdout"):
+                command_lines.append(f"  stdout: `{truncate_text(item.get('stdout'), 240)}`")
+            if item.get("stderr"):
+                command_lines.append(f"  stderr: `{truncate_text(item.get('stderr'), 240)}`")
+
     content_requirement_lines = []
     for item in validation.get("contentRequirements", []) if isinstance(validation, dict) else []:
         if not isinstance(item, dict):
@@ -7176,6 +7491,8 @@ def build_model_execution_report(workspace_dir, execution):
         "",
         "\n".join([f"- `{item.get('path')}`: {item.get('reason')}" for item in execution.get("rejectedFiles", [])]) or "- None.",
         *screenshot_lines,
+        *git_lines,
+        *command_lines,
         "",
         "## Content Quantity Checks",
         "",

@@ -61,7 +61,7 @@ http://127.0.0.1:5005/
 
 Gemma 4 is the planning and orchestration brain inside Gemma Forge.
 
-The default model lane is `gemma-4`, the smallest practical Gemma 4 model available in the harness. That choice is intentional: the project is not trying to prove that only high-end hardware can use local AI. It is trying to make local AI available to people who may not have a workstation, a cloud budget, or confidence with developer tooling.
+The default model lane is `gemma-4-e4b-it`, the practical edge Gemma 4 model available in the harness. That choice is intentional: the project is not trying to prove that only high-end hardware can use local AI. It is trying to make local AI available to people who may not have a workstation, a cloud budget, or confidence with developer tooling, while giving the harness more reasoning headroom than the E2B lane.
 
 Gemma 4 is used to:
 

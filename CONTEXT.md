@@ -28,7 +28,7 @@ Support tools such as Axon and SocratiCode help inspect or map a project, but th
 - Gemma Forge uses its own framework home: `~/.gforge`.
 - Harness project data lives under `~/.gforge/harness`.
 - Hidden Forge context lives at `~/.gforge/harness/forge.md`.
-- The initial recommended Forge Brain is `gemma-4`, but users can switch to another available supported local model.
+- The initial recommended Forge Brain is `gemma-4-e4b-it`, but users can switch to another available supported local model.
 
 ## Capability Scope
 

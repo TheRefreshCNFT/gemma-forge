@@ -7,7 +7,7 @@ Record the real product flow, not a static screenshot reel:
 1. Install or launch Gemma Forge.
 2. Show `Setting up workspace`.
 3. Show Forge Engine readiness.
-4. Show Forge Brain defaulting to `gemma-4`.
+4. Show Forge Brain defaulting to `gemma-4-e4b-it`.
 5. Start a no-directory project.
 6. Ask for a Hello World webpage with rainbow or different-colored text.
 7. Turn Human verify off for the active cards.

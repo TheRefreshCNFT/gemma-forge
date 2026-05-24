@@ -19,7 +19,7 @@ The app opens with a workspace scan, recommends a compatible Gemma 4 model, and 
 
 ## Why Gemma 4
 
-Gemma Forge uses Gemma 4 as the local planning and orchestration brain. It recommends `gemma-4` on first run because the product goal is accessibility, then lets the user switch to another available supported local model from the Forge Brain dropdown.
+Gemma Forge uses Gemma 4 as the local planning and orchestration brain. It recommends `gemma-4-e4b-it` on first run because the product goal is accessibility with enough reasoning headroom for the harness, then lets the user switch to another available supported local model from the Forge Brain dropdown.
 
 Gemma 4 helps:
 

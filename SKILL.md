@@ -10,7 +10,7 @@ The harness operating protocol lives in hidden always-on `forge.md` context. It 
 
 ## Default Model Rule
 
-The initial recommended Forge Brain is `gemma-4`, the small Gemma 4 lane in Ollama. Use the selected model from the harness state; users can switch to another installed and supported local model.
+The initial recommended Forge Brain is `gemma-4-e4b-it`, the edge Gemma 4 E4B lane in Ollama. Use the selected model from the harness state; users can switch to another installed and supported local model.
 
 If the user asks which model is being used, answer from the harness state and model route, not from assumption.
 

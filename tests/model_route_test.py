@@ -94,15 +94,15 @@ class ModelRouteTest(unittest.TestCase):
             reply = server.call_ollama(server.DEFAULT_MODEL, "Say ok.")
 
         self.assertEqual(reply, "ok")
-        self.assertEqual(server.DEFAULT_MODEL, "gemma-4")
+        self.assertEqual(server.DEFAULT_MODEL, "gemma-4-e4b-it")
         self.assertEqual(captured["url"], "http://localhost:11434/api/chat")
-        self.assertEqual(captured["json"]["model"], "gemma-4")
+        self.assertEqual(captured["json"]["model"], "gemma-4-e4b-it")
 
         with open(server.MODEL_ROUTE_FILE, "r") as f:
             route = json.load(f)
 
-        self.assertEqual(route["model"], "gemma-4")
-        self.assertEqual(route["defaultModel"], "gemma-4")
+        self.assertEqual(route["model"], "gemma-4-e4b-it")
+        self.assertEqual(route["defaultModel"], "gemma-4-e4b-it")
 
     def test_forge_context_is_created_outside_project_records(self):
         context = server.read_forge_context()
@@ -117,16 +117,16 @@ class ModelRouteTest(unittest.TestCase):
             "ollama": {
                 "models": [
                     {
-                        "name": "gemma-4:latest",
-                        "model": "gemma-4:latest",
-                        "details": {"parameter_size": "4.6B"},
+                        "name": "gemma-4-e4b-it:latest",
+                        "model": "gemma-4-e4b-it:latest",
+                        "details": {"parameter_size": "8B"},
                     }
                 ]
             }
         }
 
         with patch.object(server, "scan_workspace", return_value=workspace):
-            self.assertTrue(server.small_model_review_required("gemma-4"))
+            self.assertTrue(server.small_model_review_required("gemma-4-e4b-it"))
 
     def test_large_model_policy_skips_extra_review(self):
         workspace = {
@@ -1206,6 +1206,40 @@ acceptance:
 
         self.assertEqual(server.resolve_skill_selection(session, skills), ["scrapling-official"])
 
+    def test_skill_alias_resolves_pdf_request(self):
+        skills = {
+            "pdf": {
+                "name": "pdf",
+                "key": "pdf",
+                "description": "Use this skill whenever the user wants to do anything with PDF files.",
+                "keywords": ["extract pdf text", "fillable pdf", "ocr pdf"],
+                "skillFile": "/tmp/SKILL.md",
+            }
+        }
+        session = {
+            "project": "Extract tables from this PDF and make the scanned PDF searchable.",
+            "projectContext": {"skill": {"use": "none"}},
+        }
+
+        self.assertEqual(server.resolve_skill_selection(session, skills), ["pdf"])
+
+    def test_skill_alias_resolves_mcp_builder_request(self):
+        skills = {
+            "mcp-builder": {
+                "name": "mcp-builder",
+                "key": "mcp-builder",
+                "description": "Guide for creating high-quality MCP servers.",
+                "keywords": ["model context protocol", "mcp tools", "fastmcp"],
+                "skillFile": "/tmp/SKILL.md",
+            }
+        }
+        session = {
+            "project": "Build a TypeScript MCP server with tool schemas and pagination.",
+            "projectContext": {"skill": {"use": "none"}},
+        }
+
+        self.assertEqual(server.resolve_skill_selection(session, skills), ["mcp-builder"])
+
     def test_skill_selection_ignores_prior_agent_skill_manifests(self):
         skills = {
             "scrapling-official": {
@@ -1259,6 +1293,180 @@ acceptance:
         self.assertIn("scrapling-official` → web scraping and extraction", prompt)
         self.assertIn("ui-ux-pro-max` → webpage and interface design", prompt)
         self.assertLess(prompt.index("Skill Usage Plan"), prompt.index("Staged skills:"))
+
+    def test_harness_capabilities_include_workspace_git_and_exec_when_available(self):
+        with patch.object(server.tool_workspace, "can_clone_repositories", return_value=True), \
+                patch.object(server.tool_workspace, "is_gh_authenticated", return_value=True), \
+                patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True), \
+                patch.object(server.tool_workspace, "can_install_packages", return_value=True):
+            can, cannot = server.harness_capabilities()
+
+        self.assertIn("git_clone", can)
+        self.assertIn("github_auth", can)
+        self.assertIn("shell_exec", can)
+        self.assertIn("install_package", can)
+        self.assertNotIn("git_clone", cannot)
+        self.assertNotIn("shell_exec", cannot)
+        self.assertNotIn("install_package", cannot)
+
+    def test_project_context_keeps_github_and_exec_full_scope_when_available(self):
+        raw = """Rationale.
+<<<CONTEXT_BEGIN>>>
+---
+project:
+  name: repo check
+  type: code
+  domain: MCP
+intent:
+  surface_ask: "Clone https://github.com/anthropics/skills and run tests."
+  underlying_need: Inspect a repository and validate generated code.
+  success_means: Repository context and command results are available in the workspace.
+deliverable:
+  format: markdown
+  count: 1
+  path_pattern: report.md
+  encoding: gforge_file_block
+  partial: false
+  scope: A validation report.
+  anti_deflection: stub
+capabilities_required:
+  - emit_files
+constraints:
+  hard_requirements:
+    - Clone the referenced GitHub repo into the workspace references area.
+    - Run a workspace-safe validation command.
+  tone:
+    - concise
+skill:
+  use: mcp-builder
+  staged_path: .gforge/skills/mcp-builder
+acceptance:
+  - report.md exists.
+  - report.md includes command results.
+open_questions: []
+---
+<<<CONTEXT_END>>>
+"""
+        with patch.object(server.tool_workspace, "can_clone_repositories", return_value=True), \
+                patch.object(server.tool_workspace, "is_gh_authenticated", return_value=True), \
+                patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True):
+            parsed, _yaml_text, errors = server.parse_project_context(
+                raw,
+                project_text="Clone https://github.com/anthropics/skills and run this command.",
+            )
+
+        self.assertEqual(errors, [])
+        self.assertIn("git_clone", parsed["capabilities_required"])
+        self.assertIn("shell_exec", parsed["capabilities_required"])
+        self.assertFalse(parsed["deliverable"]["partial"])
+        self.assertEqual(parsed["open_questions"], [])
+
+    def test_project_context_keeps_package_install_full_scope_when_available(self):
+        raw = """Rationale.
+<<<CONTEXT_BEGIN>>>
+---
+project:
+  name: dependency check
+  type: code
+  domain: python
+intent:
+  surface_ask: "Install requests and run the script."
+  underlying_need: Use a local package dependency while building the project.
+  success_means: The dependency is installed in the workspace and the script result is recorded.
+deliverable:
+  format: python
+  count: 1
+  path_pattern: app.py
+  encoding: gforge_file_block
+  partial: false
+  scope: A Python script with installed dependency verification.
+  anti_deflection: stub
+capabilities_required:
+  - emit_files
+constraints:
+  hard_requirements:
+    - Install the requests dependency.
+    - Run the script.
+  tone:
+    - direct
+skill:
+  use: none
+  staged_path: n/a
+acceptance:
+  - app.py exists.
+  - Command output is recorded.
+open_questions: []
+---
+<<<CONTEXT_END>>>
+"""
+        with patch.object(server.tool_workspace, "can_install_packages", return_value=True), \
+                patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True):
+            parsed, _yaml_text, errors = server.parse_project_context(
+                raw,
+                project_text="Install requests and run the script.",
+            )
+
+        self.assertEqual(errors, [])
+        self.assertIn("install_package", parsed["capabilities_required"])
+        self.assertIn("shell_exec", parsed["capabilities_required"])
+        self.assertFalse(parsed["deliverable"]["partial"])
+
+    def test_workspace_pip_install_is_targeted_to_workspace(self):
+        args, reason = server.tool_workspace.normalize_workspace_command("pip install requests")
+
+        self.assertEqual(reason, "")
+        self.assertIn(args[0], {"pip", "pip3"})
+        self.assertEqual(args[1:4], ["install", "--target", ".gforge-installs/python"])
+        self.assertIn("requests", args)
+
+    def test_system_package_install_remains_missing_capability(self):
+        with patch.object(server.tool_workspace, "can_install_packages", return_value=True):
+            missing = server.missing_capabilities(server.detect_required_capabilities("brew install ffmpeg"))
+
+        self.assertIn("system_package_install", missing)
+
+    def test_claim_validator_accepts_recorded_workspace_command_run(self):
+        workspace_dir = os.path.join(self.tmp.name, "command-run")
+        os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "artifacts", "model-execution.json"), "w") as f:
+            json.dump({"commandRuns": [{"ok": True, "command": "python -m unittest", "skipped": False}]}, f)
+
+        with patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True):
+            failures = server.validate_claims_against_disk(
+                "I ran the command and used the output.",
+                ["shell_exec"],
+                workspace_dir=workspace_dir,
+            )
+
+        self.assertEqual(failures, [])
+
+    def test_claim_validator_flags_shell_claim_without_recorded_run(self):
+        workspace_dir = os.path.join(self.tmp.name, "missing-command-run")
+        os.makedirs(workspace_dir, exist_ok=True)
+
+        with patch.object(server.tool_workspace, "can_run_workspace_commands", return_value=True):
+            failures = server.validate_claims_against_disk(
+                "I ran the command and used the output.",
+                ["shell_exec"],
+                workspace_dir=workspace_dir,
+            )
+
+        self.assertTrue(any("shell_exec" in item for item in failures))
+
+    def test_claim_validator_accepts_recorded_package_install_run(self):
+        workspace_dir = os.path.join(self.tmp.name, "package-install-run")
+        os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "artifacts", "model-execution.json"), "w") as f:
+            json.dump({"commandRuns": [{"ok": True, "command": "pip install --target .gforge-installs/python requests", "skipped": False}]}, f)
+
+        with patch.object(server.tool_workspace, "can_install_packages", return_value=True):
+            failures = server.validate_claims_against_disk(
+                "I installed the dependency requests.",
+                ["install_package"],
+                workspace_dir=workspace_dir,
+            )
+
+        self.assertEqual(failures, [])
 
     def test_detects_content_quantity_requirement_from_news_prompt(self):
         requirements = server.detect_content_quantity_requirements(

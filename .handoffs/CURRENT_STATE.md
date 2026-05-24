@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-24 (UTC) — terminal UI fixes and SSD/GitHub alignment pass.
+Last updated: 2026-05-24 (UTC) — SSD backup and GitHub alignment.
 
 ## Verified ground truth
 
@@ -8,7 +8,7 @@ Last updated: 2026-05-24 (UTC) — terminal UI fixes and SSD/GitHub alignment pa
 - Branch: `main` tracking `origin/main`; current branch head is the
   installable repo state for this backup pass once pushed to GitHub.
   Runtime/generated/private harness state remains local/SSD-only.
-- Harness Flask server source: `chat/server.py` (7,333 lines).
+- Harness Flask server source: `chat/server.py` (8,120 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, and SSD/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, and SSD/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -148,7 +148,7 @@ the contest demo path works end-to-end.** Driving doc:
     underneath.
   - Settings now includes a Hugging Face model search picker. Users can
     type a provider/keyword/repo such as `google`, `qwen`, or
-    `google/gemma-4-E2B-it`, click Search, see five selectable pill
+    `google/gemma-4-E4B-it`, click Search, see five selectable pill
     choices, page through Next 5 / Previous 5, select a result to fill
     the Hugging Face repo and suggested Ollama model name, then click
     Provision model.
@@ -188,16 +188,54 @@ the contest demo path works end-to-end.** Driving doc:
     Current live probes before this final backup pass: harness `200` at
     `http://127.0.0.1:5005/`, Ollama `0.20.5`, harness PID `87360`,
     `~/.gforge/harness` about 37 MB, and `~/.gforge/models` about 4.6 GB.
+  - Default first-run Forge Brain is now `gemma-4-e4b-it`, sourced from
+    Gemma 4 E4B (`google/gemma-4-E4B-it`). Live read-back after restart:
+    `/api/model/route` reports `defaultModel` and `recommendedModel` as
+    `gemma-4-e4b-it`; `/api/workspace/status` reports the Gemma 4 E4B
+    model option selected, recommended, supported, and installed.
+  - Anthropic `pdf` and `mcp-builder` skills are bundled under `skills/`
+    with expanded frontmatter keywords and role guidance so Project
+    Context can assign them from PDF/form/OCR and MCP/server/tool-schema
+    language. The upstream `mcp-builder` `reference/` folder is scanned
+    during staged skill snippet assembly.
+  - Harness capabilities now surface real `git_clone`, `github_auth`,
+    and `shell_exec` when host tools are available. Git/GitHub repo URLs
+    are cloned into workspace `references/repos/` using host `git`/`gh`;
+    shell commands run only when the Project Context contract requires
+    `shell_exec`, and only through the workspace sandbox. Clone/research/
+    command claims still require on-disk evidence.
+  - Workspace package installs are now allowed as a separate
+    `install_package` capability when local package managers are
+    available. The model can request project dependency installs through
+    `npm`/`pnpm`/`yarn` or `pip`; `pip` installs are automatically
+    targeted under workspace `.gforge-installs/python` unless a safe
+    relative target was supplied. Deploy, publish, push, system/global
+    installs, path escapes, shell metacharacters, and reserved `.gforge/`
+    writes remain blocked. Install claims require recorded command-run
+    evidence.
+  - Live harness restart after the install-capability change is clean:
+    launchd reports PID `60777`, harness root returns `200`, and
+    `/api/workspace/status` returns `200`.
 - Latest files touched for this accepted state:
-  `chat/server.py`, `chat/static/js/chat.js`,
-  `chat/static/css/style.css`, `chat/templates/index.html`,
-  `tests/model_route_test.py`, `.handoffs/CURRENT_STATE.md`,
-  `project-map.md`, `PROJECT_PLAN.md`.
+  `chat/server.py`, `chat/tool_workspace.py`, `chat/workspace_scan.py`,
+  `chat/templates/index.html`, `tests/model_route_test.py`,
+  `tests/integration_test.py`, `README.md`, `SKILL.md`, `CONTEXT.md`,
+  `PROJECT_PLAN.md`, `SUBMISSION_DRAFT.md`, `forge.md`,
+  `docs/model-routing-proof.md`, `docs/harness-agent-operating-guide.md`,
+  `docs/submission-media/demo-recording-guide.md`, `launch_forge.command`,
+  `.handoffs/CURRENT_STATE.md`, `project-map.md`, `skills/pdf/`,
+  `skills/mcp-builder/`.
 - GitHub alignment note: the latest installable repo state on `main`
   contains the chat worker-action, per-session runner isolation,
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T024959Z-full-live-local-working-state/` (verified full live local working state with restore archive; checksum passed; includes repo, harness runtime, and model cache)
+  - `/Users/webot/Backups/gemma-forge/20260524T023601Z-pre-workspace-installs/`
+  - `/Users/webot/Backups/gemma-forge/20260524T021610Z-pre-anthropic-skills/`
+  - `/Users/webot/Backups/gemma-forge/20260524T013408Z-pre-default-e4b-handoff/`
+  - `/Users/webot/Backups/gemma-forge/20260524T013004Z-pre-default-e4b-ui-docs/`
+  - `/Users/webot/Backups/gemma-forge/20260524T012836Z-pre-default-e4b/`
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T011953Z-full-live-local-working-state/` (verified live repo + harness runtime backup with restore archive; checksum passed; model cache intentionally excluded per user instruction)
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T004319Z-full-live-local-working-state/` (this final verified full live local working state backup with restore archive; checksum passed)
   - `/Users/webot/Backups/gemma-forge/20260524T003119Z-pre-kill-zaya/`
@@ -234,9 +272,73 @@ the contest demo path works end-to-end.** Driving doc:
   and (2) GitHub is aligned to the installable repo state unless a
   blocker is explicitly reported. Keep runtime/generated/private data
   out of GitHub.
-- Demo model decision: `gemma-4` (E2B, ~3.4 GB).
+- Demo model decision: `gemma-4-e4b-it` (E4B, installed local alias; official Ollama tag is `gemma4:e4b`).
 
 ## Shipped this session
+
+- **2026-05-24 — SSD backup and GitHub alignment.**
+  Full live local working state was backed up to external SSD at
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260524T024959Z-full-live-local-working-state/`.
+  The backup includes the repo snapshot, ignored repo/runtime files,
+  `~/.gforge/harness`, `~/.gforge/models`, metadata snapshots, and a
+  `restore-archive.tar.gz`; checksum verification passed. GitHub
+  alignment for the installable repo state was requested in the same
+  pass; runtime/private data remains excluded from the repo.
+
+- **2026-05-24 — Workspace package installs enabled.**
+  Allowed bounded project dependency installs as a real
+  `install_package` capability while keeping deploy/publish/push and
+  system/global package installs forbidden. `chat/tool_workspace.py`
+  now recognizes `npm`/`pnpm`/`yarn` project installs and `pip`/`python
+  -m pip install`; pip installs default to
+  `.gforge-installs/python`, with package caches and temp files kept
+  under the workspace. Sandbox execution now grants outbound network only
+  for recognized package install commands and still blocks absolute
+  paths, parent traversal, shell metacharacters, multiline shell, writes
+  to reserved `.gforge/`, and credential/deploy operations.
+  `chat/server.py` exposes the capability to Project Context, adds broad
+  install keywords for deterministic assignment, keeps
+  `system_package_install` in CANNOT, and requires recorded command-run
+  evidence before accepting install claims. Verification:
+  py_compile for `chat/server.py` and `chat/tool_workspace.py`;
+  `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (60 tests); `npm run check`; `git diff --check`; sandbox smoke for
+  `python3 check.py`; local package install smoke via `pip install
+  ./localpkg` into `.gforge-installs/python`; live launchd restart to
+  PID `60777`; live harness root and `/api/workspace/status` probes
+  returned `200`.
+
+- **2026-05-24 — Anthropic PDF/MCP skills and workspace GitHub/exec.**
+  Added Anthropic's `pdf` and `mcp-builder` skill bundles under repo
+  `skills/`, preserving licenses, scripts, and references, then staged
+  both into `~/.gforge/harness/skills/` without overwriting existing
+  skills. Expanded skill keywords/aliases and role guidance so Project
+  Context can select PDF/form/OCR tasks and MCP/server/tool-schema tasks.
+  Added `chat/tool_workspace.py` plus server integration so `git_clone`
+  and `github_auth` are real when host `git`/`gh` are available, cloning
+  repo references into workspace `references/repos/`; `shell_exec` is
+  real only through a workspace sandbox and only when the contract
+  requires it. Claim validation now still requires evidence for clone,
+  research, skill-author, and command claims even when the capability is
+  available. Verification: `npm run check`; py_compile for
+  `chat/server.py` and `chat/tool_workspace.py`;
+  `unittest tests.model_route_test` (56 tests); `git diff --check`; live harness
+  restart through launchd to PID `46878`; live harness probe `200`;
+  skill discovery reports `pdf` and `mcp-builder` from
+  `~/.gforge/harness/skills/`.
+
+- **2026-05-24 — Default Forge Brain switched to Gemma 4 E4B.**
+  Changed the first-run/default model route from the E2B alias
+  `gemma-4` to the installed E4B alias `gemma-4-e4b-it`, updated the
+  workspace scan recommended model option to `google/gemma-4-E4B-it`,
+  updated Settings placeholders and model-route docs, and kept legacy
+  `gemma-4` tests/paths where they intentionally cover existing-session
+  behavior. Verification: `npm run check`;
+  `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (50 tests); `git diff --check`; live harness restart through launchd
+  to PID `3991`; live harness probe `200`; `/api/model/route` reports
+  `defaultModel=gemma-4-e4b-it`; `/api/workspace/status` reports Gemma
+  4 E4B selected/recommended/supported/installed.
 
 - **2026-05-24 — Forge Station terminal visual/session fix and alignment.**
   Removed the stream height cap so Forge Station terminal text and scroll

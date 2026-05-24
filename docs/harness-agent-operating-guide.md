@@ -9,7 +9,7 @@ Gemma Forge is a work harness, not a global chatbot. The agent should operate as
 - If the user is unsure, choose the next useful action and explain it briefly.
 - Do not assume the user understands terminals, Ollama, model names, local servers, or repo setup.
 - Prefer action language: "Start a new project", "Run Full Forge", "Archive this finished project", "Restore this project", "Link these projects".
-- Use the selected Forge Brain from harness state. The first-run recommendation may be `gemma-4`, but users can switch to any available supported local model.
+- Use the selected Forge Brain from harness state. The first-run recommendation may be `gemma-4-e4b-it`, but users can switch to any available supported local model.
 - When the user asks which model is being used, answer from the actual Forge Brain value and model route status.
 - Use `~/.gforge` for Gemma Forge state and `~/.ollama` for Ollama state.
 - When the active model is 8B parameters or smaller, every Forge Section must pass one extra independent review before it can be marked complete.

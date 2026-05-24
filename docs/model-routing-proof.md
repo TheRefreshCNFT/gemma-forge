@@ -1,6 +1,6 @@
 # Gemma 4 Model Routing Proof
 
-Gemma Forge starts by recommending `gemma-4`, then routes the selected Forge Brain through every model-backed harness call.
+Gemma Forge starts by recommending `gemma-4-e4b-it`, then routes the selected Forge Brain through every model-backed harness call.
 
 ## Route
 
@@ -24,6 +24,6 @@ Expected recommended model field:
 
 ```json
 {
-  "defaultModel": "gemma-4"
+  "defaultModel": "gemma-4-e4b-it"
 }
 ```

@@ -22,7 +22,7 @@ def test_full_pipeline():
     hf_engine = HuggingFaceEngine()
     
     # 1. Use the default small Gemma 4 lane unless a test override is provided.
-    model_id = os.environ.get("GFORGE_INTEGRATION_MODEL", "google/gemma-4-E2B-it")
+    model_id = os.environ.get("GFORGE_INTEGRATION_MODEL", "google/gemma-4-E4B-it")
     log(f"Checking Hugging Face metadata for {model_id}...")
     hf_engine.search_models(query=model_id)
     log(f"Selected model: {model_id}")

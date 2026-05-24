@@ -11,7 +11,7 @@ Ship Gemma Forge as a contest-ready local Gemma 4 work harness that makes free l
 - Forge Engine readiness panel.
 - Forge Intelligence model lane.
 - Forge Brain model selector.
-- Initial recommended Gemma 4 model route through `gemma-4`, with user-selected models routed when chosen.
+- Initial recommended Gemma 4 model route through `gemma-4-e4b-it`, with user-selected models routed when chosen.
 - Full Forge and Forge Section execution paths.
 - Human verify checkpoints with Verified, Not Verified, and Help flows.
 - Active and Archived project groups.

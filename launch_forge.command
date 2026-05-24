@@ -17,7 +17,7 @@
 #   - Bundled protocol skills (skills/* → ~/.gforge/harness/skills/)
 #
 # Model pulls (Gemma 4 etc.) happen in-app via the harness UI or `ollama pull`
-# directly. The harness supports HuggingFace repo IDs (e.g. google/gemma-4-E2B)
+# directly. The harness supports HuggingFace repo IDs (e.g. google/gemma-4-E4B-it)
 # through the Settings → Provision model card.
 
 set -euo pipefail
@@ -75,7 +75,7 @@ if ! curl -sf --max-time 2 http://localhost:11434/api/version >/dev/null 2>&1; t
 fi
 
 # Note: models are pulled in-app via the harness Settings → Provision model
-# card (supports HuggingFace repo IDs like google/gemma-4-E2B) or directly
+# card (supports HuggingFace repo IDs like google/gemma-4-E4B-it) or directly
 # via `ollama pull <name>`. Not auto-pulled here.
 
 # --- 3. Node.js (for SocratiCode MCP) --------------------------------------

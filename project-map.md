@@ -33,6 +33,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 ## Harness Code
 
 - `chat/server.py` - Flask harness on port `5005`; serves UI, stores project records, reads `forge.md`, calls Ollama, records model route, exposes error log.
+- `chat/tool_workspace.py` - workspace-scoped Git/GitHub reference cloning and sandboxed command execution helpers used by Project Execution.
 - `chat/tool_runtime.py` - product-owned SocratiCode MCP bridge, SocratiCode install/runtime checks, Docker/Qdrant probes, Axon CLI health, and serialized Axon project scans.
 - `chat/workspace_scan.py` - local resource scanner for CPU, RAM, disk, Ollama, Gemma model availability, `llama.cpp`, skills, SocratiCode, and Axon.
 - `chat/templates/index.html` - Forge Harness UI shell.
@@ -69,7 +70,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Ollama home: `~/.ollama`.
 - Ollama API endpoint: `http://localhost:11434`.
 - Harness URL: `http://127.0.0.1:5005/`.
-- Initial recommended Forge Brain: `gemma-4`.
+- Initial recommended Forge Brain: `gemma-4-e4b-it`.
 - Current private repo: `https://github.com/TheRefreshCNFT/gemma-forge`.
 - Full-state external backups: `/Volumes/PHIXERO/Backups/gemma-forge/`.
 - Backup policy: a full backup/state-alignment request means the live
@@ -83,7 +84,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 
 - Startup shows "Setting up workspace" while scanning local resources.
 - Forge Engine reports system, Ollama, tools, model paths, SocratiCode install/MCP/Qdrant state, Axon CLI/index state, and subagent capacity.
-- Forge Intelligence recommends `gemma-4` on first run and shows supported local model lanes without locking the selector.
+- Forge Intelligence recommends `gemma-4-e4b-it` on first run and shows supported local model lanes without locking the selector.
 - Forge Brain selection is sent to project creation, planning, card runs, and project messages.
 - Every model-backed harness call records the attempted model route.
 - Initial planning calls use a bounded `num_predict` budget, with a
@@ -162,6 +163,26 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Continuation repair prompts tell the model not to start over unless the human explicitly requested a restart, include reviewer/validator blockers, provide a bounded current-file snapshot from the workspace, and ask for only the complete repaired/added files needed to finish the original request.
 - Project Execution has no built-in task generator; it writes only file content returned by the selected Gemma model and records model-authored execution metadata for verification. It accepts strict JSON or the Forge file-block payload so small local models do not have to escape long HTML/CSS through JSON.
 - Project Execution stages installed Forge skills into the workspace under `.gforge/skills`, writes a skill manifest, injects requested skill instructions into the Gemma prompt, and reserves `.gforge/` so the model cannot overwrite harness support context.
+- Bundled Forge skills now include `pdf` from Anthropic's PDF skill and
+  `mcp-builder` from Anthropic's MCP builder skill, alongside the
+  existing `logo-generator`, `scrapling-official`, `ui-ux-pro-max`, and
+  `axon` skills. Both new skills include expanded keywords so Project
+  Context can assign them from PDF/form/OCR and MCP/server/tool-schema
+  language.
+- Project Execution can clone GitHub/GitLab/Bitbucket repository
+  references into `references/repos/` using host `git` and authenticated
+  `gh` when available, then lists the real cloned paths in the execution
+  prompt and report.
+- Project Execution can run bounded workspace commands only when the
+  Project Context contract requires `shell_exec` or `install_package`.
+  Commands run after model-authored files are written, from the
+  workspace root, through a sandbox that can write only inside the
+  workspace. Project package installs are allowed through
+  `npm`/`pnpm`/`yarn` or `pip`; pip installs are targeted under
+  `.gforge-installs/python` unless the model supplied an explicit safe
+  relative target. Deploy, publish, push, system/global installs,
+  absolute paths, parent traversal, pipes, and multiline shell remain
+  blocked.
 - Project chat stages the same selected skill context when a workspace
   exists. The chat agent may request a worker handoff by emitting one
   bounded `GFORGE_WORKER_ACTION` block for `full_forge` or a known
