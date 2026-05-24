@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-24 (UTC) — SQL verifier SSD/GitHub alignment prepared.
+Last updated: 2026-05-24 (UTC) — Skill depth SSD/GitHub alignment prepared.
 
 ## Verified ground truth
 
@@ -8,7 +8,7 @@ Last updated: 2026-05-24 (UTC) — SQL verifier SSD/GitHub alignment prepared.
 - Branch: `main` tracking `origin/main`; current branch head is the
   installable repo state for this backup pass once pushed to GitHub.
   Runtime/generated/private harness state remains local/SSD-only.
-- Harness Flask server source: `chat/server.py` (11,931 lines).
+- Harness Flask server source: `chat/server.py` (12,079 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, JavaScript deterministic validation, SQL baseline validation, and SSD/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, JavaScript deterministic validation, SQL baseline validation, SSD/GitHub alignment, and skill depth utilization completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -155,6 +155,13 @@ the contest demo path works end-to-end.** Driving doc:
     skill manuals. For scraping + page tasks, it tells the model:
     `scrapling-official` is the web scraping/extraction layer and
     `ui-ux-pro-max` is the webpage/interface design layer.
+  - Skill prompt depth is now budgeted across requested skills instead of
+    letting the first long manual consume the entire context. The loader reads
+    `OUTPUT.md`, `SKILL.md`, `skill.json` summaries for bundle-style skills,
+    and whitelisted deep entrypoints. UI/UX Pro Max prompts now expose
+    `Quick Reference` and `Pre-Delivery Checklist`; GSD planning prompts expose
+    `workflows/plan-phase.md`, anti-shallow execution rules, and
+    `agents/gsd-planner.md`.
   - Skill selection only scans the original project text and user
     messages now. Prior agent messages / manifests no longer self-poison
     reruns into staging unrelated support skills like Axon/GSD/SocratiCode
@@ -205,6 +212,18 @@ the contest demo path works end-to-end.** Driving doc:
     skill plan, tool plan, model profile, and hard count/source gates. The
     bundled `skills/gsd/` install state contains the full suite of
     workflows, prompts, agents, references, templates, and hooks.
+  - The live staged `~/.gforge/harness/skills/gsd/` copy has been refreshed from
+    the repo and now includes workflows, agents, references, templates, hooks,
+    and prompts rather than only `SKILL.md`. The launcher refreshes bundled
+    staged skills when the repo copy is newer/fuller or required deep files are
+    missing, cleans stale `.git` / cache / Apple metadata artifacts from staged
+    bundled skill copies, and clean-install verification now fails if required
+    GSD/UI deep files are absent.
+  - The GSD card forces staged `gsd` context before model planning and passes a
+    `GSD Skill Context` block into the planning prompt. Verification prompts now
+    explicitly evaluate outputs against staged skill quality rules where
+    applicable, including UI/UX states/layout/accessibility and GSD phases,
+    dependencies, acceptance criteria, and verification gates.
   - Failed-review execution retries now enter a generic "continuation
     repair mode." The retry prompt tells the model not to start over
     unless the human explicitly requested a restart, names the exact
@@ -359,12 +378,24 @@ the contest demo path works end-to-end.** Driving doc:
   `skills/webot-flow/`, `skills/gsd/`, `skills/socraticode/`.
 - GitHub alignment note: the latest installable repo state on `main`
   contains the chat worker-action, per-session runner isolation,
-  cross-session save race tests, and docs. Runtime/generated/private
-  state remains excluded from GitHub and preserved in SSD/local backups.
+  cross-session save race tests, skill-depth utilization work, and docs.
+  Runtime/generated/private state remains excluded from GitHub and preserved in
+  SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T221709Z-full-live-local-working-state/`
+    (skill-depth utilization alignment backup target; preserve repo snapshot,
+    ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent metadata, and
+    restore archive; intentionally omit `~/.gforge/models` per Ian)
+  - `/Users/webot/Backups/gemma-forge/20260524T213854Z-pre-skill-depth-utilization/`
+    (`chat/server.py`, launcher/provision/clean-install scripts,
+    `tests/model_route_test.py`, skill-depth handoff, current state/project map,
+    and live staged `gsd` / `ui-ux-pro-max` before skill-depth edits; a failed
+    earlier attempt at `20260524T213839Z-pre-skill-depth-utilization` only
+    created an incomplete backup shell and is not the restore point)
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T210703Z-full-live-local-working-state/`
     (post-SQL-verifier alignment backup target; includes repo snapshot,
-    ignored repo/runtime files, `~/.gforge/harness`, `~/.gforge/models`,
+    ignored repo/runtime files, and `~/.gforge/harness`; manifest records
+    `Model cache included: no`, so do not treat `~/.gforge/models` as included,
     LaunchAgent metadata, and a restore archive; checksum verification recorded
     in the backup manifests)
   - `/Users/webot/Backups/gemma-forge/20260524T203454Z-pre-sql-validation/`
@@ -2067,6 +2098,44 @@ the contest demo path works end-to-end.** Driving doc:
     `.axon/`, `chat/session-data/`, chat runtime JSON, caches, and
     machine artifacts.
 
+- **2026-05-24 — Skill depth utilization.**  Implemented
+  `.handoffs/skill-depth-utilization-plan.md` without changing the harness
+  architecture. Pre-edit backup:
+  `/Users/webot/Backups/gemma-forge/20260524T213854Z-pre-skill-depth-utilization/`.
+  `chat/server.py` now loads prompt-facing skill entrypoints in order:
+  `OUTPUT.md`, `SKILL.md`, `skill.json` summary when no `SKILL.md`, and
+  whitelisted deep docs for bundled skills. Prompt budget is split across
+  requested skills, and focused excerpts keep UI/UX Pro Max's Quick Reference /
+  Pre-Delivery Checklist plus GSD's plan-phase anti-shallow rules and planner
+  agent visible. `run_gsd_card` now stages `gsd` explicitly and passes a GSD
+  skill-context block into planning. Verification now checks applicable staged
+  skill quality rules. `launch_forge.command` refreshes bundled staged skills
+  when the repo copy is newer/fuller or required deep files are missing.
+  `tools/provision_clean_install.py` and `tools/verify_clean_install.sh` fail on
+  missing required deep files. Live staged `gsd` and `ui-ux-pro-max` were
+  refreshed from repo into `~/.gforge/harness/skills/`; the clean-install
+  verifier's temporary session `session_1779659307299` was deleted afterward.
+  Verification: `py_compile` for changed Python, `bash -n` for changed shell,
+  focused skill-depth tests, full `.venv/bin/python -m unittest discover -s
+  tests -p '*_test.py'` passed (121 tests), `npm run check` passed,
+  `git diff --check` passed, prompt smoke selected
+  `scrapling-official,ui-ux-pro-max` with Quick Reference and Pre-Delivery
+  Checklist visible, GSD prompt smoke included plan-phase, anti-shallow rules,
+  and `agents/gsd-planner.md`, `tools/verify_clean_install.sh` passed all
+  checks, and live harness status is OK with launchd PID `19716` listening on
+  `127.0.0.1:5005`.
+
+- **2026-05-24 — Skill depth SSD backup and GitHub alignment.**
+  Ian requested SSD backup plus GitHub alignment with no model cache after the
+  first live skill-depth test passed and the second was running. Final backup
+  target:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260524T221709Z-full-live-local-working-state/`.
+  This pass intentionally omits `~/.gforge/models` while preserving the repo,
+  ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent metadata, and a
+  restore archive. GitHub alignment should include only installable repo state:
+  skill-depth code/scripts/tests/docs/handoff, launcher, clean-install tools,
+  and bundled protocol skills; local-only runtime data stays excluded from Git.
+
 ## Product philosophy (load-bearing)
 
 Gemma Forge is an **execution machine, not a chatbot.** Small input →
@@ -2126,8 +2195,8 @@ tail -5 /Users/webot/.gforge/harness/logs/errors.jsonl
 
 ## Next action
 
-Run a live intake/execution using a scraping/news/headlines webpage
-request and confirm the Project Context `skill_plan` and Execution
-skill block tell the model to use `scrapling-official` for scraping and
-`ui-ux-pro-max` for webpage/interface design, with no unrelated
-Axon/GSD/SocratiCode staging from prior agent messages.
+Optional final proof pass: run a full live scraping/news/headlines webpage
+Execution and inspect the delivered artifact quality. Plumbing is already
+verified: Project Context/Execution prompt smoke selects
+`scrapling-official,ui-ux-pro-max` with deep UI entrypoints visible and no
+prior-agent self-poisoning, and clean-install E2E intake passes.

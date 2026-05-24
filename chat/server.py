@@ -399,6 +399,39 @@ SKILL_COPY_IGNORE_NAMES = {
 }
 SKILL_CONTEXT_TOTAL_LIMIT = 14000
 SKILL_CONTEXT_FILE_LIMIT = 5000
+SKILL_CONTEXT_FOCUSED_FILE_LIMIT = 3200
+SKILL_PROMPT_ENTRYPOINTS = {
+    "gsd": [
+        "workflows/plan-phase.md",
+        "agents/gsd-planner.md",
+        "templates/roadmap.md",
+        "workflows/execute-phase.md",
+        "workflows/verify-work.md",
+        "references/checkpoints.md",
+    ],
+    "ui-ux-pro-max": [
+        "src/ui-ux-pro-max/templates/base/quick-reference.md",
+        "src/ui-ux-pro-max/templates/base/skill-content.md",
+    ],
+}
+SKILL_FOCUSED_MARKERS = {
+    "workflows/plan-phase.md": [
+        "<downstream_consumer>",
+        "<deep_work_rules>",
+    ],
+    "workflows/execute-phase.md": [
+        "<runtime_compatibility>",
+        "<process>",
+    ],
+    "workflows/verify-work.md": [
+        "<success_criteria>",
+        "<process>",
+    ],
+    "src/ui-ux-pro-max/templates/base/skill-content.md": [
+        "### Step 2: Generate Design System (REQUIRED)",
+        "### Pre-Delivery Checklist",
+    ],
+}
 _storage_ready = False
 
 FALLBACK_FORGE_CONTEXT = """# forge.md
@@ -1441,13 +1474,17 @@ def copy_skill_to_workspace(skill, workspace_dir):
     return destination
 
 
-def prepare_workspace_skill_context(workspace_dir, session):
+def prepare_workspace_skill_context(workspace_dir, session, extra_keys=None):
     skills = discover_installed_skills()
     staged = []
     staged_root = safe_workspace_child(workspace_dir, WORKSPACE_SKILLS_ROOT)
     os.makedirs(staged_root, exist_ok=True)
 
     selected_keys = resolve_skill_selection(session, skills)
+    for key in extra_keys or []:
+        normalized = normalize_skill_key(key)
+        if normalized in skills and normalized not in selected_keys:
+            selected_keys.append(normalized)
     emit_event(
         "skill",
         "skill call selection: " + (", ".join(selected_keys) if selected_keys else "none"),
@@ -1773,10 +1810,13 @@ def build_skill_context_prompt(workspace_dir, staged):
         marker = "requested" if skill.get("requested") else "available"
         lines.append(f"- `{skill['name']}` at `{skill['path']}` ({marker})")
 
+    requested_skills = [item for item in staged if item.get("requested")]
     remaining = SKILL_CONTEXT_TOTAL_LIMIT
-    for skill in [item for item in staged if item.get("requested")]:
+    for index, skill in enumerate(requested_skills):
         skill_dir = os.path.join(workspace_dir, skill["path"])
-        snippets, used = read_skill_prompt_snippets(skill_dir, remaining)
+        slots_left = max(1, len(requested_skills) - index)
+        skill_budget = max(1, remaining // slots_left)
+        snippets, used = read_skill_prompt_snippets(skill_dir, min(remaining, skill_budget))
         remaining -= used
         if snippets:
             lines.extend(["", f"## {skill['name']} Skill Context", ""])
@@ -1786,10 +1826,30 @@ def build_skill_context_prompt(workspace_dir, staged):
     return "\n".join(lines)
 
 
-def read_skill_prompt_snippets(skill_dir, remaining):
-    snippets = []
-    used = 0
-    candidate_paths = [os.path.join(skill_dir, "SKILL.md")]
+def add_unique_skill_prompt_path(paths, seen, skill_dir, relative_path):
+    path = os.path.join(skill_dir, relative_path)
+    normalized = os.path.abspath(path)
+    if normalized in seen or not os.path.isfile(path):
+        return
+    seen.add(normalized)
+    paths.append(path)
+
+
+def skill_prompt_candidate_paths(skill_dir):
+    skill_key = normalize_skill_key(os.path.basename(os.path.abspath(skill_dir)))
+    candidate_paths = []
+    seen = set()
+
+    add_unique_skill_prompt_path(candidate_paths, seen, skill_dir, "OUTPUT.md")
+    has_skill_md = os.path.isfile(os.path.join(skill_dir, "SKILL.md"))
+    if has_skill_md:
+        add_unique_skill_prompt_path(candidate_paths, seen, skill_dir, "SKILL.md")
+    else:
+        add_unique_skill_prompt_path(candidate_paths, seen, skill_dir, "skill.json")
+
+    for relative_path in SKILL_PROMPT_ENTRYPOINTS.get(skill_key, []):
+        add_unique_skill_prompt_path(candidate_paths, seen, skill_dir, relative_path)
+
     for folder in ("references", "reference", "assets"):
         folder_path = os.path.join(skill_dir, folder)
         if not os.path.isdir(folder_path):
@@ -1798,19 +1858,85 @@ def read_skill_prompt_snippets(skill_dir, remaining):
             dirs[:] = [name for name in dirs if name not in SKILL_COPY_IGNORE_NAMES]
             for filename in sorted(files):
                 if os.path.splitext(filename)[1].lower() in SKILL_CONTEXT_EXTENSIONS:
-                    candidate_paths.append(os.path.join(root, filename))
+                    relative_path = os.path.relpath(os.path.join(root, filename), skill_dir)
+                    add_unique_skill_prompt_path(candidate_paths, seen, skill_dir, relative_path)
+    return candidate_paths
 
-    for path in candidate_paths:
+
+def skill_json_prompt_summary(path):
+    try:
+        with open(path, "r", errors="replace") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    lines = ["Skill metadata from skill.json:"]
+    for field in ("name", "displayName", "description", "version", "repository"):
+        value = data.get(field)
+        if isinstance(value, str) and value.strip():
+            lines.append(f"- {field}: {value.strip()}")
+    keywords = data.get("keywords")
+    if isinstance(keywords, list):
+        keyword_text = ", ".join(str(item).strip() for item in keywords if str(item).strip())
+        if keyword_text:
+            lines.append(f"- keywords: {keyword_text}")
+    install = data.get("install")
+    if isinstance(install, str) and install.strip():
+        lines.append(f"- install: {install.strip()}")
+    return "\n".join(lines)
+
+
+def focused_skill_file_content(path, relative_path, limit):
+    try:
+        with open(path, "r", errors="replace") as f:
+            raw = f.read()
+    except OSError:
+        return ""
+    markers = SKILL_FOCUSED_MARKERS.get(relative_path)
+    if not markers:
+        return raw[:limit]
+
+    parts = []
+    intro = raw[:min(700, max(0, limit // 4))]
+    if intro.strip():
+        parts.append(intro)
+    used = len("\n\n".join(parts))
+    for marker_index, marker in enumerate(markers):
+        remaining = limit - used
         if remaining <= 0:
             break
-        try:
-            with open(path, "r", errors="replace") as f:
-                content = f.read(min(SKILL_CONTEXT_FILE_LIMIT, remaining))
-        except OSError:
+        index = raw.find(marker)
+        if index == -1:
             continue
+        markers_left = max(1, len(markers) - marker_index)
+        excerpt_limit = max(350, remaining // markers_left)
+        start = max(0, index - 350)
+        end = min(len(raw), index + excerpt_limit)
+        excerpt = f"\n\n[focused excerpt around {marker}]\n{raw[start:end]}"
+        excerpt = excerpt[:min(remaining, excerpt_limit)]
+        parts.append(excerpt)
+        used = len("\n\n".join(parts))
+    return "\n\n".join(parts)[:limit]
+
+
+def read_skill_prompt_snippets(skill_dir, remaining):
+    snippets = []
+    used = 0
+    for path in skill_prompt_candidate_paths(skill_dir):
+        if remaining <= 0:
+            break
+        relative_path = os.path.relpath(path, skill_dir).replace(os.sep, "/")
+        if relative_path == "skill.json":
+            content = skill_json_prompt_summary(path)
+        else:
+            file_limit = min(SKILL_CONTEXT_FILE_LIMIT, remaining)
+            if relative_path in SKILL_FOCUSED_MARKERS:
+                file_limit = min(SKILL_CONTEXT_FOCUSED_FILE_LIMIT, file_limit)
+            content = focused_skill_file_content(path, relative_path, file_limit)
+        content = content[:min(SKILL_CONTEXT_FILE_LIMIT, remaining)]
         if not content.strip():
             continue
-        relative_path = os.path.relpath(path, skill_dir).replace(os.sep, "/")
         snippets.append(f"### {relative_path}\n\n```text\n{content}\n```")
         consumed = len(content)
         used += consumed
@@ -3345,13 +3471,23 @@ def build_gsd_context_prompt_block(session):
     return "\n".join(lines)
 
 
-def build_planning_prompt(project, checkpoint_mode, resource_state):
+def build_gsd_skill_context_section(skill_context_prompt):
+    if not skill_context_prompt:
+        return ""
+    return (
+        "GSD Skill Context (staged instructions for this planning pass):\n"
+        f"{skill_context_prompt}\n"
+    )
+
+
+def build_planning_prompt(project, checkpoint_mode, resource_state, gsd_skill_context=None):
     session = project if isinstance(project, dict) else {"project": project}
     project_text = session.get("project", "")
     capacity = resource_state.get("agentCapacity", {})
     forge_context = read_forge_context()
     research_policy = research_budget_text(session)
     gsd_context = build_gsd_context_prompt_block(session)
+    skill_context_section = build_gsd_skill_context_section(gsd_skill_context)
     return f"""You are the Gemma Forge planning agent.
 This is a work harness, not a chat interface.
 
@@ -3361,6 +3497,8 @@ Project to plan:
 {project_text}
 
 {gsd_context}
+
+{skill_context_section}
 
 Use these built-in protocol cards:
 - Forge Flow: orient on project state, read project map/context, verify local environment, protect user work.
@@ -6253,9 +6391,17 @@ def resolve_execution_workspace(session_id, session, project):
 
 def run_gsd_card(session_id, session, model, mode):
     resource_state = scan_workspace()
+    workspace_dir = resolve_execution_workspace(session_id, session, session.get("project", ""))
+    os.makedirs(workspace_dir, exist_ok=True)
+    skill_context = prepare_workspace_skill_context(workspace_dir, session, extra_keys=["gsd"])
     details = call_ollama(
         model,
-        build_planning_prompt(session, mode, resource_state),
+        build_planning_prompt(
+            session,
+            mode,
+            resource_state,
+            gsd_skill_context=(skill_context or {}).get("prompt"),
+        ),
     )
     artifact = write_artifact(session_id, "gsd-plan.md", details)
     return card_result(
@@ -6839,6 +6985,8 @@ Gemma Forge skill context for this read-only verification pass:
 {skill_block}
 {correction_block}
 Produce a short verification checklist from these actual artifacts. If auto-run is enabled, list the checks already run and any remaining manual inspection. If a correction block is present above, the checklist MUST explicitly say whether each user/reviewer item has now been satisfied.
+
+Evaluate the workspace against staged skill output and quality rules where applicable. UI/UX work must be checked for layout, responsive behavior, accessibility, states, hierarchy, charts/data presentation, and visual polish. GSD work must be checked for phases, acceptance criteria, dependencies, verification gates, and hard count/source requirements.
 
 Verification may rerun deterministic checks and inspect the current workspace, but it must not edit deliverables. If issues remain, route the work back to the responsible Forge Section (usually Project Execution) with the exact blocker instead of proposing direct edits inside Verification.
 

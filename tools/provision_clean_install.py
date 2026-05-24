@@ -32,6 +32,18 @@ EXPECTED_SKILLS = (
     "pdf",
     "mcp-builder",
 )
+REQUIRED_SKILL_FILES = {
+    "gsd": (
+        "workflows/plan-phase.md",
+        "agents/gsd-planner.md",
+        "templates/roadmap.md",
+    ),
+    "ui-ux-pro-max": (
+        "skill.json",
+        "src/ui-ux-pro-max/templates/base/quick-reference.md",
+        "src/ui-ux-pro-max/scripts/search.py",
+    ),
+}
 
 
 class ProvisionError(RuntimeError):
@@ -83,16 +95,36 @@ def model_installed(model: str, models: set[str] | None = None) -> bool:
     )
 
 
-def skill_ready(name: str) -> bool:
+def skill_missing_reason(name: str) -> str:
     skill_dir = HARNESS_SKILLS_DIR / name
-    return (skill_dir / "SKILL.md").exists() or (skill_dir / "skill.json").exists()
+    if not skill_dir.is_dir():
+        return "missing directory"
+    if not ((skill_dir / "SKILL.md").exists() or (skill_dir / "skill.json").exists()):
+        return "missing SKILL.md or skill.json"
+    missing = [
+        relative_path
+        for relative_path in REQUIRED_SKILL_FILES.get(name, ())
+        if not (skill_dir / relative_path).exists()
+    ]
+    if missing:
+        return "missing required file(s): " + ", ".join(missing)
+    return ""
+
+
+def skill_ready(name: str) -> bool:
+    return not skill_missing_reason(name)
 
 
 def require_skills() -> None:
-    missing = [name for name in EXPECTED_SKILLS if not skill_ready(name)]
+    missing = {
+        name: reason
+        for name in EXPECTED_SKILLS
+        if (reason := skill_missing_reason(name))
+    }
     if missing:
+        details = "; ".join(f"{name} ({reason})" for name, reason in missing.items())
         raise ProvisionError(
-            "Bundled skill(s) were not staged: " + ", ".join(missing)
+            "Bundled skill(s) were not staged deeply enough: " + details
         )
     step("Bundled protocol skills staged.")
 

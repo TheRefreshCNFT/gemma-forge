@@ -309,13 +309,24 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   inputs, skill plan, tool plan, model profile, and hard count gates. The
   bundled `skills/gsd/` install state includes the full workflow suite
   (workflows, prompts, agents, references, templates, hooks), not just the
-  stub `SKILL.md`.
+  stub `SKILL.md`. The GSD card now explicitly stages `gsd` and injects a
+  `GSD Skill Context` block into planning.
 - Project Execution skill context starts with a concise usage plan before
   raw skill manuals. For scraping + webpage tasks, `scrapling-official`
   is identified as the scraping/extraction layer and `ui-ux-pro-max` as
   the webpage/interface design layer. Skill selection ignores prior agent
   messages so reruns do not stage unrelated support skills just because a
-  previous artifact mentioned them.
+  previous artifact mentioned them. Prompt snippets are loaded from ordered
+  entrypoints (`OUTPUT.md`, `SKILL.md`, `skill.json` summary, then
+  whitelisted deep docs) and budget is split across requested skills so one
+  long manual cannot hide later requested skills. UI/UX Pro Max exposes Quick
+  Reference / Pre-Delivery Checklist excerpts, and GSD exposes plan-phase
+  anti-shallow rules plus planner-agent guidance.
+- The launcher refreshes bundled staged skills in `~/.gforge/harness/skills/`
+  when the repo copy is newer/fuller or required deep files are missing.
+  It also strips stale `.git`, cache, `.DS_Store`, and AppleDouble artifacts
+  from staged bundled skill copies. Clean-install provisioning and verification
+  fail if the required deep GSD or UI/UX Pro Max files are absent.
 - Axon and SocratiCode are support-tool cards; skipped, unavailable, and degraded states are shown explicitly and never claimed as successful tool runs.
 - Axon runs only when graphable source files exist. HTML-only work is reported as not Axon-indexable instead of triggering a false structural scan.
 - SocratiCode is installed under `~/.gforge/tools` when needed and is called through a real MCP stdio bridge from the Flask harness.

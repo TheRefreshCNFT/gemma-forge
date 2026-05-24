@@ -274,20 +274,89 @@ fi
 
 # --- 9. Stage bundled protocol skills --------------------------------------
 
+skill_has_required_depth() {
+    local skill_base="$1"
+    local skill_name="$2"
+    case "$skill_name" in
+        gsd)
+            for required in \
+                "workflows/plan-phase.md" \
+                "agents/gsd-planner.md" \
+                "templates/roadmap.md"
+            do
+                [ -f "$skill_base/$required" ] || return 1
+            done
+            ;;
+        ui-ux-pro-max)
+            for required in \
+                "skill.json" \
+                "src/ui-ux-pro-max/templates/base/quick-reference.md" \
+                "src/ui-ux-pro-max/scripts/search.py"
+            do
+                [ -f "$skill_base/$required" ] || return 1
+            done
+            ;;
+    esac
+    return 0
+}
+
+skill_source_newer_than_stage() {
+    local source_dir="$1"
+    local destination_dir="$2"
+    local marker="$destination_dir/.gforge-staged-at"
+    [ -f "$marker" ] || return 0
+    [ -n "$(find "$source_dir" \
+        \( -name .git -o -name node_modules -o -name __pycache__ -o -name .pytest_cache \) -prune -o \
+        -type f ! -name ".DS_Store" ! -name "._*" -newer "$marker" -print -quit)" ]
+}
+
+skill_needs_refresh() {
+    local source_dir="$1"
+    local destination_dir="$2"
+    local skill_name="$3"
+    if [ ! -d "$destination_dir" ]; then
+        return 0
+    fi
+    if [ ! -f "$destination_dir/SKILL.md" ] && [ ! -f "$destination_dir/skill.json" ]; then
+        warn "Refreshing incomplete staged skill: $skill_name"
+        return 0
+    fi
+    if ! skill_has_required_depth "$destination_dir" "$skill_name"; then
+        warn "Refreshing shallow staged skill: $skill_name"
+        return 0
+    fi
+    if skill_source_newer_than_stage "$source_dir" "$destination_dir"; then
+        warn "Refreshing updated bundled skill: $skill_name"
+        return 0
+    fi
+    return 1
+}
+
+clean_staged_skill_artifacts() {
+    local destination_dir="$1"
+    [ -d "$destination_dir" ] || return 0
+    find "$destination_dir" -name .git -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$destination_dir" -name node_modules -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$destination_dir" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$destination_dir" -name .pytest_cache -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    find "$destination_dir" \( -name ".DS_Store" -o -name "._*" \) -type f -delete 2>/dev/null || true
+}
+
 mkdir -p "$HARNESS_SKILLS_DIR"
 if [ -d "$PROJECT_ROOT/skills" ]; then
     for skill_dir in "$PROJECT_ROOT/skills"/*/; do
         [ -d "$skill_dir" ] || continue
         skill_name="$(basename "$skill_dir")"
         skill_destination="$HARNESS_SKILLS_DIR/$skill_name"
-        if [ -d "$skill_destination" ] && [ ! -f "$skill_destination/SKILL.md" ] && [ ! -f "$skill_destination/skill.json" ]; then
-            warn "Refreshing incomplete staged skill: $skill_name"
+        if skill_needs_refresh "$skill_dir" "$skill_destination" "$skill_name"; then
             rm -rf "$skill_destination"
         fi
         if [ ! -d "$skill_destination" ]; then
             step "Staging skill: $skill_name"
             cp -R "$skill_dir" "$skill_destination"
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > "$skill_destination/.gforge-staged-at"
         fi
+        clean_staged_skill_artifacts "$skill_destination"
     done
 fi
 

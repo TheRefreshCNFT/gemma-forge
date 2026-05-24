@@ -1471,6 +1471,103 @@ acceptance:
         self.assertIn("ui-ux-pro-max` → webpage and interface design", prompt)
         self.assertLess(prompt.index("Skill Usage Plan"), prompt.index("Staged skills:"))
 
+    def test_skill_context_prompt_loads_ui_bundle_entrypoints(self):
+        skill_dir = os.path.join(self.tmp.name, ".gforge", "skills", "ui-ux-pro-max")
+        base_dir = os.path.join(skill_dir, "src", "ui-ux-pro-max", "templates", "base")
+        os.makedirs(base_dir, exist_ok=True)
+        with open(os.path.join(skill_dir, "skill.json"), "w") as f:
+            json.dump({
+                "name": "ui-ux-pro-max",
+                "displayName": "UI/UX Pro Max",
+                "description": "Design intelligence for interfaces.",
+                "keywords": ["ui", "ux", "design-system"],
+            }, f)
+        with open(os.path.join(base_dir, "quick-reference.md"), "w") as f:
+            f.write("## Quick Reference\n- accessibility\n")
+        with open(os.path.join(base_dir, "skill-content.md"), "w") as f:
+            f.write("### Step 2: Generate Design System (REQUIRED)\n### Pre-Delivery Checklist\n")
+
+        prompt = server.build_skill_context_prompt(self.tmp.name, [
+            {"name": "ui-ux-pro-max", "key": "ui-ux-pro-max", "path": ".gforge/skills/ui-ux-pro-max", "requested": True},
+        ])
+
+        self.assertIn("Skill metadata from skill.json", prompt)
+        self.assertIn("Quick Reference", prompt)
+        self.assertIn("Generate Design System", prompt)
+        self.assertIn("Pre-Delivery Checklist", prompt)
+
+    def test_skill_context_budget_keeps_later_requested_skill_visible(self):
+        scrapling_dir = os.path.join(self.tmp.name, ".gforge", "skills", "scrapling-official")
+        ui_dir = os.path.join(self.tmp.name, ".gforge", "skills", "ui-ux-pro-max")
+        ui_base = os.path.join(ui_dir, "src", "ui-ux-pro-max", "templates", "base")
+        os.makedirs(scrapling_dir, exist_ok=True)
+        os.makedirs(ui_base, exist_ok=True)
+        with open(os.path.join(scrapling_dir, "SKILL.md"), "w") as f:
+            f.write("scrapling manual\n" + ("x" * 20000))
+        with open(os.path.join(ui_dir, "skill.json"), "w") as f:
+            json.dump({"name": "ui-ux-pro-max", "description": "Design responsive webpages."}, f)
+        with open(os.path.join(ui_base, "quick-reference.md"), "w") as f:
+            f.write("## Quick Reference\n")
+        with open(os.path.join(ui_base, "skill-content.md"), "w") as f:
+            f.write("### Pre-Delivery Checklist\n")
+
+        prompt = server.build_skill_context_prompt(self.tmp.name, [
+            {"name": "scrapling-official", "key": "scrapling-official", "path": ".gforge/skills/scrapling-official", "requested": True},
+            {"name": "ui-ux-pro-max", "key": "ui-ux-pro-max", "path": ".gforge/skills/ui-ux-pro-max", "requested": True},
+        ])
+
+        self.assertIn("scrapling manual", prompt)
+        self.assertIn("Pre-Delivery Checklist", prompt)
+
+    def test_gsd_planning_prompt_includes_staged_gsd_context(self):
+        gsd_context = "GSD Skill Context marker\n### workflows/plan-phase.md\nDeep Work Rules"
+        prompt = server.build_planning_prompt(
+            {"project": "Plan a multi-phase launch.", "model": "gemma-4-e4b-it"},
+            "auto",
+            {"agentCapacity": {}},
+            gsd_skill_context=gsd_context,
+        )
+
+        self.assertIn("GSD Skill Context", prompt)
+        self.assertIn("Deep Work Rules", prompt)
+
+    def test_gsd_skill_context_loads_workflow_and_agent_entrypoints(self):
+        skill_dir = os.path.join(self.tmp.name, ".gforge", "skills", "gsd")
+        os.makedirs(os.path.join(skill_dir, "workflows"), exist_ok=True)
+        os.makedirs(os.path.join(skill_dir, "agents"), exist_ok=True)
+        os.makedirs(os.path.join(skill_dir, "templates"), exist_ok=True)
+        with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+            f.write("# GSD\nUse the workflow package.\n")
+        with open(os.path.join(skill_dir, "workflows", "plan-phase.md"), "w") as f:
+            f.write("intro\n<deep_work_rules>\n## Anti-Shallow Execution Rules (MANDATORY)\n</deep_work_rules>\n")
+        with open(os.path.join(skill_dir, "agents", "gsd-planner.md"), "w") as f:
+            f.write("# gsd-planner\nPlans phases with acceptance criteria.\n")
+        with open(os.path.join(skill_dir, "templates", "roadmap.md"), "w") as f:
+            f.write("# Roadmap Template\n")
+
+        prompt = server.build_skill_context_prompt(self.tmp.name, [
+            {"name": "gsd", "key": "gsd", "path": ".gforge/skills/gsd", "requested": True},
+        ])
+
+        self.assertIn("workflows/plan-phase.md", prompt)
+        self.assertIn("Anti-Shallow Execution Rules", prompt)
+        self.assertIn("agents/gsd-planner.md", prompt)
+
+    def test_run_gsd_card_forces_gsd_skill_staging(self):
+        captured = {}
+
+        def fake_prepare(workspace_dir, session, extra_keys=None):
+            captured["extra_keys"] = extra_keys
+            return {"prompt": "GSD staged context"}
+
+        with patch.object(server, "scan_workspace", return_value={"agentCapacity": {}}), \
+                patch.object(server, "prepare_workspace_skill_context", side_effect=fake_prepare), \
+                patch.object(server, "call_ollama", return_value="plan"), \
+                patch.object(server, "write_artifact", return_value="/tmp/gsd-plan.md"):
+            server.run_gsd_card("session-test", {"project": "Plan the project"}, "gemma-4-e4b-it", "auto")
+
+        self.assertEqual(captured["extra_keys"], ["gsd"])
+
     def test_harness_capabilities_include_workspace_git_and_exec_when_available(self):
         with patch.object(server.tool_workspace, "can_clone_repositories", return_value=True), \
                 patch.object(server.tool_workspace, "is_gh_authenticated", return_value=True), \

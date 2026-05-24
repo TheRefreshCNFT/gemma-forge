@@ -144,6 +144,16 @@ check_bin socraticode "$SOCRATICODE_BIN"
 
 section "4. Bundled skills"
 SKILLS_DIR="${GFORGE_HOME:-$HOME/.gforge}/harness/skills"
+check_skill_file() {
+    local skill="$1"
+    local relative_path="$2"
+    if [ -f "$SKILLS_DIR/$skill/$relative_path" ]; then
+        pass "skill file staged: $skill/$relative_path"
+    else
+        fail "skill file missing: $skill/$relative_path"
+    fi
+}
+
 for skill in webot-flow gsd logo-generator scrapling-official ui-ux-pro-max axon socraticode pdf mcp-builder; do
     if [ -d "$SKILLS_DIR/$skill" ]; then
         pass "skill staged: $skill"
@@ -151,6 +161,12 @@ for skill in webot-flow gsd logo-generator scrapling-official ui-ux-pro-max axon
         fail "skill missing: $skill"
     fi
 done
+check_skill_file gsd "workflows/plan-phase.md"
+check_skill_file gsd "agents/gsd-planner.md"
+check_skill_file gsd "templates/roadmap.md"
+check_skill_file ui-ux-pro-max "skill.json"
+check_skill_file ui-ux-pro-max "src/ui-ux-pro-max/templates/base/quick-reference.md"
+check_skill_file ui-ux-pro-max "src/ui-ux-pro-max/scripts/search.py"
 
 # --- 5. Ollama service -----------------------------------------------------
 
