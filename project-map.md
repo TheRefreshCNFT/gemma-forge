@@ -74,7 +74,10 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Full-state external backups: `/Volumes/PHIXERO/Backups/gemma-forge/`.
 - Backup policy: a full backup/state-alignment request means the live
   local working state is backed up to the external SSD and GitHub is
-  aligned with the installable repo state.
+  aligned with the installable repo state. Routine alignment backups can
+  omit `~/.gforge/models` when Ian says the model cache does not need to
+  be backed up again; repo and harness runtime/session state still get
+  preserved.
 
 ## Current Behavior
 
@@ -122,6 +125,13 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - The Protocol cards header no longer renders the old inline
   `plan-run-status` strip; status is shown through card state, buttons,
   sidebar project state, and the Forge Station activity stream.
+- Forge Station's terminal stream fills the available terminal body down
+  to the bottom border, and selected project feeds show only that
+  project's events. Global harness/provisioning events remain outside
+  selected project terminal histories so switching projects keeps the
+  activity stream visually distinct.
+- The Start panel collapse affordance no longer adds the obsolete
+  "collapsed while you type" text.
 - Auto-run startup visually marks the Project Context / intake card as
   running while the initial planning request is in flight: the card gets
   the active running border/glow and its button reads `Running`.

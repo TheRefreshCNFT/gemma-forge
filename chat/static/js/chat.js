@@ -2505,6 +2505,7 @@ function setupEventTerminal() {
         activeEs.onmessage = (msg) => {
             try {
                 const evt = JSON.parse(msg.data);
+                if (activeSessionId && evt.session_id !== activeSessionId) return;
                 appendEvent(evt);
             } catch (error) {
                 console.warn("bad event payload", error);

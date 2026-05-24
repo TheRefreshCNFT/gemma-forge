@@ -477,6 +477,38 @@ reason: Continue the active Forge flow.
         self.assertEqual(on_disk[first]["cards"][0]["status"], "complete")
         self.assertEqual(on_disk[second]["cards"][0]["status"], "complete")
 
+    def test_session_event_feed_excludes_global_events(self):
+        with server._EVENT_LOCK:
+            server._EVENT_BUFFER.clear()
+            server._EVENT_SUBSCRIBERS.clear()
+            server._EVENT_SEQ = 0
+
+        try:
+            server.emit_event("info", "global setup")
+            server.emit_event("card-start", "first session", session_id="session-one")
+            server.emit_event("card-start", "second session", session_id="session-two")
+
+            q, snapshot = server._subscribe_events(session_filter="session-one")
+            try:
+                self.assertEqual([event["message"] for event in snapshot], ["first session"])
+
+                server.emit_event("info", "global live")
+                server.emit_event("card-end", "second live", session_id="session-two")
+                server.emit_event("card-end", "first live", session_id="session-one")
+
+                queued = []
+                while not q.empty():
+                    queued.append(q.get_nowait())
+
+                self.assertEqual([event["message"] for event in queued], ["first live"])
+            finally:
+                server._unsubscribe_events(q)
+        finally:
+            with server._EVENT_LOCK:
+                server._EVENT_BUFFER.clear()
+                server._EVENT_SUBSCRIBERS.clear()
+                server._EVENT_SEQ = 0
+
     def test_archived_session_card_run_does_not_call_model(self):
         sessions = {}
         session_id = server.create_session_record(

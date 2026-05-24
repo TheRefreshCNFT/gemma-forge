@@ -2265,9 +2265,8 @@ textarea {
 .event-terminal-stream {
     margin: 0;
     padding: 14px 16px;
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
-    max-height: 360px;
     overflow-y: auto;
     font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
     font-size: 0.78rem;
@@ -2308,15 +2307,4 @@ textarea {
 
 .event-row .ev-msg {
     color: #e2e8f0;
-}
-
-/* ============================================================
-   Auto-collapsing Start panel hint
-   ============================================================ */
-
-.start-panel.is-collapsed > .panel-header h2::after {
-    content: "  ·  collapsed while you type";
-    color: var(--muted);
-    font-weight: 500;
-    font-size: 0.72rem;
 }

@@ -43,8 +43,8 @@ _EVENT_BUFFER = collections.deque(maxlen=400)
 _EVENT_LOCK = threading.Lock()
 # Each subscriber is a tuple (queue, session_filter). session_filter=None
 # means "global subscriber, receives everything". A non-None filter only
-# receives events whose session_id matches (or events with session_id=None,
-# which are treated as global broadcasts).
+# receives events whose session_id matches, so selected project terminals
+# do not replay unrelated global harness events.
 _EVENT_SUBSCRIBERS = []
 _EVENT_SEQ = 0
 EVENT_LOG_FILENAME = "terminal-events.jsonl"
@@ -99,9 +99,8 @@ def emit_event(kind, message, **extra):
             subs = list(_EVENT_SUBSCRIBERS)
         _persist_session_event(payload)
         for q, q_filter in subs:
-            # Deliver if: subscriber is global (no filter), OR event is
-            # global (no session_id), OR they match.
-            if q_filter is None or session_id is None or q_filter == session_id:
+            # Deliver if: subscriber is global (no filter), OR event/session match.
+            if q_filter is None or q_filter == session_id:
                 try:
                     q.put_nowait(payload)
                 except queue.Full:
@@ -222,7 +221,6 @@ def _subscribe_events(session_filter=None):
         buffered = [
             e for e in _EVENT_BUFFER
             if session_filter is None
-            or e.get("session_id") is None
             or e.get("session_id") == session_filter
         ]
     if session_filter:
@@ -1707,8 +1705,7 @@ def tools_screenshot():
 def events_stream():
     """Server-Sent Events feed of structured harness activity.
 
-    Pass `?session_id=session_xxx` to filter to one session's events
-    (plus any global / harness-wide events that aren't session-scoped).
+    Pass `?session_id=session_xxx` to filter to one session's events.
     Omit the param to subscribe to everything (legacy / setup screen).
     """
     session_filter = request.args.get("session_id", "").strip() or None
@@ -1741,7 +1738,6 @@ def events_recent():
         buffered = [
             e for e in _EVENT_BUFFER
             if session_filter is None
-            or e.get("session_id") is None
             or e.get("session_id") == session_filter
         ]
     if session_filter:

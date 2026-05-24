@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-24 (UTC) — verified SSD/GitHub alignment pass.
+Last updated: 2026-05-24 (UTC) — terminal UI fixes and SSD/GitHub alignment pass.
 
 ## Verified ground truth
 
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, and final SSD/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, and SSD/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -48,6 +48,12 @@ the contest demo path works end-to-end.** Driving doc:
     underneath each title.
   - Sidebar row actions are stacked with `X` over `A`/`R`, and session
     titles can show up to two lines before truncating.
+  - Forge Station terminal text/scroll now reaches the bottom of the
+    terminal panel again.
+  - The obsolete "collapsed while you type" Start panel hint is removed.
+  - Forge Station terminal output is separated per selected project
+    again; switching sessions no longer shows the same global provisioning
+    tail in every project.
 - Locally verified current behavior:
   - Completed protocol cards show compact run facts on the card
     itself, e.g. Project Context shows format/path/count/skill/open
@@ -180,7 +186,7 @@ the contest demo path works end-to-end.** Driving doc:
     records in Ollama, registry, sessions, or the model download folder.
   - User verified after cleanup that all systems are working great.
     Current live probes before this final backup pass: harness `200` at
-    `http://127.0.0.1:5005/`, Ollama `0.20.5`, harness PID `40762`,
+    `http://127.0.0.1:5005/`, Ollama `0.20.5`, harness PID `87360`,
     `~/.gforge/harness` about 37 MB, and `~/.gforge/models` about 4.6 GB.
 - Latest files touched for this accepted state:
   `chat/server.py`, `chat/static/js/chat.js`,
@@ -192,6 +198,7 @@ the contest demo path works end-to-end.** Driving doc:
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T011953Z-full-live-local-working-state/` (verified live repo + harness runtime backup with restore archive; checksum passed; model cache intentionally excluded per user instruction)
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T004319Z-full-live-local-working-state/` (this final verified full live local working state backup with restore archive; checksum passed)
   - `/Users/webot/Backups/gemma-forge/20260524T003119Z-pre-kill-zaya/`
   - `/Users/webot/Backups/gemma-forge/20260524T003040Z-pre-delete-zaya-failed-download/`
@@ -230,6 +237,18 @@ the contest demo path works end-to-end.** Driving doc:
 - Demo model decision: `gemma-4` (E2B, ~3.4 GB).
 
 ## Shipped this session
+
+- **2026-05-24 — Forge Station terminal visual/session fix and alignment.**
+  Removed the stream height cap so Forge Station terminal text and scroll
+  reach the bottom of the panel, removed the obsolete Start panel
+  "collapsed while you type" pseudo-text, and restored per-session
+  terminal isolation by excluding global harness events from selected
+  project feeds. Added a regression test proving selected session feeds
+  exclude global and other-session events. Verification: `npm run check`;
+  `/Users/webot/Projects/gguf/venv/bin/python -m unittest tests.model_route_test`
+  (50 tests); `git diff --check`; live harness restart to PID `87360`;
+  live harness probe `200`; user click-through confirmation that session
+  switching is good.
 
 - **2026-05-24 — Failed model cleanup and final alignment pass.**
   Removed the custom 1B thinking model after it proved unsuitable for
