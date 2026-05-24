@@ -4651,6 +4651,7 @@ def normalize_quantity_item(item):
         "articles": "article",
         "headlines": "headline",
         "stories": "story",
+        "checks": "check",
         "cards": "card",
         "options": "option",
         "variants": "variant",
@@ -5336,9 +5337,9 @@ Take a moment. Reason carefully through seven steps in order:
      or "2 screenshots per category" are CONTENT requirements inside the deliverable.
    - Preserve those phrases in content_requirements, constraints.hard_requirements,
      and acceptance. Do NOT collapse them into vague wording like "structured content".
-   - For a web bundle such as "one HTML page and one linked CSS file",
+   - For a web bundle such as "one HTML page and one linked CSS/JS file",
      deliverable.format is html and deliverable.count is the HTML file count
-     only. The CSS file is a support file named in acceptance/requirements,
+     only. The CSS/JS file is a support file named in acceptance/requirements,
      not a second html deliverable.
 6. MAP source material and tools into agent-digestible context.
    - If the user names a local file or directory, treat it as binding source material. The harness imports it to the workspace.
@@ -5435,8 +5436,9 @@ Rules:
 - Quote the user verbatim in intent.surface_ask, in double-quotes.
 - deliverable.format must be one concrete canonical value from the list above.
 - deliverable.count is FILE count only. Put repeated content counts in content_requirements.
-- For HTML/CSS bundles, deliverable.count counts HTML files only; keep linked
-  CSS files as support files / acceptance requirements, not extra HTML files.
+- For HTML support-file bundles, deliverable.count counts HTML files only; keep
+  linked CSS/JS files as support files / acceptance requirements, not extra HTML
+  files.
 - For runnable script requests, file/directory counts the script should create are
   script behavior requirements. Preserve them in content_requirements/acceptance,
   but keep deliverable.count as the number of script files to write.
@@ -5553,7 +5555,7 @@ def normalize_html_css_support_bundle_context(parsed, project_text):
     fmt = str(deliverable.get("format", "")).strip().lower()
     if fmt != "html":
         return
-    if not html_css_support_bundle_requested(parsed, extra_text=project_text):
+    if not html_support_bundle_requested(parsed, extra_text=project_text):
         return
 
     reference_text = project_context_reference_text(parsed, extra_text=project_text)
@@ -5562,25 +5564,30 @@ def normalize_html_css_support_bundle_context(parsed, project_text):
     if expected and primary_count and primary_count < expected:
         deliverable["count"] = primary_count
 
-    css_files = dedupe_named_files_by_basename(named_files_in_text(reference_text, (".css",)))
-    if not css_files and re.search(r"\b(?:stylesheet|linked css|css file)\b", reference_text, re.IGNORECASE):
-        css_files = ["styles.css"]
-    if not css_files:
+    support_files = parsed.get("support_files") if isinstance(parsed.get("support_files"), list) else []
+    requested_support = []
+    for support_format, config in HTML_SUPPORT_FILE_FORMATS.items():
+        for support_file in html_support_file_names(reference_text, support_format):
+            requested_support.append((support_format, support_file, config["label"]))
+    if not requested_support:
         return
 
-    support_files = parsed.get("support_files") if isinstance(parsed.get("support_files"), list) else []
-    existing_css = {
-        str(item.get("path_pattern", "")).strip()
+    existing_support = {
+        (
+            str(item.get("format", "")).strip().lower(),
+            str(item.get("path_pattern", "")).strip(),
+        )
         for item in support_files
-        if isinstance(item, dict) and str(item.get("format", "")).strip().lower() == "css"
+        if isinstance(item, dict)
     }
-    for css_file in css_files:
-        if css_file in existing_css:
+    for support_format, support_file, _label in requested_support:
+        support_key = (support_format, support_file)
+        if support_key in existing_support:
             continue
         support_files.append({
-            "format": "css",
+            "format": support_format,
             "count": 1,
-            "path_pattern": css_file,
+            "path_pattern": support_file,
             "required": True,
         })
     parsed["support_files"] = support_files
@@ -5590,11 +5597,11 @@ def normalize_html_css_support_bundle_context(parsed, project_text):
     hard_requirements = [str(item).strip() for item in hard_requirements if str(item).strip()]
     acceptance = parsed.get("acceptance") if isinstance(parsed.get("acceptance"), list) else []
     acceptance = [str(item).strip() for item in acceptance if str(item).strip()]
-    for css_file in css_files:
-        requirement = f"Linked CSS support file `{css_file}` must be present and referenced by the HTML."
-        if not any(css_file in item for item in hard_requirements):
+    for _support_format, support_file, label in requested_support:
+        requirement = f"Linked {label} file `{support_file}` must be present and referenced by the HTML."
+        if not any(support_file in item for item in hard_requirements):
             hard_requirements.append(requirement)
-        if not any(css_file in item for item in acceptance):
+        if not any(support_file in item for item in acceptance):
             acceptance.append(requirement)
     constraints["hard_requirements"] = hard_requirements
     parsed["constraints"] = constraints
@@ -9326,6 +9333,54 @@ def validate_local_link_targets(workspace_dir, files):
     return failures
 
 
+def validate_negated_support_file_constraints(workspace_dir, files, project_context):
+    failures = []
+    reference_text = project_context_reference_text(project_context) if isinstance(project_context, dict) else ""
+    if not reference_text:
+        return failures
+
+    if html_support_format_negated(reference_text, "css"):
+        css_paths = []
+        css_links = []
+        for item in files:
+            relative_path = item.get("path", "") if isinstance(item, dict) else ""
+            safe_path = safe_workspace_relative_path(relative_path)
+            if not safe_path:
+                continue
+            ext = os.path.splitext(safe_path)[1].lower()
+            if ext == ".css":
+                css_paths.append(safe_path)
+                continue
+            if ext not in {".html", ".htm"}:
+                continue
+            html_path = os.path.join(workspace_dir, safe_path)
+            if not os.path.isfile(html_path):
+                continue
+            try:
+                with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+                    html = f.read()
+            except OSError:
+                continue
+            css_links.extend(
+                re.findall(
+                    r"""<link\b[^>]*\bhref\s*=\s*["']([^"']+\.css(?:[?#][^"']*)?)["'][^>]*>""",
+                    html,
+                    re.IGNORECASE,
+                )
+            )
+        if css_paths:
+            failures.append(
+                "CSS file was forbidden by the project contract, but the model wrote "
+                + ", ".join(f"`{path}`" for path in sorted(set(css_paths)))
+            )
+        if css_links:
+            failures.append(
+                "CSS file was forbidden by the project contract, but HTML links "
+                + ", ".join(f"`{link}`" for link in sorted(set(css_links)))
+            )
+    return failures
+
+
 DELIVERABLE_FORMAT_EXTENSIONS = {
     "html": {".html", ".htm"},
     "css": {".css"},
@@ -9471,25 +9526,90 @@ def requested_html_file_count(text):
     return None
 
 
-def html_css_support_bundle_requested(project_context, extra_text=""):
-    text = project_context_reference_text(project_context, extra_text=extra_text).lower()
+HTML_SUPPORT_FILE_FORMATS = {
+    "css": {
+        "extensions": (".css",),
+        "fallback": "styles.css",
+        "terms": ("stylesheet", "css file", "linked css"),
+        "label": "CSS support",
+        "negation_patterns": (
+            r"\bno\s+(?:separate\s+|external\s+|linked\s+)?css\s+files?\b",
+            r"\bno\s+\.css\s+files?\b",
+            r"\bwithout\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?css\s+files?\b",
+            r"\bdo\s+not\s+(?:create|emit|include|link|write|add)\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?css\s+files?\b",
+            r"\bmust\s+not\s+(?:create|emit|include|link|write|add)\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?css\s+files?\b",
+        ),
+    },
+    "javascript": {
+        "extensions": (".js", ".mjs", ".cjs"),
+        "fallback": "app.js",
+        "terms": (
+            "javascript file",
+            "js file",
+            "linked javascript",
+            "linked js",
+            "script file",
+            "script src",
+        ),
+        "label": "JavaScript support",
+        "negation_patterns": (
+            r"\bno\s+(?:separate\s+|external\s+|linked\s+)?(?:javascript|js)\s+files?\b",
+            r"\bno\s+\.(?:js|mjs|cjs)\s+files?\b",
+            r"\bwithout\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?(?:javascript|js)\s+files?\b",
+            r"\bdo\s+not\s+(?:create|emit|include|link|write|add)\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?(?:javascript|js)\s+files?\b",
+            r"\bmust\s+not\s+(?:create|emit|include|link|write|add)\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?(?:javascript|js)\s+files?\b",
+        ),
+    },
+}
+
+
+def html_support_format_negated(reference_text, support_format):
+    config = HTML_SUPPORT_FILE_FORMATS.get(support_format) or {}
+    text = str(reference_text or "").lower()
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in config.get("negation_patterns", ()))
+
+
+def html_support_file_names(reference_text, support_format):
+    config = HTML_SUPPORT_FILE_FORMATS.get(support_format)
+    if not config:
+        return []
+    files = dedupe_named_files_by_basename(named_files_in_text(reference_text, config["extensions"]))
+    lowered = str(reference_text or "").lower()
+    if not files and html_support_format_negated(reference_text, support_format):
+        return []
+    if not files and any(term in lowered for term in config["terms"]):
+        files = [config["fallback"]]
+    return files
+
+
+def html_support_bundle_requested(project_context, extra_text="", support_formats=None):
+    text = project_context_reference_text(project_context, extra_text=extra_text)
+    lowered = text.lower()
     if not text:
         return False
-    has_css = (
-        bool(named_files_in_text(text, (".css",)))
-        or "stylesheet" in text
-        or "css file" in text
-        or "linked css" in text
-    )
     has_html = (
-        bool(named_files_in_text(text, (".html", ".htm")))
-        or "html" in text
-        or "webpage" in text
-        or "web page" in text
-        or "single-page" in text
-        or "single page" in text
+        bool(named_files_in_text(lowered, (".html", ".htm")))
+        or "html" in lowered
+        or "webpage" in lowered
+        or "web page" in lowered
+        or "single-page" in lowered
+        or "single page" in lowered
     )
-    return has_html and has_css
+    formats = support_formats or tuple(HTML_SUPPORT_FILE_FORMATS)
+    has_support = any(html_support_file_names(text, support_format) for support_format in formats)
+    return has_html and has_support
+
+
+def html_css_support_bundle_requested(project_context, extra_text=""):
+    return html_support_bundle_requested(project_context, extra_text=extra_text, support_formats=("css",))
+
+
+def html_javascript_support_bundle_requested(project_context, extra_text=""):
+    return html_support_bundle_requested(
+        project_context,
+        extra_text=extra_text,
+        support_formats=("javascript",),
+    )
 
 
 def effective_deliverable_file_count(project_context):
@@ -9498,7 +9618,7 @@ def effective_deliverable_file_count(project_context):
     deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
     expected = parse_positive_int(deliverable.get("count"))
     fmt = str(deliverable.get("format", "")).strip().lower()
-    if fmt == "html" and expected and expected > 1 and html_css_support_bundle_requested(project_context):
+    if fmt == "html" and expected and expected > 1 and html_support_bundle_requested(project_context):
         primary_count = requested_html_file_count(project_context_reference_text(project_context))
         if primary_count and primary_count < expected:
             return primary_count
@@ -9714,6 +9834,40 @@ def validate_css_source(source, relative_path):
     return ""
 
 
+JAVASCRIPT_SYNTAX_EXTENSIONS = (".js", ".mjs", ".cjs")
+
+
+def javascript_syntax_error_detail(output):
+    lines = [line.strip() for line in str(output or "").splitlines() if line.strip()]
+    for line in lines:
+        if "SyntaxError" in line:
+            return line[:240]
+    return (lines[0] if lines else "node --check failed without diagnostic output")[:240]
+
+
+def validate_javascript_file_syntax(path, relative_path):
+    node = shutil.which("node")
+    if not node:
+        return "Node.js `node` is not available, so JavaScript syntax could not be checked"
+    try:
+        # `node --check` parses the file without executing model-authored code.
+        proc = subprocess.run(
+            [node, "--check", path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "node --check timed out after 10s"
+    except (OSError, subprocess.SubprocessError) as error:
+        return f"node --check could not inspect the file ({error})"
+    if proc.returncode != 0:
+        detail = javascript_syntax_error_detail((proc.stderr or "") + "\n" + (proc.stdout or ""))
+        return f"syntax check failed: {detail}"
+    return ""
+
+
 def validate_code_file_integrity(workspace_dir, files, project_context):
     failures = []
     deliverable = project_context.get("deliverable") if isinstance(project_context, dict) and isinstance(project_context.get("deliverable"), dict) else {}
@@ -9772,6 +9926,19 @@ def validate_code_file_integrity(workspace_dir, files, project_context):
                     failures.append(f"invalid CSS deliverable `{safe_path}`: {failure}")
             except OSError as error:
                 failures.append(f"invalid CSS deliverable `{safe_path}`: could not read file ({error})")
+
+    if fmt == "javascript" or (fmt == "html" and html_javascript_support_bundle_requested(project_context)):
+        for item in code_deliverable_files_for_extensions(files, project_context, JAVASCRIPT_SYNTAX_EXTENSIONS):
+            relative_path = item.get("path", "")
+            safe_path = safe_workspace_relative_path(relative_path)
+            if not safe_path:
+                continue
+            path = os.path.join(workspace_dir, safe_path)
+            if not os.path.isfile(path):
+                continue
+            failure = validate_javascript_file_syntax(path, safe_path)
+            if failure:
+                failures.append(f"invalid JavaScript deliverable `{safe_path}`: {failure}")
     return failures
 
 
@@ -10077,6 +10244,23 @@ def count_runtime_filesystem_units(root_dir, requirement, ignored_files=None):
     return 0
 
 
+def count_html_list_items(text, unordered_only=False):
+    tag = "ul" if unordered_only else r"(?:ul|ol)"
+    blocks = re.findall(rf"<{tag}\b[^>]*>(.*?)</{tag}>", text or "", re.IGNORECASE | re.DOTALL)
+    if blocks:
+        return sum(regex_count(r"<li\b", block) for block in blocks)
+    return regex_count(r"<li\b", text)
+
+
+def content_requirement_requests_list_count(requirement, normalized_item):
+    text = content_requirement_text(requirement)
+    if not text:
+        return False
+    if normalized_item not in {"check", "item", "entry", "example", "row"}:
+        return False
+    return bool(re.search(r"\b(?:unordered|ordered|bullet|numbered)?\s*list\b|\b<ul\b|\b<li\b", text))
+
+
 def validate_python_script_runtime_side_effects(workspace_dir, files, project_context, requirements):
     candidates = code_deliverable_files(files, project_context, ".py")
     if not candidates:
@@ -10157,11 +10341,15 @@ def validate_python_script_runtime_side_effects(workspace_dir, files, project_co
         }
 
 
-def count_content_units(text, item):
+def count_content_units(text, item, requirement=None):
     raw_item = str(item or "").lower()
     normalized_item = normalize_quantity_item(item)
     if not text:
         return 0
+
+    if requirement and content_requirement_requests_list_count(requirement, normalized_item):
+        unordered_only = "unordered" in content_requirement_text(requirement) or "<ul" in content_requirement_text(requirement)
+        return count_html_list_items(text, unordered_only=unordered_only)
 
     if "status" in raw_item and normalized_item == "card":
         return regex_count(
@@ -10290,7 +10478,7 @@ def validate_content_quantity_requirements(workspace_dir, files, project_context
         expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
         if not expected or expected <= 1:
             continue
-        actual = count_content_units(combined_text, requirement.get("item", "items"))
+        actual = count_content_units(combined_text, requirement.get("item", "items"), requirement=requirement)
         result = {
             "item": requirement.get("item", "items"),
             "expected": expected,
@@ -10343,6 +10531,9 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
     # when only the index file was actually emitted.
     link_failures = validate_local_link_targets(workspace_dir, files)
     failures.extend(link_failures)
+
+    negated_support_failures = validate_negated_support_file_constraints(workspace_dir, files, project_context)
+    failures.extend(negated_support_failures)
 
     content_failures, content_results = validate_content_quantity_requirements(workspace_dir, files, project_context)
     failures.extend(content_failures)

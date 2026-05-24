@@ -1980,6 +1980,302 @@ open_questions: []
         self.assertFalse(validation["passed"])
         self.assertTrue(any("invalid CSS deliverable" in item for item in validation["failures"]))
 
+    def test_valid_javascript_deliverable_passes_syntax_validation(self):
+        workspace_dir = os.path.join(self.tmp.name, "js-valid")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "app.js"), "w") as f:
+            f.write(
+                "export function summarizeStatuses(items = []) {\n"
+                "  const counts = { ok: 0, warning: 0, failed: 0 };\n"
+                "  for (const item of items) {\n"
+                "    if (!item || typeof item.status !== 'string') continue;\n"
+                "    if (Object.prototype.hasOwnProperty.call(counts, item.status)) {\n"
+                "      counts[item.status] += 1;\n"
+                "    }\n"
+                "  }\n"
+                "  return counts;\n"
+                "}\n"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "javascript", "count": 1, "path_pattern": "app.js"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "app.js"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+
+    def test_invalid_javascript_deliverable_blocks_delivery(self):
+        workspace_dir = os.path.join(self.tmp.name, "js-invalid")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "app.js"), "w") as f:
+            f.write("function broken( {\n  return true;\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "javascript", "count": 1, "path_pattern": "app.js"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "app.js"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("invalid JavaScript deliverable" in item for item in validation["failures"]))
+
+    def test_javascript_validation_fails_clearly_when_node_is_unavailable(self):
+        workspace_dir = os.path.join(self.tmp.name, "js-no-node")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "app.js"), "w") as f:
+            f.write("const ready = true;\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "javascript", "count": 1, "path_pattern": "app.js"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "app.js"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        with patch.object(server.shutil, "which", return_value=None):
+            validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("Node.js `node` is not available" in item for item in validation["failures"]))
+
+    def test_html_js_bundle_does_not_count_support_js_as_second_html_file(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-js-support-count")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><head><script src=\"app.js\" defer></script></head>"
+                "<body><button id=\"run\">Run</button><p id=\"status\">Idle</p></body></html>"
+            )
+        with open(os.path.join(workspace_dir, "app.js"), "w") as f:
+            f.write(
+                "document.getElementById('run').addEventListener('click', () => {\n"
+                "  document.getElementById('status').textContent = 'Ready';\n"
+                "});\n"
+            )
+
+        session = {
+            "projectContext": {
+                "intent": {
+                    "surface_ask": (
+                        "Build one HTML page named index.html and one linked JavaScript file named app.js."
+                    )
+                },
+                "deliverable": {"format": "html", "count": 2, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+                "acceptance": ["index.html exists.", "app.js exists."],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}, {"path": "app.js"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+
+    def test_html_list_content_count_handles_sample_system_checks(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-js-check-count")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><head><script src=\"app.js\"></script></head><body>"
+                "<button id=\"checkStatusButton\">Check Status</button>"
+                "<p id=\"statusLine\">Status: Idle</p>"
+                "<ul id=\"systemChecks\">"
+                "<li>Database Connection</li>"
+                "<li>API Endpoint Health</li>"
+                "<li>File System Integrity</li>"
+                "</ul>"
+                "</body></html>"
+            )
+        with open(os.path.join(workspace_dir, "app.js"), "w") as f:
+            f.write("document.body.classList.add('ready');\n")
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 3,
+                        "item": "sample system checks",
+                        "scope": "unordered list in index.html",
+                        "source": "One unordered list with three sample system checks",
+                    }
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}, {"path": "app.js"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 3)
+
+    def test_no_css_file_contract_allows_inline_styles_but_blocks_css_files(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-no-css-file")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><head><style>.reviewed{outline:1px solid green;}</style>"
+                "<script src=\"app.js\"></script></head><body style=\"font-family:sans-serif\">"
+                "<button id=\"checkStatusButton\">Check Status</button>"
+                "<p id=\"statusLine\">Status: Idle</p>"
+                "<ul><li>Database Connection</li><li>API Endpoint Health</li><li>File System Integrity</li></ul>"
+                "</body></html>"
+            )
+        with open(os.path.join(workspace_dir, "app.js"), "w") as f:
+            f.write("document.body.classList.add('reviewed');\n")
+        with open(os.path.join(workspace_dir, "styles.css"), "w") as f:
+            f.write("body { color: red; }\n")
+
+        session = {
+            "projectContext": {
+                "intent": {"surface_ask": "Build one HTML page and app.js. No CSS file."},
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+                "constraints": {"hard_requirements": ["No CSS file."]},
+            }
+        }
+        valid_metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}, {"path": "app.js"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+        invalid_metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}, {"path": "app.js"}, {"path": "styles.css"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        valid = server.validate_model_authored_workspace(workspace_dir, valid_metadata, session)
+        invalid = server.validate_model_authored_workspace(workspace_dir, invalid_metadata, session)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><head><link rel=\"stylesheet\" href=\"styles.css\">"
+                "<script src=\"app.js\"></script></head><body>"
+                "<button id=\"checkStatusButton\">Check Status</button></body></html>"
+            )
+        linked = server.validate_model_authored_workspace(workspace_dir, valid_metadata, session)
+
+        self.assertTrue(valid["passed"], valid["failures"])
+        self.assertFalse(invalid["passed"])
+        self.assertTrue(any("CSS file was forbidden" in item for item in invalid["failures"]))
+        self.assertFalse(linked["passed"])
+        self.assertTrue(any("HTML links" in item for item in linked["failures"]))
+
+    def test_missing_linked_javascript_support_file_blocks_delivery(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-js-missing")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><head><script src=\"app.js\" defer></script></head>"
+                "<body><button id=\"run\">Run</button><p id=\"status\">Idle</p></body></html>"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("app.js" in item and "not found" in item for item in validation["failures"]))
+
+    def test_html_js_context_enrichment_treats_javascript_as_support_file(self):
+        parsed = {
+            "project": {"name": "button demo", "type": "code", "domain": "web"},
+            "intent": {
+                "surface_ask": "Deliver one HTML page and one linked JavaScript file named app.js.",
+                "underlying_need": "A tiny interactive page.",
+                "success_means": "index.html links app.js.",
+            },
+            "deliverable": {
+                "format": "html",
+                "count": 2,
+                "path_pattern": "index.html",
+                "encoding": "gforge_file_block",
+                "partial": False,
+                "scope": "One page plus support script.",
+                "anti_deflection": "stub",
+            },
+            "capabilities_required": ["emit_files"],
+            "constraints": {"hard_requirements": []},
+            "skill": {"use": "code-writer"},
+            "acceptance": ["index.html exists.", "app.js exists."],
+            "open_questions": [],
+            "content_requirements": [],
+        }
+
+        server.enrich_project_context(
+            parsed,
+            "Build one HTML page and one linked JavaScript file named app.js.",
+            model="gemma-4-e4b-it",
+        )
+
+        self.assertEqual(parsed["deliverable"]["count"], 1)
+        self.assertEqual(parsed["support_files"][0]["format"], "javascript")
+        self.assertEqual(parsed["support_files"][0]["path_pattern"], "app.js")
+        self.assertFalse(any(item.get("format") == "css" for item in parsed["support_files"]))
+
     def test_python_script_side_effect_counts_are_validated_in_temp_run(self):
         workspace_dir = os.path.join(self.tmp.name, "script-side-effects")
         os.makedirs(workspace_dir, exist_ok=True)

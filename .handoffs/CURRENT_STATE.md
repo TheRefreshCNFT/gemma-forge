@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-24 (UTC) — HTML/CSS fix backed up and GitHub alignment prepared.
+Last updated: 2026-05-24 (UTC) — JavaScript verifier SSD/GitHub alignment prepared.
 
 ## Verified ground truth
 
@@ -8,7 +8,7 @@ Last updated: 2026-05-24 (UTC) — HTML/CSS fix backed up and GitHub alignment p
 - Branch: `main` tracking `origin/main`; current branch head is the
   installable repo state for this backup pass once pushed to GitHub.
   Runtime/generated/private harness state remains local/SSD-only.
-- Harness Flask server source: `chat/server.py` (9,100 lines).
+- Harness Flask server source: `chat/server.py` (11,553 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -28,7 +28,7 @@ the contest demo path works end-to-end.** Driving doc:
 
 ## Status
 
-- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, and SSD/GitHub alignment completed.**
+- Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, JavaScript deterministic validation, and SSD/GitHub alignment completed.**
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the
@@ -113,16 +113,28 @@ the contest demo path works end-to-end.** Driving doc:
     runs, rejects `.pdf` outputs that do not parse as real PDFs, and can
     extract generated PDF text for content-count checks such as category
     reports.
-  - HTML/CSS deterministic validation has been ported locally from the
-    Python/PDF validation pattern. HTML/CSS checks are static and
-    read-only: `.html`/`.htm` files fail on clear tag-pair mismatches,
-    `.css` files fail on unclosed comments/strings or unbalanced
-    braces/brackets/parentheses, and existing local-link validation still
-    checks referenced `href`/`src`/`url()` assets against disk. The
-    Verification card now receives staged skill context for read-only
-    review, may rerun deterministic checks against current artifacts, and
-    must route unresolved issues back to the responsible Forge Section
-    rather than editing deliverables.
+  - HTML/CSS/JavaScript deterministic validation has been ported locally from
+    the Python/PDF validation pattern. HTML/CSS/JS checks are static and
+    read-only: `.html`/`.htm` files fail on clear tag-pair mismatches, `.css`
+    files fail on unclosed comments/strings or unbalanced braces/brackets/
+    parentheses, and `.js`/`.mjs`/`.cjs` files are parsed with `node --check`
+    without executing model-authored code. Missing `node` is a clear validator
+    capability failure. Existing local-link validation still checks referenced
+    `href`/`src`/`url()` assets against disk. HTML support-file bundles treat
+    linked JS like linked CSS: one HTML page plus `app.js` remains one primary
+    HTML deliverable with a required support file. The Verification card now
+    receives staged skill context for read-only review, may rerun deterministic
+    checks against current artifacts, and must route unresolved issues back to
+    the responsible Forge Section rather than editing deliverables.
+  - JS live canary follow-up: the pure `app.js` utility passed harness
+    validation and direct `node` functional import. The HTML+JS canary produced
+    working code but exposed a verifier false negative: "three sample system
+    checks" counted as 0 even though `index.html` had three `<li>` entries and
+    Playwright click proof passed. The validator now counts list-scoped content
+    requirements from HTML list items, and "no CSS file" contracts block
+    separate `.css` artifacts or CSS links while allowing `<style>` blocks and
+    inline `style` attributes inside the HTML. Replay validation for
+    `session_1779651755004` now passes with `actual: 3`.
   - Small-model extra review can still force repair for real artifact
     mismatches, but it no longer gets to reinterpret a passed deterministic
     validation count gate as failure. Count/path/PDF/content-quantity
@@ -340,11 +352,26 @@ the contest demo path works end-to-end.** Driving doc:
   cross-session save race tests, and docs. Runtime/generated/private
   state remains excluded from GitHub and preserved in SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T202333Z-full-live-local-working-state/`
+    (final JavaScript verifier alignment backup; includes repo snapshot,
+    ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent metadata, and
+    a restore archive; model cache intentionally omitted per Ian; checksum
+    verification recorded in the backup manifests)
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T175311Z-full-live-local-working-state/`
     (verified full live local working state with restore archive; checksum
     `09f2f1444df42b81125ba37de48f108073d96702725f0dc1c314e99ed8050360`;
     includes repo, harness runtime, `~/.gforge/models`, and LaunchAgent;
     omits recoverable 68G Ollama blob cache)
+  - `/Users/webot/Backups/gemma-forge/20260524T193056Z-pre-js-validation/`
+    (`chat/server.py`, `tests/model_route_test.py`, and current handoff state
+    before JavaScript validation edits)
+  - `/Users/webot/Backups/gemma-forge/20260524T193442Z-pre-js-validation-docs/`
+    (`project-map.md` and current handoff state before JS state-doc updates)
+  - `/Users/webot/Backups/gemma-forge/20260524T200319Z-pre-js-count-fine-tune/`
+    (`chat/server.py`, `tests/model_route_test.py`, and current handoff state
+    before JS content-count/no-CSS-file verifier edits)
+  - `/Users/webot/Backups/gemma-forge/20260524T200645Z-pre-js-count-docs/`
+    (`project-map.md` and current handoff state before JS count follow-up docs)
   - `/Users/webot/Backups/gemma-forge/20260524T-final-polish-pre/`
     (`chat/static/css/style.css`, `chat/static/js/chat.js`,
     `chat/templates/index.html`, `chat/server.py`,
@@ -453,6 +480,72 @@ the contest demo path works end-to-end.** Driving doc:
   manifest, and file list were preserved. Restore archive SHA-256:
   `d7a91bd7905fc13140bae0379c727f3435c93789d5c15d594cd02403dae1980d`; checksum
   verification passed.
+
+- **2026-05-24 — JS validation fresh-session handoff.**
+  Added `.handoffs/js-validation-fresh-session-handoff.md` as the pickup note
+  for the next JavaScript validation pass. It points to the Python/PDF baseline
+  in `docs/python-verification-fine-tuning.md`, the HTML/CSS validation and
+  false-negative followups in `.handoffs/html-css-validation-followups.md`, and
+  the live behavior Ian verified: good code advances to Handoff, bad code stops
+  for normal repair/resolution unless the contract explicitly says it is an
+  expected-failure validation test.
+
+- **2026-05-24 — JavaScript deterministic validation pass.**
+  Ported the Python/PDF and HTML/CSS verifier pattern to JavaScript. The worker
+  now parses `.js`, `.mjs`, and `.cjs` model-authored files with `node --check`
+  without executing them, reports invalid syntax as deterministic validation
+  failures, and reports missing `node` as a clear validator capability failure.
+  Project Context/support-bundle handling now treats linked JavaScript like
+  linked CSS, so "one HTML page and one linked JavaScript file" remains one
+  primary HTML deliverable plus a required support file instead of two HTML
+  deliverables. Tests cover valid JS, invalid JS, missing Node, HTML+JS support
+  count normalization, missing linked JS local-link failure, and JS support-file
+  Context enrichment. Pre-edit backups:
+  `/Users/webot/Backups/gemma-forge/20260524T193056Z-pre-js-validation/`,
+  `/Users/webot/Backups/gemma-forge/20260524T193442Z-pre-js-validation-docs/`.
+  Verification: focused JS unittests passed; `.venv/bin/python -m unittest
+  discover -s tests -p '*_test.py'` passed (108 tests); `npm run check` passed;
+  `git diff --check` passed. Live restart: `npm run harness:restart` reloaded
+  the launchd service, but its immediate helper probe returned before the port
+  was ready; follow-up `npm run harness:status` showed launchd PID `505`
+  listening on `127.0.0.1:5005`, harness root returned `200`,
+  `/api/workspace/status` returned `200`, and `/api/model/route` still reports
+  `defaultModel=gemma-4-e4b-it`. The legacy PID file remains stale at `86092`,
+  so launchd/port ownership is the trusted live-state source.
+
+- **2026-05-24 — JavaScript content-count/no-CSS follow-up.**
+  Ian live-tested the JS canaries. The pure `app.js` utility passed harness
+  validation and direct `node` functional import. The HTML+JS canary produced a
+  working page, but deterministic validation incorrectly counted 0 "sample
+  system checks" even though the HTML had three `<li>` entries and Playwright
+  click verification passed. Fine-tuned the verifier so list-scoped content
+  requirements count rendered HTML list items, and "no CSS file" means no
+  separate `.css` artifacts or CSS links while still allowing `<style>` blocks
+  and inline `style` attributes. Also prevented negated CSS language from
+  synthesizing a required `styles.css` support file. Replay validation for
+  `session_1779651755004` now passes with `actual: 3`. Pre-edit backups:
+  `/Users/webot/Backups/gemma-forge/20260524T200319Z-pre-js-count-fine-tune/`,
+  `/Users/webot/Backups/gemma-forge/20260524T200645Z-pre-js-count-docs/`.
+  Verification: focused regressions passed; `.venv/bin/python -m unittest
+  discover -s tests -p '*_test.py'` passed (110 tests); `npm run check` passed;
+  `git diff --check` passed. Live restart: the launchd helper again returned
+  before port readiness, but follow-up `npm run harness:status` showed launchd
+  PID `28978` listening on `127.0.0.1:5005`; harness root,
+  `/api/workspace/status`, and `/api/model/route` returned `200`/valid JSON.
+
+- **2026-05-24 — JavaScript verifier SSD backup and GitHub alignment.**
+  Ian confirmed the follow-up live job went through cleanly and requested the
+  state be backed up to the external SSD and pushed to GitHub, with no model
+  cache needed. Final verification before alignment: `.venv/bin/python -m
+  unittest discover -s tests -p '*_test.py'` passed (110 tests), `npm run
+  check` passed, `git diff --check` passed, launchd reported harness PID
+  `28978` listening on `127.0.0.1:5005`, and harness root plus
+  `/api/model/route` returned `200`. Final backup target:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260524T202333Z-full-live-local-working-state/`.
+  The backup omits `~/.gforge/models` per Ian, while preserving the repo,
+  ignored repo/runtime state, `~/.gforge/harness`, LaunchAgent metadata, and a
+  restore archive. GitHub alignment covers the installable repo state only;
+  runtime/private harness data remains SSD/local-only.
 
 - **2026-05-24 — SSD backup and GitHub alignment.**
   Full live local working state was backed up to external SSD at

@@ -221,15 +221,19 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   are syntax-checked, and script-created file/directory counts are inferred from
   the contract/acceptance when needed, validated by running the script in a
   temporary workspace, and then deleted rather than treated as final deliverables.
-  HTML/CSS deliverables now get static read-only integrity validation:
+  HTML/CSS/JavaScript deliverables now get static read-only integrity validation:
   `.html`/`.htm` files fail on clear tag-pair mismatches, `.css` files fail on
   unclosed comments/strings or unbalanced brackets/braces/parentheses, and
-  existing local-link validation still checks referenced assets against disk.
-  HTML/CSS bundle contracts treat linked CSS as a support file, so "one HTML
-  page and one linked CSS file" validates as one primary HTML deliverable plus
-  the stylesheet instead of two HTML files. HTML content counts ignore CSS
-  selector/comment text and count specific UI elements such as `status-card`
-  elements from the HTML.
+  `.js`/`.mjs`/`.cjs` files are parsed with `node --check` without executing
+  model-authored code. Existing local-link validation still checks referenced
+  assets against disk. HTML bundle contracts treat linked CSS/JS as support
+  files, so "one HTML page and one linked CSS/JS file" validates as one primary
+  HTML deliverable plus support files instead of extra HTML files. HTML content
+  counts ignore CSS/JS support-code text and count specific UI elements such as
+  `status-card` elements from the HTML. List-scoped content requirements such as
+  "three sample system checks" count rendered `<li>` entries in the HTML, and
+  "no CSS file" contracts block separate `.css` artifacts or CSS links while
+  allowing `<style>` blocks or inline `style` attributes inside the HTML.
 - Auto-generated execution workspace names are compact now. The harness prefers
   the Project Context project name, e.g. `local-ai-validation-lab-dashboard`,
   and otherwise uses a short collapsed slug. User-provided project directories
