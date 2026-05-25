@@ -392,11 +392,15 @@ the contest demo path works end-to-end.** Driving doc:
   Runtime/generated/private state remains excluded from GitHub and preserved in
   SSD/local backups.
 - Latest backup locations:
-  - `/Volumes/PHIXERO/Backups/gemma-forge/20260525T002118Z-full-live-local-working-state/`
-    (post-intake-contract-recovery alignment backup target; preserve repo
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260525T003356Z-full-live-local-working-state/`
+    (post-intake-contract-recovery alignment backup target created by
+    `npm run backup:live -- --timestamp 20260525T003356Z`; preserve repo
     snapshot, ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent
     metadata, and restore archive; intentionally omit `~/.gforge/models` per
     Ian)
+  - `/Users/webot/Backups/gemma-forge/20260525T003123Z-pre-backup-script/`
+    (`package.json` and `.handoffs/CURRENT_STATE.md` before adding the
+    repeatable `tools/backup_live_state.sh` backup script)
   - `/Users/webot/Backups/gemma-forge/20260525T000536Z-pre-intake-contract-recovery/`
     (`chat/server.py` and `tests/model_route_test.py` before the intake YAML
     recovery/post-review repair edits)
@@ -2188,6 +2192,17 @@ the contest demo path works end-to-end.** Driving doc:
   `test_repair_execution_preserves_existing_deliverables_when_model_emits_only_delta`.
   Live LaunchAgent was restarted after killing the active test and is healthy
   on PID `91247`, listening on `127.0.0.1:5005`.
+
+- **2026-05-25 — Repeatable SSD backup/GitHub alignment script.**
+  Added `tools/backup_live_state.sh` and `npm run backup:live` so full live
+  local working-state backups use one checked-in path instead of ad hoc shell.
+  The script requires branch `main`, clean worktree, and local `HEAD` matching
+  `origin/main` before copying; runs `npm run check`; copies the repo snapshot,
+  ignored repo state, `~/.gforge/harness`, and LaunchAgent metadata; explicitly
+  omits `~/.gforge/models`; removes AppleDouble sidecars from the snapshot;
+  builds the restore archive from a temp directory with macOS xattrs disabled;
+  and verifies both SHA-256 checksum and `tar -tzf` listing before reporting
+  success. `npm run check` now syntax-checks both shell service scripts.
 
 ## Product philosophy (load-bearing)
 
