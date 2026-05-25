@@ -18,6 +18,12 @@
 
 ![Gemma Forge harness overview](docs/submission-media/screenshots/current/01-forge-harness-overview.png)
 
+## Demo Video
+
+<video src="https://github.com/TheRefreshCNFT/gemma-forge/releases/download/contest-video-20260524-232825/gemma-forge-contest-demo-20260524-232825.mp4" controls width="100%"></video>
+
+[Watch the hosted demo page](https://therefreshcnft.github.io/gemma-forge/) · [Download the MP4](https://github.com/TheRefreshCNFT/gemma-forge/releases/download/contest-video-20260524-232825/gemma-forge-contest-demo-20260524-232825.mp4)
+
 ## Why Gemma Forge Exists
 
 Everyone should be able to use local AI. Gemma Forge opens that door by turning Gemma 4 into a guided local workbench instead of leaving users to learn model setup, terminal commands, Ollama internals, prompt formats, and agent protocols before they can get anything done.
