@@ -110,7 +110,8 @@ class SkillRoutingTest(unittest.TestCase):
         )
         self.assert_routes(
             "Orient on repo state and take a pre edit backup before editing.",
-            expected=["webot-flow"],
+            expected=[],
+            unexpected=["webot-flow"],
         )
 
     def test_socraticode_routes_semantic_codebase_discovery(self):
@@ -148,7 +149,18 @@ class SkillRoutingTest(unittest.TestCase):
         )
 
     def test_codex_global_skills_are_not_user_facing_by_default(self):
+        root_names = [name for name, _path in server.skill_install_roots()]
+        self.assertNotIn("codex", root_names)
+        self.assertNotIn("agents", root_names)
+
         skills = fake_skills()
+        skills["webot-flow"] = {
+            "name": "webot-flow",
+            "key": "webot-flow",
+            "source": "harness",
+            "description": "Project orientation and verification workflow.",
+            "keywords": ["backup", "handoff"],
+        }
         skills["firecrawl"] = {
             "name": "firecrawl",
             "key": "firecrawl",
@@ -162,6 +174,7 @@ class SkillRoutingTest(unittest.TestCase):
         )
         self.assertIn("scrapling-official", selected)
         self.assertNotIn("firecrawl", selected)
+        self.assertNotIn("webot-flow", selected)
 
 
 if __name__ == "__main__":

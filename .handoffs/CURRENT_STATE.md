@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-24 (UTC) — Skill depth SSD/GitHub alignment prepared.
+Last updated: 2026-05-25 (UTC) — Intake contract recovery fix applied.
 
 ## Verified ground truth
 
@@ -8,7 +8,7 @@ Last updated: 2026-05-24 (UTC) — Skill depth SSD/GitHub alignment prepared.
 - Branch: `main` tracking `origin/main`; current branch head is the
   installable repo state for this backup pass once pushed to GitHub.
   Runtime/generated/private harness state remains local/SSD-only.
-- Harness Flask server source: `chat/server.py` (12,079 lines).
+- Harness Flask server source: `chat/server.py` (12,674 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -55,6 +55,13 @@ the contest demo path works end-to-end.** Driving doc:
     again; switching sessions no longer shows the same global provisioning
     tail in every project.
 - Locally verified current behavior:
+  - Project Context intake now has deterministic recovery when the small model
+    emits invalid YAML even after its repair attempt. The harness rebuilds a
+    strict contract from the original request, preserves web/screenshot
+    evidence requirements, avoids false local `source_inputs` such as
+    `yahoonews`, and records the recovery clearly in `intake.md`. Intake
+    post-review repair no longer appends markdown "Post-Review Patch" prose or
+    duplicate "Post-review patch applied" summaries to a failed YAML contract.
   - Completed protocol cards show compact run facts on the card
     itself, e.g. Project Context shows format/path/count/skill/open
     questions/review/research.
@@ -228,9 +235,12 @@ the contest demo path works end-to-end.** Driving doc:
     repair mode." The retry prompt tells the model not to start over
     unless the human explicitly requested a restart, names the exact
     reviewer/validator blockers to fix, includes a bounded current-file
-    snapshot from the workspace, and instructs it to repair/add only the
-    needed complete files while finishing the rest of the original
-    request for delivery.
+    snapshot from the workspace, and instructs it to emit only files
+    that must be repaired or added while preserving omitted existing
+    files. Repair-mode execution no longer quarantines existing
+    deliverables; it carries prior execution file records forward so a
+    verifier retry cannot force a full project rewrite by clearing the
+    workspace first.
   - Archived projects are now read-only at the API boundary. Session
     chat messages, card runs, checkpoint updates, and `/api/plan` calls
     return HTTP `409` before any model/tool call can run.
@@ -382,6 +392,14 @@ the contest demo path works end-to-end.** Driving doc:
   Runtime/generated/private state remains excluded from GitHub and preserved in
   SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260525T002118Z-full-live-local-working-state/`
+    (post-intake-contract-recovery alignment backup target; preserve repo
+    snapshot, ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent
+    metadata, and restore archive; intentionally omit `~/.gforge/models` per
+    Ian)
+  - `/Users/webot/Backups/gemma-forge/20260525T000536Z-pre-intake-contract-recovery/`
+    (`chat/server.py` and `tests/model_route_test.py` before the intake YAML
+    recovery/post-review repair edits)
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260524T221709Z-full-live-local-working-state/`
     (skill-depth utilization alignment backup target; preserve repo snapshot,
     ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent metadata, and
@@ -2136,6 +2154,41 @@ the contest demo path works end-to-end.** Driving doc:
   skill-depth code/scripts/tests/docs/handoff, launcher, clean-install tools,
   and bundled protocol skills; local-only runtime data stays excluded from Git.
 
+- **2026-05-24 — Context writer/verifier source-evidence patch.**
+  The harness now detects natural-language source work such as "scrape
+  YahooNews", "check out other gallery sites", "capture design/text/prices",
+  and source screenshot requests as real `web_browse` / `screenshot_capture`
+  capabilities. Execution stores harness research metadata in
+  `artifacts/model-execution.json`, infers obvious sources such as
+  `https://news.yahoo.com/` and reference gallery sites, and can capture
+  source screenshots separately from generated-output screenshots. Deterministic
+  validation now fails requested web research without real `research/*.md`
+  artifacts and fails requested source screenshots unless
+  `research.screenshots` contains successful source screenshot files. Output
+  render screenshots no longer count as scrape proof. The local-link validator
+  now ignores JS/template bindings such as `href="${item.link}"`, preventing a
+  good dynamic HTML file from being rejected as a missing local file. Live
+  LaunchAgent was restarted after the patch; new PID `67238` is listening on
+  `127.0.0.1:5005` and `/api/model/route` is healthy. Follow-up patch removed
+  `.codex` / `.agents` skill roots from app skill discovery and blocks
+  `webot-flow` from app-level skill staging. Follow-up validator patch fixed the
+  false-negative loop from `viewing sections or moods` by counting real
+  `mood-*` section classes, and fixed the context contradiction where "no
+  separate CSS or JS files" could become a required `app.js`. Live LaunchAgent
+  was restarted again onto PID `84971`, listening on `127.0.0.1:5005`.
+  Final repair-preservation patch found the repeat loop's destructive edge:
+  Project Execution quarantined matching deliverables before every retry,
+  including verifier repair attempts, so good `index.html` files disappeared
+  and the worker had to recreate complete files. Repair attempts now skip
+  deliverable quarantine, preserve previous `artifacts/model-execution.json`
+  file records, merge omitted existing files into metadata, and screenshot
+  preserved files if no new files were written. The repair prompt now explicitly
+  says not to re-create the project, not to replace the full file set, and not
+  to re-emit already-correct files. Regression test:
+  `test_repair_execution_preserves_existing_deliverables_when_model_emits_only_delta`.
+  Live LaunchAgent was restarted after killing the active test and is healthy
+  on PID `91247`, listening on `127.0.0.1:5005`.
+
 ## Product philosophy (load-bearing)
 
 Gemma Forge is an **execution machine, not a chatbot.** Small input →
@@ -2195,8 +2248,9 @@ tail -5 /Users/webot/.gforge/harness/logs/errors.jsonl
 
 ## Next action
 
-Optional final proof pass: run a full live scraping/news/headlines webpage
-Execution and inspect the delivered artifact quality. Plumbing is already
-verified: Project Context/Execution prompt smoke selects
-`scrapling-official,ui-ux-pro-max` with deep UI entrypoints visible and no
-prior-agent self-poisoning, and clean-install E2E intake passes.
+Optional final proof pass: run a full live scraping/news/headlines or gallery
+webpage Execution and inspect both source evidence artifacts and delivered UI
+quality. Repo validation passed with `npm run check`,
+`.venv/bin/python -m unittest tests.model_route_test tests.skill_routing_test`,
+and `git diff --check`; live LaunchAgent has been restarted onto the patched
+code.

@@ -1717,6 +1717,144 @@ open_questions: []
 
         self.assertIn("system_package_install", missing)
 
+    def test_natural_language_scrape_requests_require_web_research(self):
+        gallery_prompt = (
+            "thoroughly check out other gallery sites scrape them if needed "
+            "to capture design, text, prices"
+        )
+        yahoo_prompt = "scrape YahooNews top headlines and take screenshots of the source pages"
+
+        self.assertIn("web_browse", server.detect_required_capabilities(gallery_prompt))
+        self.assertIn("web_browse", server.detect_required_capabilities(yahoo_prompt))
+        self.assertIn("screenshot_capture", server.detect_required_capabilities(yahoo_prompt))
+
+    def test_prepare_workspace_research_infers_yahoo_news_url(self):
+        workspace_dir = os.path.join(self.tmp.name, "yahoo-research")
+        os.makedirs(workspace_dir, exist_ok=True)
+        fetched_urls = []
+
+        def fake_fetch(url, mode="auto"):
+            fetched_urls.append(url)
+            return {
+                "ok": True,
+                "url": url,
+                "status": 200,
+                "mode": mode,
+                "title": "Yahoo News",
+                "text": "headline",
+            }
+
+        def fake_write(_workspace_dir, result):
+            return {
+                "url": result["url"],
+                "path": "research/news-yahoo-com.md",
+                "title": result["title"],
+                "ok": True,
+                "status": 200,
+                "mode": result["mode"],
+            }
+
+        session = {
+            "project": "scrape YahooNews for current headlines",
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files", "web_browse"],
+            },
+        }
+
+        with patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server.tool_browse, "fetch_url", side_effect=fake_fetch), \
+                patch.object(server.tool_browse, "write_research_artifact", side_effect=fake_write):
+            research = server.prepare_workspace_research(workspace_dir, session)
+
+        self.assertEqual(fetched_urls, ["https://news.yahoo.com/"])
+        self.assertEqual(research["fetched"][0]["path"], "research/news-yahoo-com.md")
+
+    def test_source_screenshot_capture_is_bounded_and_not_full_page(self):
+        workspace_dir = os.path.join(self.tmp.name, "bounded-source-screenshot")
+        os.makedirs(workspace_dir, exist_ok=True)
+
+        def fake_fetch(url, mode="auto"):
+            return {
+                "ok": True,
+                "url": url,
+                "status": 200,
+                "mode": mode,
+                "title": "Yahoo News",
+                "text": "headline",
+            }
+
+        def fake_write(_workspace_dir, result):
+            return {
+                "url": result["url"],
+                "path": "research/news-yahoo-com.md",
+                "title": result["title"],
+                "ok": True,
+                "status": 200,
+                "mode": result["mode"],
+            }
+
+        def fake_screenshot(_workspace_dir, target, **kwargs):
+            return {
+                "target": target,
+                "path": "screenshots/news-yahoo-com.png",
+                "ok": False,
+                "error": "simulated timeout",
+                "kwargs": kwargs,
+            }
+
+        session = {
+            "project": "scrape YahooNews headlines and take screenshots of source pages",
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files", "web_browse", "screenshot_capture"],
+            },
+        }
+
+        with patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server.tool_browse, "fetch_url", side_effect=fake_fetch), \
+                patch.object(server.tool_browse, "write_research_artifact", side_effect=fake_write), \
+                patch.object(server.tool_screenshot, "is_available", return_value=True), \
+                patch.object(server.tool_screenshot, "screenshot_into_workspace", side_effect=fake_screenshot) as screenshot_mock:
+            research = server.prepare_workspace_research(workspace_dir, session)
+
+        self.assertEqual(research["screenshots"][0]["kind"], "source")
+        self.assertFalse(research["screenshots"][0]["ok"])
+        screenshot_mock.assert_called_once()
+        self.assertEqual(screenshot_mock.call_args.kwargs["mode"], "url")
+        self.assertFalse(screenshot_mock.call_args.kwargs["full_page"])
+
+    def test_url_screenshot_defaults_to_fast_domcontentloaded_timeout(self):
+        workspace_dir = os.path.join(self.tmp.name, "url-screenshot-defaults")
+        os.makedirs(workspace_dir, exist_ok=True)
+
+        def fake_screenshot_url(_target, output_path, **kwargs):
+            return {
+                "ok": False,
+                "status": None,
+                "title": "",
+                "path": output_path,
+                "bytes": 0,
+                "elapsed_ms": kwargs.get("timeout_ms"),
+                "captured_at": "now",
+                "viewport": {"width": 1280, "height": 800},
+                "full_page": kwargs.get("full_page"),
+                "error": "simulated timeout",
+            }
+
+        with patch.object(server.tool_screenshot, "screenshot_url", side_effect=fake_screenshot_url) as screenshot_url:
+            server.tool_screenshot.screenshot_into_workspace(
+                workspace_dir,
+                "https://news.yahoo.com/",
+                mode="url",
+            )
+
+        self.assertEqual(screenshot_url.call_args.kwargs["wait_until"], "domcontentloaded")
+        self.assertEqual(
+            screenshot_url.call_args.kwargs["timeout_ms"],
+            server.tool_screenshot.SOURCE_SCREENSHOT_TIMEOUT_MS,
+        )
+
     def test_claim_validator_accepts_recorded_workspace_command_run(self):
         workspace_dir = os.path.join(self.tmp.name, "command-run")
         os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
@@ -1817,6 +1955,120 @@ open_questions: []
         self.assertEqual(parsed["content_requirements"][0]["count"], 3)
         self.assertIn("top 3 articles", parsed["content_requirements"][0]["source"].lower())
         self.assertTrue(any("at least 3 articles" in item.lower() for item in parsed["acceptance"]))
+
+    def test_intake_recovers_contract_when_model_yaml_repair_is_invalid(self):
+        project = (
+            "scrape yahoonews. get today's headlines. take screenshots of different headlines and save them. "
+            "review them, capture the intent, re-write improved, create a landing page with title of Real News First, "
+            "need an svg logo added to the top left of the site using brand letters RNF."
+        )
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            project,
+            "gemma-4",
+            requested_id="intake-recovery-test",
+            has_project_directory=False,
+        )
+        invalid_yaml = f"""Rationale.
+{server.CONTEXT_BEGIN_MARKER}
+---
+project:
+  name: Real News First
+  type: code
+  domain: news
+intent:
+  surface_ask: "{project}"
+  underlying_need: Build a modern news page.
+  success_means: The page exists.
+deliverable:
+  format: html
+  count: 1
+  path_pattern: index.html
+  encoding: gforge_file_block
+  partial: false
+  scope: A page.
+  anti_deflection: stub
+capabilities_required:
+  - web_browse
+  - screenshot_capture
+constraints:
+  hard_requirements:
+    - Build the page.
+  tone:
+    - modern
+skill:
+  use: none
+  staged_path: n/a
+tool_plan:
+  - step: Scrape headlines.
+    tool: scrapling-official
+    evidence: screenshots/*.png
+    instruction: must follow the sequential steps: Scrape -> Logo -> Rewrite -> Build
+acceptance:
+  - index.html exists.
+  - screenshots exist.
+open_questions: []
+---
+{server.CONTEXT_END_MARKER}
+"""
+        transport = {"status": "ok", "elapsedMs": 10, "attempts": 1}
+
+        with patch.object(server, "prepare_workspace_skill_context", return_value={"staged": []}), \
+                patch.object(server, "discover_installed_skills", return_value={}), \
+                patch.object(server, "call_ollama_with_transport",
+                             side_effect=[(invalid_yaml, transport), (invalid_yaml, transport)]):
+            result = server.run_intake_card(session_id, sessions[session_id], "gemma-4", "auto run")
+
+        context = sessions[session_id]["projectContext"]
+        self.assertTrue(result["validation"]["passed"], result["validation"]["failures"])
+        self.assertIn("Context Writer Recovery", result["details"])
+        self.assertEqual(context["deliverable"]["format"], "html")
+        self.assertEqual(context["deliverable"]["path_pattern"], "index.html")
+        self.assertEqual(context["source_inputs"], [])
+        self.assertIn("web_browse", context["capabilities_required"])
+        self.assertIn("screenshot_capture", context["capabilities_required"])
+        self.assertTrue(any(item["evidence"] == "research/*.md" for item in context["tool_plan"]))
+        self.assertTrue(any(item["evidence"] == "screenshots/*.png" for item in context["tool_plan"]))
+        self.assertTrue(any("Real News First" in item for item in context["acceptance"]))
+        self.assertTrue(any("RNF" in item for item in context["acceptance"]))
+
+    def test_intake_post_review_repair_does_not_append_markdown_patch(self):
+        session = {
+            "project": "Create a landing page with title of Real News First using brand letters RNF.",
+            "model": "gemma-4",
+        }
+        result = {
+            "summary": "Context Writer could not produce a valid contract.",
+            "details": "# Project Context (FAILED VALIDATION)",
+            "artifact": None,
+            "validation": {
+                "passed": False,
+                "failures": ["YAML parse error: mapping values are not allowed here"],
+            },
+        }
+        review = {
+            "summary": "YAML contract failed validation.",
+            "findings": ["YAML parse error: mapping values are not allowed here"],
+            "fixesNeeded": ["Correct YAML syntax."],
+        }
+
+        with patch.object(server, "discover_installed_skills", return_value={}):
+            repair = server.run_post_review_repair(
+                "intake-no-markdown-patch",
+                session,
+                "intake",
+                "gemma-4",
+                result,
+                review,
+                1,
+            )
+
+        self.assertTrue(repair["changed"])
+        self.assertTrue(result["validation"]["passed"], result["validation"]["failures"])
+        self.assertNotIn("Post-review patch applied", result["summary"])
+        self.assertNotIn("Post-Review Patch", result["details"])
+        self.assertIn("Post-Review Recovery", result["details"])
 
     def test_validation_fails_when_content_quantity_is_under_delivered(self):
         workspace_dir = os.path.join(self.tmp.name, "content-under")
@@ -2447,6 +2699,44 @@ open_questions: []
         self.assertTrue(validation["passed"], validation["failures"])
         self.assertEqual(validation["contentRequirements"][0]["actual"], 3)
 
+    def test_html_mood_sections_count_from_mood_classes(self):
+        workspace_dir = os.path.join(self.tmp.name, "html-mood-count")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><html><body>"
+                "<section id=\"featured\" class=\"gallery-section mood-featured\"><h2>Featured Collection</h2></section>"
+                "<section id=\"archive\" class=\"gallery-section mood-archive\"><h2>Archive Spotlight</h2></section>"
+                "</body></html>"
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {
+                        "count": 2,
+                        "item": "viewing sections or moods",
+                        "scope": "same page",
+                        "source": "two different viewing sections or moods on the same page",
+                    }
+                ],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 2)
+
     def test_no_css_file_contract_allows_inline_styles_but_blocks_css_files(self):
         workspace_dir = os.path.join(self.tmp.name, "html-no-css-file")
         os.makedirs(workspace_dir, exist_ok=True)
@@ -2504,6 +2794,50 @@ open_questions: []
         self.assertFalse(linked["passed"])
         self.assertTrue(any("HTML links" in item for item in linked["failures"]))
 
+    def test_no_separate_css_or_js_does_not_create_javascript_support_contract(self):
+        parsed = {
+            "project": {"name": "gallery", "type": "code", "domain": "web"},
+            "intent": {
+                "surface_ask": "Build one self-contained HTML file only, with no separate CSS or JS files.",
+                "underlying_need": "A single-file page.",
+                "success_means": "All CSS and JS are inline in index.html.",
+            },
+            "deliverable": {
+                "format": "html",
+                "count": 1,
+                "path_pattern": "index.html",
+                "encoding": "gforge_file_block",
+                "partial": False,
+                "scope": "One self-contained page.",
+                "anti_deflection": "stub",
+            },
+            "capabilities_required": ["emit_files"],
+            "constraints": {
+                "hard_requirements": [
+                    "No external CSS or JavaScript files are permitted.",
+                    "Linked JavaScript support file `app.js` must be present and referenced by the HTML.",
+                ]
+            },
+            "skill": {"use": "ui-ux-pro-max"},
+            "acceptance": [
+                "index.html exists.",
+                "Linked JavaScript support file `app.js` must be present and referenced by the HTML.",
+            ],
+            "support_files": [{"format": "javascript", "count": 1, "path_pattern": "app.js"}],
+            "open_questions": [],
+            "content_requirements": [],
+        }
+
+        server.enrich_project_context(
+            parsed,
+            "Build one self-contained HTML file only, with no separate CSS or JS files.",
+            model="gemma-4-e4b-it",
+        )
+
+        self.assertEqual(parsed.get("support_files"), [])
+        self.assertFalse(any("app.js" in item for item in parsed["constraints"]["hard_requirements"]))
+        self.assertFalse(any("app.js" in item for item in parsed["acceptance"]))
+
     def test_missing_linked_javascript_support_file_blocks_delivery(self):
         workspace_dir = os.path.join(self.tmp.name, "html-js-missing")
         os.makedirs(workspace_dir, exist_ok=True)
@@ -2532,6 +2866,93 @@ open_questions: []
 
         self.assertFalse(validation["passed"])
         self.assertTrue(any("app.js" in item and "not found" in item for item in validation["failures"]))
+
+    def test_web_research_requirement_needs_real_research_artifact(self):
+        workspace_dir = os.path.join(self.tmp.name, "missing-research-evidence")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write("<!doctype html><html><body>News page</body></html>")
+
+        session = {
+            "project": "scrape YahooNews and make a current headlines page",
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files", "web_browse"],
+                "content_requirements": [],
+            },
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "summary": "Built the page.",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("research/*.md" in item for item in validation["failures"]))
+
+    def test_source_screenshot_request_not_satisfied_by_output_screenshot(self):
+        workspace_dir = os.path.join(self.tmp.name, "source-screenshot-evidence")
+        os.makedirs(os.path.join(workspace_dir, "screenshots"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write("<!doctype html><html><body>Gallery page</body></html>")
+        with open(os.path.join(workspace_dir, "screenshots", "index.png"), "wb") as f:
+            f.write(b"png")
+
+        session = {
+            "project": "take screenshots of source pages and make a gallery page",
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files", "screenshot_capture"],
+                "content_requirements": [],
+            },
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "screenshots": [{"path": "screenshots/index.png", "ok": True, "of": "index.html"}],
+            "summary": "Built the page.",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("source screenshot" in item for item in validation["failures"]))
+
+    def test_local_link_validator_ignores_javascript_template_href(self):
+        workspace_dir = os.path.join(self.tmp.name, "template-link")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                """<!doctype html><html><body><div id="cards"></div><script>
+const item = { link: "https://example.com/article" };
+document.getElementById("cards").innerHTML = `<a href="${item.link}">Read</a>`;
+</script></body></html>"""
+            )
+
+        session = {
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [],
+            }
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "index.html"}],
+            "summary": "",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
 
     def test_html_js_context_enrichment_treats_javascript_as_support_file(self):
         parsed = {
@@ -2964,6 +3385,64 @@ open_questions: []
         self.assertFalse(os.path.exists(stale_path))
         self.assertEqual(moved[0]["path"], "output/report.pdf")
         self.assertTrue(os.path.exists(os.path.join(workspace_dir, moved[0]["backup"])))
+
+    def test_repair_execution_preserves_existing_deliverables_when_model_emits_only_delta(self):
+        workspace_dir = os.path.join(self.tmp.name, "repair-preserve")
+        os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
+        index_path = os.path.join(workspace_dir, "index.html")
+        original_html = (
+            "<!doctype html><html><head><title>Gallery</title></head>"
+            "<body><main><section class=\"mood-featured\">Featured</section>"
+            "<section class=\"mood-archive\">Archive</section></main></body></html>"
+        )
+        with open(index_path, "w") as f:
+            f.write(original_html)
+        with open(os.path.join(workspace_dir, "artifacts", "model-execution.json"), "w") as f:
+            json.dump({
+                "modelAuthored": True,
+                "files": [{"path": "index.html"}],
+                "commands": [],
+                "commandRuns": [],
+            }, f)
+
+        session = {
+            "project": "Refine an existing portfolio page without starting over.",
+            "model": "gemma-4",
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [
+                    {"item": "viewing sections or moods", "minimum_total": 2, "scope": "whole deliverable"}
+                ],
+            },
+        }
+        model_payload = {
+            "summary": "Existing page already satisfies the requested repair.",
+            "files": [],
+            "commands": [],
+            "notes": ["No rewrite needed."],
+            "verification": ["Existing index.html preserved."],
+        }
+
+        with patch.object(server, "call_ollama_execution_payload",
+                          return_value=(model_payload, json.dumps(model_payload), {"status": "ok"})), \
+                patch.object(server.tool_screenshot, "is_available", return_value=False):
+            execution = server.execute_model_authored_project(
+                "repair-preserve",
+                session,
+                "gemma-4",
+                workspace_dir,
+                review={"summary": "Spurious retry", "findings": [], "fixesNeeded": []},
+            )
+
+        self.assertTrue(os.path.exists(index_path))
+        with open(index_path) as f:
+            self.assertEqual(f.read(), original_html)
+        self.assertFalse(os.path.exists(os.path.join(workspace_dir, ".gforge", "attempt-backups")))
+        self.assertTrue(execution["validation"]["passed"], execution["validation"]["failures"])
+        self.assertEqual(execution["metadata"]["staleDeliverables"], [])
+        self.assertEqual([item["path"] for item in execution["files"]], ["index.html"])
+        self.assertTrue(execution["files"][0]["preservedFromPreviousAttempt"])
 
 
 if __name__ == "__main__":

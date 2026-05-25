@@ -50,6 +50,10 @@ def _slug_for(url_or_path: str, max_len: int = 60) -> str:
     return f"{base or 'page'}-{digest}"
 
 
+SOURCE_SCREENSHOT_TIMEOUT_MS = 30000
+LOCAL_SCREENSHOT_TIMEOUT_MS = 60000
+
+
 def _capture(target_url: str, output_path: str, viewport: tuple, full_page: bool,
              wait_until: str, timeout_ms: int) -> dict:
     """Single Playwright headless capture. Returns the result dict."""
@@ -61,6 +65,8 @@ def _capture(target_url: str, output_path: str, viewport: tuple, full_page: bool
             try:
                 context = browser.new_context(viewport={"width": viewport[0], "height": viewport[1]})
                 page = context.new_page()
+                page.set_default_timeout(timeout_ms)
+                page.set_default_navigation_timeout(timeout_ms)
                 response = page.goto(target_url, wait_until=wait_until, timeout=timeout_ms)
                 status = response.status if response else None
                 title = page.title() or ""
@@ -103,8 +109,8 @@ def screenshot_url(url: str,
                    output_path: str,
                    viewport: tuple = (1280, 800),
                    full_page: bool = True,
-                   wait_until: str = "networkidle",
-                   timeout_ms: int = 1200000) -> dict:
+                   wait_until: str = "domcontentloaded",
+                   timeout_ms: int = SOURCE_SCREENSHOT_TIMEOUT_MS) -> dict:
     if not is_available():
         return {
             "ok": False, "error": "playwright is not installed in this Python environment",
@@ -128,7 +134,7 @@ def screenshot_local_html(html_path: str,
                           viewport: tuple = (1280, 800),
                           full_page: bool = True,
                           wait_until: str = "load",
-                          timeout_ms: int = 1200000) -> dict:
+                          timeout_ms: int = LOCAL_SCREENSHOT_TIMEOUT_MS) -> dict:
     if not is_available():
         return {
             "ok": False, "error": "playwright is not installed in this Python environment",
@@ -153,7 +159,9 @@ def slug_for(url_or_path: str) -> str:
 
 
 def screenshot_into_workspace(workspace_dir: str, target: str, mode: str = "auto",
-                              viewport: tuple = (1280, 800), full_page: bool = True) -> dict:
+                              viewport: tuple = (1280, 800), full_page: bool = True,
+                              wait_until: str | None = None,
+                              timeout_ms: int | None = None) -> dict:
     """
     Decide between url / local_html based on `target`. Persists into
     <workspace>/screenshots/<slug>.png and returns an artifact descriptor.
@@ -164,9 +172,23 @@ def screenshot_into_workspace(workspace_dir: str, target: str, mode: str = "auto
     out_path = os.path.join(screenshots_dir, f"{slug}.png")
 
     if mode == "url" or (mode == "auto" and target.lower().startswith(("http://", "https://"))):
-        result = screenshot_url(target, out_path, viewport=viewport, full_page=full_page)
+        result = screenshot_url(
+            target,
+            out_path,
+            viewport=viewport,
+            full_page=full_page,
+            wait_until=wait_until or "domcontentloaded",
+            timeout_ms=timeout_ms or SOURCE_SCREENSHOT_TIMEOUT_MS,
+        )
     else:
-        result = screenshot_local_html(target, out_path, viewport=viewport, full_page=full_page)
+        result = screenshot_local_html(
+            target,
+            out_path,
+            viewport=viewport,
+            full_page=full_page,
+            wait_until=wait_until or "load",
+            timeout_ms=timeout_ms or LOCAL_SCREENSHOT_TIMEOUT_MS,
+        )
     return {
         "target": target,
         "path": (os.path.relpath(result["path"], workspace_dir).replace(os.sep, "/")

@@ -540,13 +540,10 @@ def read_forge_context():
 
 
 def skill_install_roots():
-    home = os.path.expanduser("~")
     return [
         ("harness", os.path.join(GFORGE_DATA_ROOT, "skills")),
         ("gforge", os.path.join(GFORGE_HOME, "skills")),
         ("project", os.path.join(PROJECT_ROOT, "skills")),
-        ("codex", os.path.join(home, ".codex", "skills")),
-        ("agents", os.path.join(home, ".agents", "skills")),
     ]
 
 
@@ -646,6 +643,8 @@ def discover_installed_skills(max_depth=3):
             skill_name = parse_skill_name(skill_file, directory_name)
             skill_metadata = parse_skill_metadata(skill_file)
             key = normalize_skill_key(skill_name)
+            if key in APP_SKILL_BLOCKLIST:
+                continue
             if key not in skills:
                 skills[key] = {
                     "name": skill_name,
@@ -668,6 +667,12 @@ def normalize_skill_phrase(value):
 
 
 USER_FACING_SKILL_SOURCES = {"harness", "gforge", "project"}
+APP_SKILL_BLOCKLIST = {
+    # Codex-side repo operating protocol. It must never be selected or staged
+    # inside Gemma Forge project runs, even if an old copy exists under the
+    # harness skills directory.
+    "webot-flow",
+}
 CORE_HARNESS_SKILL_KEYS = {
     "axon",
     "gsd",
@@ -678,7 +683,6 @@ CORE_HARNESS_SKILL_KEYS = {
     "scrapling-official",
     "socraticode",
     "ui-ux-pro-max",
-    "webot-flow",
 }
 SKILL_CATALOG_ORDER = [
     "scrapling-official",
@@ -690,7 +694,6 @@ SKILL_CATALOG_ORDER = [
     "pdf",
     "mcp-builder",
     "logo-generator",
-    "webot-flow",
 ]
 
 
@@ -1219,36 +1222,6 @@ SKILL_SELECTION_ALIASES = {
         "execute phase",
         "review backlog",
     ],
-    "webot-flow": [
-        "webot flow",
-        "forge flow",
-        "handoff",
-        "current state",
-        "active state",
-        "project map",
-        "backup",
-        "state backup",
-        "state check",
-        "check current state",
-        "orient on state",
-        "orient on repo",
-        "repo orientation",
-        "handoff update",
-        "handoff summary",
-        "protect live",
-        "protect user work",
-        "pre edit backup",
-        "before editing",
-        "before commit",
-        "wrap up",
-        "wrap this up",
-        "verify before done",
-        "verification handshake",
-        "repo state",
-        "working tree",
-        "do not touch live",
-        "handoff notes",
-    ],
 }
 
 SKILL_ALIAS_SUPPRESSIONS = {
@@ -1366,6 +1339,8 @@ def skill_alias_context_allows(text, key, alias):
 
 def skill_is_user_facing(info):
     key = info.get("key") or normalize_skill_key(info.get("name", ""))
+    if key in APP_SKILL_BLOCKLIST:
+        return False
     source = str(info.get("source", "")).strip().lower()
     return key in CORE_HARNESS_SKILL_KEYS or source in USER_FACING_SKILL_SOURCES
 
@@ -1705,13 +1680,6 @@ SKILL_ROLE_GUIDANCE = {
             "Use this when the user asks to create, update, review, or evaluate a Model Context Protocol server, tool schema, resource, prompt, transport, or API connector.",
             "Check the staged reference docs before implementation: best practices first, then the TypeScript or Python guide that matches the project.",
             "Design tools around real user workflows, authentication, pagination, structured outputs, and actionable errors; include evaluation when the request asks for quality or correctness.",
-        ],
-    },
-    "webot-flow": {
-        "role": "project orientation and verification workflow",
-        "guidance": [
-            "Use this when the task touches an existing project, repository state, handoff docs, backups, or verification discipline.",
-            "Read the staged project-state instructions before making claims about current state, and report blockers instead of pretending a step succeeded.",
         ],
     },
     "socraticode": {
@@ -3936,7 +3904,64 @@ def run_post_review_repair(session_id, session, card_id, model, result, review, 
         return repair_execution_after_review(session_id, session, model, result, review, attempt)
     if card_id == "verification":
         return repair_verification_after_review(session_id, session, result, review, attempt)
+    if card_id == "intake":
+        return repair_intake_after_review(session_id, session, model, result, review, attempt)
     return repair_text_section_after_review(session_id, session, card_id, model, result, review, attempt)
+
+
+def repair_intake_after_review(session_id, session, model, result, review, attempt):
+    project = session.get("project", "")
+    parsed, raw_yaml, errors = recover_project_context_from_request(project, model=model)
+    if errors:
+        result["validation"] = {
+            "passed": False,
+            "failures": errors,
+            "stage": "project_context_recovery",
+        }
+        return {
+            "attempt": attempt,
+            "card": "intake",
+            "changed": False,
+            "action": "Skipped generic markdown patch; deterministic Project Context recovery still failed validation.",
+            "reviewSummary": review.get("summary", ""),
+            "validation": result["validation"],
+            "artifact": result.get("artifact"),
+        }
+
+    session["projectContext"] = parsed
+    session["projectContextRaw"] = raw_yaml
+    transport = {
+        "status": "deterministic-recovery",
+        "elapsedMs": 0,
+        "attempts": attempt,
+    }
+    details = render_project_context_artifact(parsed, raw_yaml, transport, True)
+    details = "\n\n".join([
+        details,
+        "## Post-Review Recovery",
+        "The intake reviewer found the prior contract invalid, so the harness regenerated a strict YAML contract from the original request instead of appending a markdown patch.",
+    ])
+    result["summary"] = "Project Context recovered from the original request after reviewer failure."
+    result["details"] = details
+    result["checkpoint"] = (
+        f"Confirm the recovered deliverable contract ({parsed.get('deliverable', {}).get('format', 'unknown')} "
+        f"at `{parsed.get('deliverable', {}).get('path_pattern', '?')}`) before running execution."
+    )
+    result["artifact"] = write_artifact(session_id, "intake.md", details)
+    result["validation"] = {
+        "passed": True,
+        "failures": [],
+        "stage": "project_context_recovery",
+    }
+    return {
+        "attempt": attempt,
+        "card": "intake",
+        "changed": True,
+        "action": "Regenerated strict Project Context YAML from the original request; no reviewer-authored markdown patch was applied.",
+        "reviewSummary": review.get("summary", ""),
+        "artifact": result["artifact"],
+        "validation": result["validation"],
+    }
 
 
 def repair_execution_after_review(session_id, session, model, result, review, attempt):
@@ -4020,7 +4045,12 @@ Patch this section's artifact so it directly answers the review findings. Keep i
         f"## Post-Review Patch {attempt}",
         patch_note,
     ]).strip()
-    result["summary"] = f"{result.get('summary', 'Section completed.')} Post-review patch applied."
+    base_summary = re.sub(
+        r"(?:\s+Post-review (?:patch applied|text repair attempt \d+ recorded)\.)+$",
+        "",
+        str(result.get("summary", "Section completed.")),
+    ).strip() or "Section completed."
+    result["summary"] = f"{base_summary} Post-review text repair attempt {attempt} recorded."
     result["artifact"] = write_artifact(session_id, f"{safe_id(card_id)}.md", result["details"])
     return {
         "attempt": attempt,
@@ -4663,13 +4693,25 @@ CAPABILITY_KEYWORDS = {
         r"\bbrowse\s+(the\s+)?(web|internet|sites?)\b",
         r"\b(search|query)\s+(the\s+)?(web|internet|google|bing)\b",
         r"\bresearch\s+\d+\s+(sites?|pages?|articles?|sources?)\b",
+        r"\b(research|scrape|crawl|review|check\s+out|look\s+at|look\s+up)\s+(them|it|those|these)\b",
+        r"\b(thoroughly\s+)?check\s+out\s+(other\s+)?[a-z0-9\s-]*(sites?|websites?|pages?)\b",
         r"\bvisit\s+(the\s+)?(url|site|page|website)\b",
         r"\bgo\s+to\s+\w+\.(com|net|org|io|dev)\b",
+        r"\bscrape\s+[a-z0-9_.-]*(news|yahoo|gallery|site|website|page|headlines?)\b",
         r"\b(scrape|scraping|crawl|crawling)\s+(the\s+)?(web|internet|sites?|websites?|pages?|articles?|sources?|news|headlines|data)\b",
         r"\bextract\s+(data|content|articles?|headlines?)\s+from\s+(the\s+)?(web|internet|sites?|websites?|pages?|urls?)\b",
+        r"\bcapture\s+(design|copy|text|prices?|pricing|content|headlines?|articles?)\s+from\s+(sites?|websites?|pages?|sources?)\b",
         r"\b(live|latest|current|real[-\s]?time)\s+(news|headlines|articles?|web\s+data|site\s+data)\b",
+        r"\b(today'?s|latest|current|fresh|real[-\s]?time)\s+(prices?|pricing|availability|events?|exhibitions?|shows?)\b",
         r"\bnews\s+(feed|ticker|headlines?|articles?)\b",
         r"\b(headlines?|articles?)\s+from\s+(the\s+)?(web|internet|sites?|websites?|urls?)\b",
+        r"\b(competitor|reference|inspiration|gallery)\s+(sites?|websites?|pages?)\b",
+    ],
+    "screenshot_capture": [
+        r"\b(take|capture|save|grab)\s+(screenshots?|screen\s+captures?)\b",
+        r"\b(screenshots?|screen\s+captures?)\s+(of|from|for)\s+(the\s+)?(sites?|websites?|pages?|sources?|headlines?|articles?|urls?|galleries)\b",
+        r"\bsource\s+(screenshots?|screen\s+captures?)\b",
+        r"\bproof(?:s)?\s+of\s+(work|source|scrape|research)\b.*\b(screenshots?|screen\s+captures?)\b",
     ],
     "shell_exec": [
         r"\brun\s+(this\s+|that\s+)?(command|script|shell|terminal)\b",
@@ -5314,6 +5356,13 @@ def build_tool_plan(parsed):
             "evidence": "research/*.md",
             "instruction": "Scrapling is the first browser/scraping path: request, then browser, then stealth if needed.",
         })
+    if "screenshot_capture" in capabilities:
+        plan.append({
+            "step": "capture requested screenshots",
+            "tool": "playwright screenshot capture",
+            "evidence": "screenshots/*.png",
+            "instruction": "Save requested source screenshots under screenshots/*.png; generated-output renders are separate evidence.",
+        })
     if "harness_maintenance" in capabilities:
         plan.append({
             "step": "maintain Gemma Forge target files",
@@ -5484,6 +5533,8 @@ Take a moment. Reason carefully through seven steps in order:
    - If the user names a local file or directory, treat it as binding source material. The harness imports it to the workspace.
    - Downstream agents must use copied workspace-relative paths, not original absolute paths, in commands.
    - Choose skills for operational fit, not keyword theater.
+   - If the user asks to scrape, research, check out, look up, review other sites, use latest/current/live web data, or capture real website text/prices/design, capabilities_required MUST include `web_browse` or `web_fetch`, and tool_plan.evidence MUST name `research/*.md`.
+   - If the user asks for screenshots of sources, sites, pages, headlines, articles, or scrape/research proof, capabilities_required MUST include `screenshot_capture`, and tool_plan.evidence MUST name source screenshots under `screenshots/*.png`. Output-render screenshots do NOT satisfy source screenshot proof.
    - If web research is needed, Scrapling is the first browser/scraping option.
 7. EMIT the YAML between the markers. Output a one-paragraph rationale BEFORE the begin marker, then the YAML between markers, then nothing else.
 
@@ -5558,7 +5609,7 @@ agent_digest:
   selected_model: <selected local model>
   model_profile: <how to prompt this model>
   perspectives:
-    - <intent/tool/verifier/source perspective>
+    - <intent/tool/verifier/source perspective; include the exact user intent, hard counts, required evidence, and "do not start over" repair rule when applicable>
 gsd_directives:
   planner_standard: <how GSD should plan this request>
   counts_are_hard_gates: <true|false>
@@ -5586,6 +5637,11 @@ Rules:
 - capabilities_required must list every capability the user's request implies.
   If any of those are in the harness CANNOT list, you MUST set partial: true,
   populate open_questions, and shrink scope to the partial deliverable.
+- Natural-language source work still counts: "scrape YahooNews", "check out other gallery sites",
+  "capture design/text/prices", "latest headlines", and similar phrases require `web_browse`
+  even when the user did not paste explicit URLs.
+- If source screenshots are requested, acceptance must include a source-screenshot evidence
+  check. Render screenshots of the generated output are separate and are not scrape proof.
 - skill.use should name the strongest single matching installed skill from the catalog. The harness may add more matching skills deterministically during staging.
 - SocratiCode and Axon are higher-level codebase tools. Use them for existing-codebase discovery/structure/impact/dead-code work, not simple fresh content/file tasks.
 - UI/UX Pro Max is the design-system/interface suite. Use it for UI, dashboards, layout, states, charts, accessibility, and responsive presentation.
@@ -5626,6 +5682,124 @@ def parse_project_context(text, project_text="", model=None):
         return None, raw_yaml, ["YAML did not parse to a mapping at top level"]
 
     enrich_project_context(parsed, project_text, model=model)
+    return parsed, dump_project_context_yaml(parsed), validate_project_context(parsed)
+
+
+def infer_recovered_context_deliverable(project_text):
+    text = str(project_text or "")
+    lowered = text.lower()
+    if re.search(r"\b(html|landing\s+page|web\s?page|website|site|page)\b", lowered):
+        count = requested_html_file_count(text) or 1
+        return "html", count, "index.html"
+    if re.search(r"\b(svg|logo|icon|brand\s+mark)\b", lowered):
+        return "svg", 1, "output/logo.svg"
+    if re.search(r"\b(python|py|script|cli|command[-\s]?line)\b", lowered):
+        return "python", 1, "main.py"
+    if re.search(r"\b(javascript|node|js)\b", lowered):
+        return "javascript", 1, "app.js"
+    if re.search(r"\b(css|stylesheet)\b", lowered):
+        return "css", 1, "styles.css"
+    if re.search(r"\b(pdf)\b", lowered):
+        return "pdf", 1, "output/report.pdf"
+    if re.search(r"\b(json)\b", lowered):
+        return "json", 1, "output/data.json"
+    if re.search(r"\b(yaml|yml)\b", lowered):
+        return "yaml", 1, "output/config.yaml"
+    if re.search(r"\b(markdown|readme|brief|report|doc|document)\b", lowered):
+        return "markdown", 1, "output/report.md"
+    return "markdown", 1, "output/delivery.md"
+
+
+def extract_title_requirement(project_text):
+    text = str(project_text or "")
+    quoted = re.search(r"\btitle\s+(?:of|called|named)\s+[\"']([^\"'\n]+)[\"']", text, re.IGNORECASE)
+    if quoted:
+        return quoted.group(1).strip()
+    match = re.search(r"\btitle\s+(?:of|called|named)\s+([^.,;\n]+)", text, re.IGNORECASE)
+    if not match:
+        return ""
+    title = re.split(r"\b(?:need|needs|using|with|and)\b", match.group(1), maxsplit=1, flags=re.IGNORECASE)[0]
+    return re.sub(r"\s+", " ", title).strip(" -:")
+
+
+def extract_brand_letters_requirement(project_text):
+    match = re.search(r"\bbrand\s+letters?\s+([A-Za-z0-9]{2,12})\b", str(project_text or ""), re.IGNORECASE)
+    return match.group(1).upper() if match else ""
+
+
+def recover_project_context_from_request(project_text, model=None):
+    """
+    Deterministic safety net for Context Writer YAML syntax failures.
+
+    This does not fabricate deliverables. It creates the minimum strict
+    contract from the original user request so downstream cards keep the user's
+    intent instead of getting a markdown "patch" glued onto a failed YAML blob.
+    """
+    text = str(project_text or "").strip()
+    fmt, count, path_pattern = infer_recovered_context_deliverable(text)
+    capabilities = sorted(set(detect_required_capabilities(text) + ["emit_files"]))
+    title = extract_title_requirement(text)
+    brand_letters = extract_brand_letters_requirement(text)
+
+    hard_requirements = [
+        "The primary deliverable must directly implement the user's requested outcome.",
+        "Do not replace the deliverable with a plan, explanation, or restart from scratch unless the user explicitly asks.",
+    ]
+    acceptance = [
+        f"The primary `{fmt}` deliverable exists at `{path_pattern}`.",
+        "The deliverable content reflects the original user request rather than a generic placeholder.",
+    ]
+    if any(cap in capabilities for cap in {"web_browse", "web_fetch"}):
+        hard_requirements.append("Live/source research must be captured in `research/*.md` before final synthesis.")
+        acceptance.append("Research evidence exists under `research/*.md` when live/source research is requested.")
+    if "screenshot_capture" in capabilities and source_screenshot_requested(text):
+        hard_requirements.append("Requested source screenshots must be saved under `screenshots/*.png`.")
+        acceptance.append("Source screenshot evidence exists under `screenshots/*.png` for the requested source pages/items.")
+    if title:
+        hard_requirements.append(f"The deliverable must use the requested title `{title}`.")
+        acceptance.append(f"The deliverable includes the requested title `{title}`.")
+    if brand_letters:
+        hard_requirements.append(f"The deliverable must include the requested `{brand_letters}` brand lettering.")
+        acceptance.append(f"The deliverable includes `{brand_letters}` brand lettering.")
+    if "logo" in text.lower() and "svg" in text.lower() and fmt == "html":
+        hard_requirements.append("The HTML must include an inline or linked SVG logo in the requested placement.")
+        acceptance.append("The HTML contains an SVG logo element or linked SVG asset.")
+
+    parsed = {
+        "project": {
+            "name": title or "Recovered project context",
+            "type": format_default_task_type(fmt),
+            "domain": "Recovered from the original user request after model YAML failed validation.",
+        },
+        "intent": {
+            "surface_ask": text,
+            "underlying_need": "Deliver the requested final artifact while preserving source, evidence, and count requirements.",
+            "success_means": "The specified artifact exists on disk and deterministic checks can trace it back to the user's request.",
+        },
+        "deliverable": {
+            "format": fmt,
+            "count": count,
+            "path_pattern": path_pattern,
+            "encoding": "gforge_file_block",
+            "partial": False,
+            "scope": "Full in-workspace deliverable unless capability checks identify a real gap.",
+            "anti_deflection": "stub",
+        },
+        "content_requirements": detect_content_quantity_requirements(text),
+        "capabilities_required": capabilities,
+        "constraints": {
+            "hard_requirements": hard_requirements,
+            "tone": ["clear", "complete"],
+        },
+        "skill": {
+            "use": "none",
+            "staged_path": "n/a",
+        },
+        "source_inputs": build_source_inputs_contract(text),
+        "acceptance": acceptance,
+        "open_questions": [],
+    }
+    enrich_project_context(parsed, text, model=model)
     return parsed, dump_project_context_yaml(parsed), validate_project_context(parsed)
 
 
@@ -5694,22 +5868,30 @@ def normalize_html_css_support_bundle_context(parsed, project_text):
     fmt = str(deliverable.get("format", "")).strip().lower()
     if fmt != "html":
         return
-    if not html_support_bundle_requested(parsed, extra_text=project_text):
+    reference_text = project_context_reference_text(parsed, extra_text=project_text)
+    negated_support_formats = {
+        support_format for support_format in HTML_SUPPORT_FILE_FORMATS
+        if html_support_format_negated(reference_text, support_format)
+    }
+    if not html_support_bundle_requested(parsed, extra_text=project_text) and not negated_support_formats:
         return
 
-    reference_text = project_context_reference_text(parsed, extra_text=project_text)
     expected = parse_positive_int(deliverable.get("count"))
     primary_count = requested_html_file_count(reference_text)
     if expected and primary_count and primary_count < expected:
         deliverable["count"] = primary_count
 
     support_files = parsed.get("support_files") if isinstance(parsed.get("support_files"), list) else []
+    if negated_support_formats:
+        support_files = [
+            item for item in support_files
+            if not isinstance(item, dict)
+            or str(item.get("format", "")).strip().lower() not in negated_support_formats
+        ]
     requested_support = []
     for support_format, config in HTML_SUPPORT_FILE_FORMATS.items():
         for support_file in html_support_file_names(reference_text, support_format):
             requested_support.append((support_format, support_file, config["label"]))
-    if not requested_support:
-        return
 
     existing_support = {
         (
@@ -5736,6 +5918,17 @@ def normalize_html_css_support_bundle_context(parsed, project_text):
     hard_requirements = [str(item).strip() for item in hard_requirements if str(item).strip()]
     acceptance = parsed.get("acceptance") if isinstance(parsed.get("acceptance"), list) else []
     acceptance = [str(item).strip() for item in acceptance if str(item).strip()]
+    negated_fallback_names = {
+        config["fallback"].lower()
+        for support_format, config in HTML_SUPPORT_FILE_FORMATS.items()
+        if support_format in negated_support_formats
+    }
+    if negated_fallback_names:
+        def is_negated_support_requirement(line):
+            lowered = line.lower()
+            return "linked" in lowered and any(name in lowered for name in negated_fallback_names)
+        hard_requirements = [item for item in hard_requirements if not is_negated_support_requirement(item)]
+        acceptance = [item for item in acceptance if not is_negated_support_requirement(item)]
     for _support_format, support_file, label in requested_support:
         requirement = f"Linked {label} file `{support_file}` must be present and referenced by the HTML."
         if not any(support_file in item for item in hard_requirements):
@@ -6049,6 +6242,8 @@ def run_intake_card(session_id, session, model, mode):
     repaired = False
     repair_raw = ""
     repair_transport = None
+    recovered = False
+    original_errors = list(errors or [])
     if errors:
         repair_prompt = build_project_context_prompt(
             project, mode, staged_skills,
@@ -6068,10 +6263,30 @@ def run_intake_card(session_id, session, model, mode):
         else:
             errors = repair_errors or errors
 
+    if errors:
+        fallback_parsed, fallback_yaml, fallback_errors = recover_project_context_from_request(project, model=model)
+        if fallback_parsed is not None and not fallback_errors:
+            parsed = fallback_parsed
+            raw_yaml = fallback_yaml
+            errors = []
+            repaired = True
+            recovered = True
+        else:
+            errors = fallback_errors or errors
+
     if parsed and not errors:
         session["projectContext"] = parsed
         session["projectContextRaw"] = raw_yaml
         details = render_project_context_artifact(parsed, raw_yaml, transport, repaired)
+        if recovered:
+            recovery_errors = original_errors or ["model-authored YAML failed validation"]
+            details = "\n\n".join([
+                details,
+                "## Context Writer Recovery",
+                "The model-authored YAML failed validation, so the harness generated this strict contract deterministically from the original request.",
+                "Original validation errors:",
+                "\n".join(f"- {error}" for error in recovery_errors),
+            ])
         next_step = (
             f"Confirm the deliverable contract ({parsed.get('deliverable', {}).get('format', 'unknown')} "
             f"at `{parsed.get('deliverable', {}).get('path_pattern', '?')}`) before running execution."
@@ -6079,7 +6294,15 @@ def run_intake_card(session_id, session, model, mode):
         if parsed.get("open_questions"):
             next_step = "Answer the open_questions in the artifact before running execution."
         artifact = write_artifact(session_id, "intake.md", details)
-        return card_result("Project Context", "Structured project contract written.", details, next_step, artifact)
+        summary = "Structured project contract recovered from the original request." if recovered else "Structured project contract written."
+        return card_result(
+            "Project Context",
+            summary,
+            details,
+            next_step,
+            artifact,
+            {"validation": {"passed": True, "failures": [], "stage": "project_context"}},
+        )
 
     fallback_lines = [
         "# Project Context (FAILED VALIDATION)",
@@ -6116,6 +6339,7 @@ def run_intake_card(session_id, session, model, mode):
         details,
         "Rerun Project Context with a clearer project description, or edit the saved intake.md and rerun the next card.",
         artifact,
+        {"validation": {"passed": False, "failures": errors or ["unknown failure"], "stage": "project_context"}},
     )
 
 
@@ -6980,15 +7204,19 @@ Deterministic validation:
 {json.dumps(context.get('validation', {}), indent=2)}
 Files found:
 {json.dumps(context.get('filesFound', {}), indent=2)}
+Research/source evidence:
+{json.dumps((context.get('validation', {}) or {}).get('sourceEvidence', {}), indent=2)}
 
 Gemma Forge skill context for this read-only verification pass:
 {skill_block}
 {correction_block}
-Produce a short verification checklist from these actual artifacts. If auto-run is enabled, list the checks already run and any remaining manual inspection. If a correction block is present above, the checklist MUST explicitly say whether each user/reviewer item has now been satisfied.
+Produce a short verification checklist from these actual artifacts. Validate the exact original Project request, not the execution model's summary of it. If auto-run is enabled, list the checks already run and any remaining manual inspection. If a correction block is present above, the checklist MUST explicitly say whether each user/reviewer item has now been satisfied.
 
 Evaluate the workspace against staged skill output and quality rules where applicable. UI/UX work must be checked for layout, responsive behavior, accessibility, states, hierarchy, charts/data presentation, and visual polish. GSD work must be checked for phases, acceptance criteria, dependencies, verification gates, and hard count/source requirements.
 
 Verification may rerun deterministic checks and inspect the current workspace, but it must not edit deliverables. If issues remain, route the work back to the responsible Forge Section (usually Project Execution) with the exact blocker instead of proposing direct edits inside Verification.
+
+Source/research rules are strict: if the request asked to scrape, browse, research live/current sources, inspect other websites, capture source text/prices/design, or save screenshots of source pages, mark that satisfied only when the deterministic artifact check lists real on-disk evidence. Skill staging, model claims, and generated-output screenshots are not source evidence.
 
 FORMATTING RULES — do not violate:
 - Refer to deliverables by their relative path in backticks only, e.g. `output/index.html` or `artifacts/validation.json`.
@@ -7208,6 +7436,14 @@ def build_verification_report(session_id, session, mode, context, checklist, ski
         json.dumps(validation, indent=2),
         "",
     ]
+    source_evidence = validation.get("sourceEvidence") if isinstance(validation, dict) else None
+    if source_evidence:
+        lines.extend([
+            "## Source Evidence",
+            "",
+            json.dumps(source_evidence, indent=2),
+            "",
+        ])
     if isinstance(skill_context, dict):
         staged = skill_context.get("staged") if isinstance(skill_context.get("staged"), list) else []
         lines.extend([
@@ -7244,6 +7480,14 @@ def build_verification_report(session_id, session, mode, context, checklist, ski
             "",
             json.dumps(stored_validation, indent=2),
         ])
+        stored_research = stored_validation.get("research") if isinstance(stored_validation, dict) else None
+        if isinstance(stored_research, dict):
+            lines.extend([
+                "",
+                "## Stored Research Artifacts",
+                "",
+                json.dumps(stored_research, indent=2),
+            ])
 
     snippets = context.get("snippets", {})
     if snippets:
@@ -7286,6 +7530,25 @@ def build_verification_report(session_id, session, mode, context, checklist, ski
             shot_abs = os.path.join(workspace_dir, shot_rel)
             if os.path.exists(shot_abs) and (shot_rel, shot_abs) not in present:
                 present.append((shot_rel, shot_abs))
+        research = stored.get("research") if isinstance(stored.get("research"), dict) else {}
+        for artifact in (research.get("fetched") or []):
+            if not isinstance(artifact, dict):
+                continue
+            rel = (artifact.get("path") or "").strip()
+            if not rel:
+                continue
+            absolute = os.path.join(workspace_dir, rel)
+            if os.path.exists(absolute) and (rel, absolute) not in present:
+                present.append((rel, absolute))
+        for shot in (research.get("screenshots") or []):
+            if not isinstance(shot, dict):
+                continue
+            rel = (shot.get("path") or "").strip()
+            if not rel:
+                continue
+            absolute = os.path.join(workspace_dir, rel)
+            if os.path.exists(absolute) and (rel, absolute) not in present:
+                present.append((rel, absolute))
         if present:
             lines.extend([
                 "",
@@ -7446,6 +7709,61 @@ def format_command_output(result, unavailable="Unavailable."):
     return "\n".join(parts) if parts else "No output."
 
 
+def current_workspace_file_records(workspace_dir, file_items):
+    records = []
+    seen = set()
+    if not workspace_dir or not os.path.isdir(workspace_dir):
+        return records
+    for item in file_items or []:
+        relative_path = item.get("path", "") if isinstance(item, dict) else str(item or "")
+        safe_path = safe_workspace_relative_path(relative_path)
+        if not safe_path or safe_path in seen:
+            continue
+        path = os.path.join(workspace_dir, safe_path)
+        if not os.path.isfile(path):
+            continue
+        try:
+            records.append({
+                "path": safe_path,
+                "sha256": file_sha256(path),
+                "bytes": os.path.getsize(path),
+                "preservedFromPreviousAttempt": True,
+            })
+            seen.add(safe_path)
+        except OSError:
+            continue
+    return records
+
+
+def previous_execution_file_records(workspace_dir):
+    metadata_path = os.path.join(workspace_dir, "artifacts", "model-execution.json")
+    try:
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return []
+    files = metadata.get("files") if isinstance(metadata, dict) and isinstance(metadata.get("files"), list) else []
+    return current_workspace_file_records(workspace_dir, files)
+
+
+def merge_file_records(*record_groups):
+    merged = {}
+    order = []
+    for records in record_groups:
+        for item in records or []:
+            if not isinstance(item, dict):
+                continue
+            safe_path = safe_workspace_relative_path(item.get("path", ""))
+            if not safe_path:
+                continue
+            record = dict(item)
+            record["path"] = safe_path
+            if safe_path not in merged:
+                order.append(safe_path)
+            merged[safe_path] = record
+    return [merged[path] for path in order if path in merged]
+
+
 def execute_model_authored_project(session_id, session, model, workspace_dir, review=None):
     fallback = {
         "summary": "Gemma did not return a valid file payload.",
@@ -7469,7 +7787,9 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
 
     files, rejected = normalize_model_files(payload.get("files", []))
     commands = augment_workspace_commands_for_dependencies(workspace_dir, session, files, listify(payload.get("commands")))
-    stale_deliverables = quarantine_existing_deliverables(workspace_dir, session)
+    repair_mode = bool(review)
+    preserved_files = previous_execution_file_records(workspace_dir) if repair_mode else []
+    stale_deliverables = [] if repair_mode else quarantine_existing_deliverables(workspace_dir, session)
     written = []
     for item in files:
         path = write_project_file(workspace_dir, item["path"], item["content"])
@@ -7494,22 +7814,23 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
 
     maintenance_actions = apply_harness_maintenance_actions(workspace_dir, maintenance_context)
 
-    generated_deliverables = discover_deliverable_files(workspace_dir, session, known_paths={item["path"] for item in written})
-    if generated_deliverables:
-        written.extend(generated_deliverables)
+    known_paths = {item["path"] for item in merge_file_records(preserved_files, written)}
+    generated_deliverables = discover_deliverable_files(workspace_dir, session, known_paths=known_paths)
+    all_files = merge_file_records(preserved_files, written, generated_deliverables)
 
     metadata = {
         "model": model,
         "modelAuthored": True,
         "requestedProject": session.get("project", ""),
         "summary": payload.get("summary", ""),
-        "files": written,
+        "files": all_files,
         "rejectedFiles": rejected,
         "staleDeliverables": stale_deliverables,
         "commands": commands,
         "commandRuns": command_runs,
         "notes": listify(payload.get("notes")),
         "verification": listify(payload.get("verification")),
+        "research": research,
         "gitReferences": git_references,
         "sourceInputs": source_inputs,
         "harnessMaintenance": {
@@ -7548,7 +7869,8 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
     # Auto-screenshot any HTML deliverable so the handoff + verification card
     # has visual proof the page actually renders. Best-effort; failures here
     # are logged but never block validation.
-    screenshots = capture_html_screenshots(workspace_dir, written) if tool_screenshot.is_available() else []
+    screenshot_targets = written if written else all_files
+    screenshots = capture_html_screenshots(workspace_dir, screenshot_targets) if tool_screenshot.is_available() else []
     metadata["screenshots"] = screenshots
     if screenshots:
         write_project_file(workspace_dir, "artifacts/model-execution.json", json.dumps(metadata, indent=2))
@@ -7558,7 +7880,7 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
 
     return {
         "summary": metadata["summary"],
-        "files": written,
+        "files": all_files,
         "rejectedFiles": rejected,
         "commands": metadata["commands"],
         "commandRuns": command_runs,
@@ -7874,10 +8196,15 @@ def build_research_context_block(research):
     if not isinstance(research, dict):
         return ""
     fetched = research.get("fetched") or []
-    if not fetched:
+    source_screenshots = research.get("screenshots") or []
+    if not fetched and not source_screenshots:
         reason = research.get("skipped_reason") or ""
         if reason:
-            return f"\nResearch step skipped: {reason}\n"
+            return (
+                f"\nResearch step skipped: {reason}\n"
+                "Do not claim scraping, browsing, source screenshots, or source research happened. "
+                "If the original request requires those, call it out as a blocker in NOTES/VERIFICATION.\n"
+            )
         return ""
     lines = [
         "",
@@ -7898,6 +8225,17 @@ def build_research_context_block(research):
         mode = item.get("mode") or "?"
         marker = "ok" if ok else "FAIL"
         lines.append(f"- [{marker} {status} via {mode}] {path}  —  {title}  ({url})")
+    if source_screenshots:
+        lines.extend([
+            "",
+            "Harness-captured SOURCE screenshots (proof of source pages, not generated-output render screenshots):",
+        ])
+        for item in source_screenshots:
+            path = item.get("path") or "(no path)"
+            target = item.get("of") or item.get("target") or "(unknown target)"
+            ok = item.get("ok")
+            marker = "ok" if ok else "FAIL"
+            lines.append(f"- [{marker}] {path}  —  {target}")
     lines.append("")
     return "\n".join(lines)
 
@@ -8589,25 +8927,92 @@ Workspace command execution is available for this run.
 """
 
 
+def dedupe_urls(urls, limit=8):
+    seen = []
+    for url in urls or []:
+        cleaned = str(url or "").strip().rstrip(".,;:)>]'\"")
+        if not cleaned or not cleaned.lower().startswith(("http://", "https://")):
+            continue
+        if cleaned in seen:
+            continue
+        seen.append(cleaned)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def infer_web_research_urls(project_text, limit=8):
+    """
+    Infer a small set of web-research targets when the user asked for live
+    source work in natural language but did not paste explicit URLs.
+
+    This is intentionally conservative and transparent: it only seeds obvious
+    named destinations (Yahoo News) or well-known reference sites for broad
+    gallery research. The fetched artifacts remain the evidence source.
+    """
+    text = project_text or ""
+    lowered = text.lower()
+    urls = tool_browse.extract_urls(text, limit=limit)
+
+    if re.search(r"\b(yahoo\s*news|yahoonews)\b", lowered):
+        urls.append("https://news.yahoo.com/")
+
+    gallery_requested = re.search(r"\b(gallery|galleries|art\s+dealer|art\s+dealers)\b", lowered)
+    web_research_requested = re.search(
+        r"\b(scrape|scraping|crawl|research|review|check\s+out|look\s+at|capture)\b",
+        lowered,
+    )
+    if gallery_requested and web_research_requested:
+        urls.extend([
+            "https://www.hauserwirth.com/",
+            "https://www.pacegallery.com/",
+            "https://www.davidzwirner.com/",
+            "https://gagosian.com/",
+            "https://www.composition.gallery/artworks/",
+        ])
+
+    return dedupe_urls(urls, limit=limit)
+
+
+def source_screenshot_requested(project_text):
+    """Return True when the request asks for screenshots of external sources,
+    not merely screenshots of the generated deliverable."""
+    lowered = (project_text or "").lower()
+    if not lowered:
+        return False
+    source_terms = r"(sites?|websites?|pages?|sources?|urls?|headlines?|articles?|galleries|gallery\s+sites?)"
+    screenshot_terms = r"(screenshots?|screen\s+captures?)"
+    if re.search(rf"\b{screenshot_terms}\s+(of|from|for)\s+(the\s+)?{source_terms}\b", lowered):
+        return True
+    if re.search(rf"\b(take|capture|save|grab)\s+{screenshot_terms}\b", lowered) and re.search(rf"\b{source_terms}\b", lowered):
+        return True
+    if re.search(rf"\bsource\s+{screenshot_terms}\b", lowered):
+        return True
+    if re.search(rf"\b(scrape|research|source)\s+proof(?:s)?\b", lowered) and re.search(screenshot_terms, lowered):
+        return True
+    return False
+
+
 def prepare_workspace_research(workspace_dir, session):
     """
-    If the user's project text contains URLs AND web_browse is part of the
-    contract's capabilities_required, the harness fetches them up front using
-    scrapling. The fetched pages land at <workspace>/research/<slug>.md and
-    a manifest is returned so the Execution prompt can list them.
+    If the user's project text requires web research, the harness fetches
+    source pages up front using scrapling. The fetched pages land at
+    <workspace>/research/<slug>.md and a manifest is returned so Execution,
+    Verification, and claim guards can list actual evidence.
     """
     if not tool_browse.is_available():
-        return {"fetched": [], "skipped_reason": "scrapling not installed"}
+        return {"fetched": [], "screenshots": [], "skipped_reason": "scrapling not installed"}
 
     project_text = session.get("project", "") if isinstance(session, dict) else ""
     caps_required = session_capabilities_required(session)
     wants_browse = any(c in {"web_browse", "web_fetch"} for c in caps_required)
-    urls = tool_browse.extract_urls(project_text or "", limit=8)
+    wants_source_screenshots = "screenshot_capture" in set(caps_required) and source_screenshot_requested(project_text)
+    urls = infer_web_research_urls(project_text or "", limit=8)
 
     if not wants_browse and not urls:
-        return {"fetched": [], "skipped_reason": "no browse capability required and no URLs in request"}
+        return {"fetched": [], "screenshots": [], "skipped_reason": "no browse capability required and no URLs in request"}
     if not urls:
-        return {"fetched": [], "skipped_reason": "browse capability required but no URLs in user text"}
+        return {"fetched": [], "screenshots": [], "skipped_reason": "browse capability required but no source URLs could be inferred"}
 
     fetched = []
     for url in urls:
@@ -8622,7 +9027,40 @@ def prepare_workspace_research(workspace_dir, session):
             log_error("tool-browse", f"fetch_url failed for {url}", error)
             emit_event("error", f"browse failed: {url} — {error}")
             fetched.append({"url": url, "ok": False, "error": str(error)})
-    return {"fetched": fetched, "skipped_reason": None}
+
+    source_screenshots = []
+    if wants_source_screenshots:
+        if not tool_screenshot.is_available():
+            source_screenshots.append({
+                "kind": "source",
+                "ok": False,
+                "error": "playwright screenshot tool is not available",
+            })
+        else:
+            for url in urls[:5]:
+                emit_event("screenshot", f"source {url}", mode="url")
+                try:
+                    artifact = tool_screenshot.screenshot_into_workspace(
+                        workspace_dir,
+                        url,
+                        mode="url",
+                        full_page=False,
+                    )
+                    artifact["kind"] = "source"
+                    artifact["of"] = url
+                    source_screenshots.append(artifact)
+                    emit_event("screenshot", f"source {url} → {artifact.get('path')}", ok=artifact.get("ok"))
+                except Exception as error:
+                    log_error("tool-screenshot", f"source screenshot failed for {url}", error)
+                    emit_event("error", f"source screenshot failed: {url} — {error}")
+                    source_screenshots.append({"kind": "source", "of": url, "ok": False, "error": str(error)})
+
+    return {
+        "fetched": fetched,
+        "screenshots": source_screenshots,
+        "inferred_urls": urls,
+        "skipped_reason": None,
+    }
 
 
 def prepare_workspace_git_references(workspace_dir, session):
@@ -8912,7 +9350,8 @@ Your job:
 - Treat the harness file-inspection output below as the current-file check for this workspace.
 - Fix the exact blockers in findings, fixesNeeded, validationFailures, and any human correction.
 - Preserve working structure and content that already satisfies the request.
-- Re-emit complete file blocks only for files that must be repaired or added; when updating a file, include the entire corrected file content.
+- Do not re-create the project, do not replace the whole file set, and do not re-emit files that are already correct.
+- Emit only files that must be repaired or added. The harness preserves omitted existing files during repair.
 - Proceed from the existing workspace and complete the rest of the original request for delivery.
 
 Reviewer findings (structured):
@@ -8973,6 +9412,8 @@ Rules:
 - Do not write into `.gforge/`; it is reserved for harness-provided support context.
 - Include complete file contents, not patches.
 - Do NOT wrap files in markdown code fences. Use only the `<<<GFORGE_FILE:...>>>` / `<<<END_GFORGE_FILE>>>` delimiters shown in the contract above.
+- SOURCE EVIDENCE RULE: If the prompt lists harness-fetched research artifacts, use those artifacts as the source basis for any requested scraped/researched content and cite them in your NOTES/VERIFICATION. If research was skipped or missing, do not claim you scraped, browsed, researched, captured prices/text, or inspected live sites.
+- SCREENSHOT EVIDENCE RULE: Generated-output screenshots prove your deliverable renders. They do NOT prove web scraping or source research. Only screenshots listed as SOURCE screenshots in the research block count as source screenshot proof.
 - LINKS RULE: If any HTML / CSS / Markdown file you emit contains a local-relative `href`, `src`, or `url()` pointing to another file in the workspace (e.g. `href="results/option_A.html"`), you MUST also emit that target file as its own `<<<GFORGE_FILE:...>>>` block. The harness's deterministic validator scans every HTML/CSS/MD deliverable for local-relative refs and FAILS the run if any of them point at files you did not actually write. Either deliver the file or remove the link. Do not promise files you don't produce.
 - PATH RESOLUTION RULE: HTML / CSS path references resolve RELATIVE to the file that contains them, just like a browser does it. This is a common small-model bug — read this twice:
     * If you emit `output/index.html` with `<a href="results/option_1.html">`, the browser looks for `output/results/option_1.html` — NOT `results/option_1.html` at the workspace root. If you put `option_1.html` at the workspace root instead, the link is broken.
@@ -9392,6 +9833,11 @@ def validate_local_link_targets(workspace_dir, files):
         ref = (ref or "").strip()
         if not ref:
             return True
+        # JS template literals / framework bindings are resolved at runtime.
+        # Treating `${item.link}` as a promised local file caused good HTML
+        # outputs to be rejected and repaired into worse static pages.
+        if any(token in ref for token in ("${", "{{", "}}", "{", "}", "<", ">")):
+            return True
         lower = ref.lower()
         if lower.startswith(("http://", "https://", "mailto:", "tel:", "javascript:", "data:", "//", "ftp://")):
             return True
@@ -9526,6 +9972,46 @@ def validate_negated_support_file_constraints(workspace_dir, files, project_cont
             failures.append(
                 "CSS file was forbidden by the project contract, but HTML links "
                 + ", ".join(f"`{link}`" for link in sorted(set(css_links)))
+            )
+
+    if html_support_format_negated(reference_text, "javascript"):
+        js_paths = []
+        js_links = []
+        for item in files:
+            relative_path = item.get("path", "") if isinstance(item, dict) else ""
+            safe_path = safe_workspace_relative_path(relative_path)
+            if not safe_path:
+                continue
+            ext = os.path.splitext(safe_path)[1].lower()
+            if ext in {".js", ".mjs", ".cjs"}:
+                js_paths.append(safe_path)
+                continue
+            if ext not in {".html", ".htm"}:
+                continue
+            html_path = os.path.join(workspace_dir, safe_path)
+            if not os.path.isfile(html_path):
+                continue
+            try:
+                with open(html_path, "r", encoding="utf-8", errors="replace") as f:
+                    html = f.read()
+            except OSError:
+                continue
+            js_links.extend(
+                re.findall(
+                    r"""<script\b[^>]*\bsrc\s*=\s*["']([^"']+\.(?:js|mjs|cjs)(?:[?#][^"']*)?)["'][^>]*>""",
+                    html,
+                    re.IGNORECASE,
+                )
+            )
+        if js_paths:
+            failures.append(
+                "JavaScript file was forbidden by the project contract, but the model wrote "
+                + ", ".join(f"`{path}`" for path in sorted(set(js_paths)))
+            )
+        if js_links:
+            failures.append(
+                "JavaScript file was forbidden by the project contract, but HTML links "
+                + ", ".join(f"`{link}`" for link in sorted(set(js_links)))
             )
     return failures
 
@@ -9682,6 +10168,7 @@ HTML_SUPPORT_FILE_FORMATS = {
         "terms": ("stylesheet", "css file", "linked css"),
         "label": "CSS support",
         "negation_patterns": (
+            r"\bno\s+(?:separate\s+|external\s+|linked\s+)?css\s+(?:or|/|\+|and)\s+(?:javascript|js)\s+files?\b",
             r"\bno\s+(?:separate\s+|external\s+|linked\s+)?css\s+files?\b",
             r"\bno\s+\.css\s+files?\b",
             r"\bwithout\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?css\s+files?\b",
@@ -9702,6 +10189,7 @@ HTML_SUPPORT_FILE_FORMATS = {
         ),
         "label": "JavaScript support",
         "negation_patterns": (
+            r"\bno\s+(?:separate\s+|external\s+|linked\s+)?css\s+(?:or|/|\+|and)\s+(?:javascript|js)\s+files?\b",
             r"\bno\s+(?:separate\s+|external\s+|linked\s+)?(?:javascript|js)\s+files?\b",
             r"\bno\s+\.(?:js|mjs|cjs)\s+files?\b",
             r"\bwithout\s+(?:a\s+|any\s+)?(?:separate\s+|external\s+|linked\s+)?(?:javascript|js)\s+files?\b",
@@ -9722,10 +10210,10 @@ def html_support_file_names(reference_text, support_format):
     config = HTML_SUPPORT_FILE_FORMATS.get(support_format)
     if not config:
         return []
+    if html_support_format_negated(reference_text, support_format):
+        return []
     files = dedupe_named_files_by_basename(named_files_in_text(reference_text, config["extensions"]))
     lowered = str(reference_text or "").lower()
-    if not files and html_support_format_negated(reference_text, support_format):
-        return []
     if not files and any(term in lowered for term in config["terms"]):
         files = [config["fallback"]]
     return files
@@ -10832,6 +11320,14 @@ def count_content_units(text, item, requirement=None):
             regex_count(rf"\b{re.escape(normalized_item)}\s*(?:#|no\.?|number)?\s*\d+\b", text),
         )
 
+    if "mood" in raw_item or normalized_item == "mood":
+        mood_classes = set(re.findall(r"\bmood[-_][a-z0-9_-]+", text or "", re.IGNORECASE))
+        return max(
+            len(mood_classes),
+            regex_count(r"<section\b[^>]*\bmood[-_a-z0-9]*", text),
+            regex_count(r"\bmood\s*(?:#|no\.?|number)?\s*\d+\b", text),
+        )
+
     return max(
         regex_count(rf"\b{re.escape(normalized_item)}s?\s*(?:#|no\.?|number)?\s*\d+\b", text),
         regex_count(rf"\b{re.escape(normalized_item)}s?\b", text),
@@ -10927,6 +11423,81 @@ def validate_content_quantity_requirements(workspace_dir, files, project_context
     return failures, results
 
 
+def workspace_relative_file_exists(workspace_dir, relative_path):
+    safe_path = safe_workspace_relative_path(str(relative_path or "").strip())
+    if not safe_path:
+        return False
+    return os.path.isfile(os.path.join(workspace_dir, safe_path))
+
+
+def disk_research_artifact_count(workspace_dir):
+    research_dir = os.path.join(workspace_dir, "research")
+    try:
+        return len([
+            name for name in os.listdir(research_dir)
+            if name.lower().endswith(".md") and os.path.isfile(os.path.join(research_dir, name))
+        ])
+    except OSError:
+        return 0
+
+
+def validate_requested_source_evidence(workspace_dir, metadata, session):
+    failures = []
+    evidence = {
+        "webResearchRequired": False,
+        "researchArtifacts": 0,
+        "sourceScreenshotsRequired": False,
+        "sourceScreenshots": 0,
+    }
+    project_context = session.get("projectContext") if isinstance(session, dict) else {}
+    project_text = project_context_reference_text(
+        project_context if isinstance(project_context, dict) else {},
+        extra_text=session.get("project", "") if isinstance(session, dict) else "",
+    )
+    capabilities = set(session_capabilities_required(session))
+    capabilities.update(detect_required_capabilities(project_text))
+    research = metadata.get("research") if isinstance(metadata, dict) and isinstance(metadata.get("research"), dict) else {}
+
+    fetched = research.get("fetched") if isinstance(research.get("fetched"), list) else []
+    ok_research = [
+        item for item in fetched
+        if isinstance(item, dict)
+        and item.get("ok")
+        and workspace_relative_file_exists(workspace_dir, item.get("path"))
+    ]
+    disk_count = disk_research_artifact_count(workspace_dir)
+    evidence["researchArtifacts"] = max(len(ok_research), disk_count)
+
+    if capabilities.intersection({"web_browse", "web_fetch"}):
+        evidence["webResearchRequired"] = True
+        if not ok_research and disk_count <= 0:
+            failures.append(
+                "web research/scraping was required by the request, but no harness-fetched "
+                "`research/*.md` artifact was found on disk. Skill staging or model claims "
+                "do not satisfy source research evidence."
+            )
+
+    screenshots = research.get("screenshots") if isinstance(research.get("screenshots"), list) else []
+    ok_source_screenshots = [
+        item for item in screenshots
+        if isinstance(item, dict)
+        and item.get("kind") == "source"
+        and item.get("ok")
+        and workspace_relative_file_exists(workspace_dir, item.get("path"))
+    ]
+    evidence["sourceScreenshots"] = len(ok_source_screenshots)
+    if source_screenshot_requested(project_text):
+        evidence["sourceScreenshotsRequired"] = True
+        if not ok_source_screenshots:
+            failures.append(
+                "source screenshot capture was required by the request, but no successful "
+                "source screenshot artifact was recorded under `research.screenshots`. "
+                "Auto-captured generated-output screenshots do not satisfy source screenshot proof."
+            )
+
+    return failures, evidence
+
+
 def validate_model_authored_workspace(workspace_dir, metadata, session):
     failures = []
     files = metadata.get("files", []) if isinstance(metadata, dict) else []
@@ -10946,6 +11517,9 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
 
     command_failures = validate_workspace_command_runs(metadata, capabilities_required)
     failures.extend(command_failures)
+
+    source_evidence_failures, source_evidence = validate_requested_source_evidence(workspace_dir, metadata, session)
+    failures.extend(source_evidence_failures)
 
     file_count_failures = validate_deliverable_file_count(files, project_context)
     failures.extend(file_count_failures)
@@ -10999,6 +11573,7 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
         "authenticity": authenticity,
         "fileCount": len(files),
         "contentRequirements": content_results,
+        "sourceEvidence": source_evidence,
         "transport": transport if isinstance(transport, dict) else None,
         "checkedAt": utc_now(),
     }
@@ -11068,6 +11643,25 @@ def build_model_execution_report(workspace_dir, execution):
             ms = shot.get("elapsed_ms") or 0
             screenshot_lines.append(f"- [{ok}] of `{of}` → `{path}` ({size} bytes, {ms} ms)")
 
+    research = execution.get("research") or metadata.get("research") or {}
+    research_lines = []
+    if isinstance(research, dict) and (research.get("fetched") or research.get("screenshots")):
+        research_lines = ["", "## Source Research Evidence", ""]
+        for item in research.get("fetched", []):
+            if not isinstance(item, dict):
+                continue
+            marker = "ok" if item.get("ok") else "FAIL"
+            research_lines.append(
+                f"- [{marker}] `{item.get('path') or '(no path)'}` from {item.get('url') or '(no url)'}"
+            )
+        for item in research.get("screenshots", []):
+            if not isinstance(item, dict):
+                continue
+            marker = "ok" if item.get("ok") else "FAIL"
+            research_lines.append(
+                f"- [{marker} source screenshot] `{item.get('path') or '(no path)'}` of {item.get('of') or item.get('target') or '(unknown target)'}"
+            )
+
     git_references = execution.get("gitReferences") or metadata.get("gitReferences") or {}
     git_lines = []
     if isinstance(git_references, dict) and (git_references.get("requested") or git_references.get("cloned")):
@@ -11132,6 +11726,7 @@ def build_model_execution_report(workspace_dir, execution):
         "",
         "\n".join([f"- `{item.get('path')}`: {item.get('reason')}" for item in execution.get("rejectedFiles", [])]) or "- None.",
         *screenshot_lines,
+        *research_lines,
         *git_lines,
         *command_lines,
         "",
