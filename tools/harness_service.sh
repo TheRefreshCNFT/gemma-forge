@@ -108,6 +108,21 @@ endpoint_status() {
   curl -fsS "http://$HOST:$PORT/api/model/route" >/tmp/gemma-forge-route-check.json 2>/dev/null
 }
 
+wait_for_endpoint() {
+  local timeout="${GFORGE_START_TIMEOUT:-60}"
+  local deadline=$((SECONDS + timeout))
+  printf "Waiting for endpoint http://%s:%s" "$HOST" "$PORT"
+  until endpoint_status; do
+    if (( SECONDS >= deadline )); then
+      printf "\nEndpoint did not become ready within %s seconds.\n" "$timeout" >&2
+      return 1
+    fi
+    printf "."
+    sleep 1
+  done
+  printf " ok\n"
+}
+
 status_service() {
   require_macos
   echo "LaunchAgent: $PLIST"
@@ -133,6 +148,7 @@ status_service() {
 case "${1:-}" in
   start)
     start_service
+    wait_for_endpoint
     status_service
     ;;
   stop)
@@ -144,6 +160,7 @@ case "${1:-}" in
     require_macos
     stop_service
     start_service
+    wait_for_endpoint
     status_service
     ;;
   status)
