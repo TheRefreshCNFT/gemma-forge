@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-25 (UTC) — Current screenshot README polish pushed.
+Last updated: 2026-05-25 (UTC) — One-command quick start docs polished.
 
 ## Verified ground truth
 
@@ -29,6 +29,11 @@ the contest demo path works end-to-end.** Driving doc:
 ## Status
 
 - Phase: **Parallel session isolation, bounded chat worker actions, cross-session save race fix, runtime repair, UI rolodex/session ordering, contest sidebar simplification, sidebar action stack, full-state backup/GitHub alignment, Hugging Face search picker, provisioning clarity guard, full Hugging Face-to-Ollama provisioning pipeline, small-model planning guard, failed-model cleanup, Forge Station terminal UI/session isolation fixes, default E4B Forge Brain switch, Anthropic PDF/MCP skills, workspace GitHub/exec capability alignment, workspace package install capability, JavaScript deterministic validation, SQL baseline validation, SSD/GitHub alignment, and skill depth utilization completed.**
+- Documentation polish: public quick start now leads with
+  `./launch_forge.command`, explains the launcher step-by-step, keeps the
+  manual Python path as the development fallback, and describes
+  `gemma4:e4b` / `gemma-4-e4b-it` as the fixed first-run install default
+  that users can change after setup through Settings.
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the

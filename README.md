@@ -46,7 +46,7 @@ The harness:
 
 Gemma Forge is organized around visible work surfaces, not hidden agent magic. The user can see the local environment, the default model, optional model provisioning, the active workflow card, project state, and the evidence stream that proves what happened.
 
-The hero screenshot above shows the main Forge Harness view: local readiness, Ollama reuse, bundled tool checks, and the active Forge Brain all in one place. There is no separate model-size picker in the core flow; Gemma Forge defaults to `gemma-4-e4b-it` and exposes other model choices through the Settings and Forge Brain model controls.
+The hero screenshot above shows the main Forge Harness view: local readiness, Ollama reuse, bundled tool checks, and the active Forge Brain all in one place. The one-command installer uses a fixed first-run default, `gemma4:e4b` aliased locally as `gemma-4-e4b-it`, so new users are not asked to choose a model size during setup. After install, users can switch the active Forge Brain or provision other compatible Ollama and Hugging Face models from Settings.
 
 <table>
   <tr>
@@ -85,25 +85,12 @@ The hero screenshot above shows the main Forge Harness view: local readiness, Ol
 
 ## Quick Start
 
-### 1. Clone the repository
+### Recommended macOS one-command start
 
 ```bash
 git clone https://github.com/TheRefreshCNFT/gemma-forge.git
 cd gemma-forge
-```
-
-### 2. Create a Python environment
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-```
-
-### 3. Launch Gemma Forge
-
-```bash
-gemma-forge
+./launch_forge.command
 ```
 
 Open:
@@ -112,15 +99,38 @@ Open:
 http://127.0.0.1:5005/
 ```
 
-### macOS launcher
+This is the recommended path for most macOS users. The launcher installs or verifies the local toolchain, starts Ollama, pulls the default Forge Brain source model `gemma4:e4b`, creates the stable local alias `gemma-4-e4b-it`, stages bundled skills, provisions support tools, and starts the Forge Harness.
 
-On macOS, you can use the bundled launcher instead:
+### What the launcher does
+
+The one-command launcher is intentionally opinionated for first run:
+
+1. Verifies or installs the local tools Gemma Forge depends on.
+2. Starts Ollama and checks that it is reachable.
+3. Pulls the default source model `gemma4:e4b` and creates the local Forge Brain alias `gemma-4-e4b-it`.
+4. Creates the Python environment and installs the harness dependencies.
+5. Stages the bundled Forge skills into the local harness runtime.
+6. Prepares support tools such as SocratiCode, Axon, Qdrant, and the embedding model where available.
+7. Starts the Forge Harness at `http://127.0.0.1:5005/`.
+
+The install default is fixed so the first run is predictable. It does not lock the user in: Settings can still import installed Ollama models, search Hugging Face, provision compatible repos, and let users choose a different active local model after setup.
+
+### Manual or development launch
+
+Use the manual path when you are developing Gemma Forge directly or running outside the macOS one-command installer:
 
 ```bash
-./launch_forge.command
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+gemma-forge
 ```
 
-The launcher starts the harness and runs first-use provisioning checks for the local toolchain, bundled skills, SocratiCode, Axon, and Ollama-backed model readiness where available.
+Then open:
+
+```text
+http://127.0.0.1:5005/
+```
 
 ## Prerequisites
 
@@ -130,7 +140,9 @@ Gemma Forge is local-first. A typical setup should have:
 - Git.
 - Ollama installed and running for local model calls.
 - Node.js 18 or newer for JavaScript validation checks.
-- A local Gemma model available through Ollama, or the default `gemma-4-e4b-it` model provisioned through the Forge settings UI.
+- A local Gemma model available through Ollama. On macOS, the one-command installer pulls `gemma4:e4b` and aliases it to `gemma-4-e4b-it` unless that default model step is explicitly skipped.
+
+The macOS launcher can install or verify the required local tools for a first run. Manual installs should prepare those dependencies before launching the harness.
 
 The harness stores its own runtime state under `~/.gforge` and leaves Ollama in its normal `~/.ollama` home.
 
@@ -157,8 +169,8 @@ What to expect:
 
 - Approximate readiness budget: 10 GB free disk and 8 GB RAM.
 - Current quantized Ollama artifact: about 5 GB on disk.
-- No separate size-selection step is required for the default flow.
-- Users can still import installed Ollama models or provision other compatible Hugging Face repos from Settings.
+- The one-command installer uses this fixed first-run default instead of asking users to choose a model size during setup.
+- Users can still import installed Ollama models, provision other compatible Hugging Face repos from Settings, and choose what they want to run after setup.
 
 The first useful question is simple:
 

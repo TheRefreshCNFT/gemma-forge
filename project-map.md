@@ -105,7 +105,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   tool state before the app launches. Set `GFORGE_ALLOW_DEGRADED_TOOLS=1`
   only when intentionally launching with degraded support tools.
 - Forge Engine reports system, Ollama, tools, model paths, SocratiCode install/MCP/Qdrant state, Axon CLI/index state, and subagent capacity.
-- Forge Intelligence defaults to `gemma-4-e4b-it` on first run. There is no separate size-selection step in the core flow; the default E4B / 4B-class lane uses a readiness budget of about 10 GB disk and 8 GB RAM, while the current quantized Ollama artifact is about 5 GB on disk. Users can still import installed Ollama models or provision other compatible Hugging Face repos from Settings.
+- Forge Intelligence defaults to `gemma-4-e4b-it` on first run. The one-command installer uses this fixed first-run default instead of asking users to choose a model size during setup; the default E4B / 4B-class lane uses a readiness budget of about 10 GB disk and 8 GB RAM, while the current quantized Ollama artifact is about 5 GB on disk. After install, users can still import installed Ollama models or provision other compatible Hugging Face repos from Settings.
 - Forge Brain selection is sent to project creation, planning, card runs, and project messages.
 - Every model-backed harness call records the attempted model route.
 - Initial planning calls use a bounded `num_predict` budget, with a

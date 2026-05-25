@@ -49,6 +49,22 @@ Quick start:
 ```bash
 git clone https://github.com/TheRefreshCNFT/gemma-forge.git
 cd gemma-forge
+./launch_forge.command
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5005/
+```
+
+The macOS launcher is the recommended first-run path. It installs or verifies the local toolchain, pulls `gemma4:e4b`, creates the local `gemma-4-e4b-it` Forge Brain alias, stages bundled skills, prepares support tools, and starts the harness.
+
+Step-by-step, that command checks the local tools, starts Ollama, prepares the Python environment, installs harness dependencies, stages Forge skills, prepares support tooling, and opens the local harness. The first-run install default is fixed so setup is predictable; after install, users can still import installed Ollama models or provision other compatible Hugging Face repos from Settings.
+
+Manual/development launch:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .
@@ -61,17 +77,11 @@ Then open:
 http://127.0.0.1:5005/
 ```
 
-macOS users can also run:
-
-```bash
-./launch_forge.command
-```
-
 ## How I Used Gemma 4
 
 Gemma 4 is the planning and orchestration brain inside Gemma Forge.
 
-The default Forge Brain is `gemma-4-e4b-it`, the Gemma 4 E4B / 4B-class local lane. I chose it as the default because Gemma Forge is trying to be usable on practical local hardware while still giving the model extra reasoning headroom for project planning, tool selection, repair loops, and verification. The harness presents the expected local footprint before provisioning: about 10 GB of disk budget and 8 GB RAM for readiness, with the current quantized Ollama artifact around 5 GB on disk.
+The default Forge Brain is `gemma-4-e4b-it`, the Gemma 4 E4B / 4B-class local lane. I chose it as the fixed first-run install default because Gemma Forge is trying to be usable on practical local hardware while still giving the model extra reasoning headroom for project planning, tool selection, repair loops, and verification. The harness presents the expected local footprint before provisioning: about 10 GB of disk budget and 8 GB RAM for readiness, with the current quantized Ollama artifact around 5 GB on disk.
 
 Gemma Forge does not lock users into that default. Advanced users can import installed Ollama models or search/provision other compatible Hugging Face repos from Settings when they want a different local model.
 
