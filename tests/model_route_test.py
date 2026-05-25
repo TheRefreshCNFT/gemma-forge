@@ -75,6 +75,8 @@ class ModelRouteTest(unittest.TestCase):
         server.MODEL_PROVISION_JOBS.clear()
 
     def tearDown(self):
+        with server._SESSION_CARD_RUN_LOCK:
+            server._SESSION_CARD_RUNS_IN_PROGRESS.clear()
         for key, value in self.old_values.items():
             setattr(server, key, value)
         server._storage_ready = False
@@ -97,12 +99,48 @@ class ModelRouteTest(unittest.TestCase):
         self.assertEqual(server.DEFAULT_MODEL, "gemma-4-e4b-it")
         self.assertEqual(captured["url"], "http://localhost:11434/api/chat")
         self.assertEqual(captured["json"]["model"], "gemma-4-e4b-it")
+        self.assertEqual(captured["timeout"], server.OLLAMA_REQUEST_TIMEOUT_SECONDS)
 
         with open(server.MODEL_ROUTE_FILE, "r") as f:
             route = json.load(f)
 
         self.assertEqual(route["model"], "gemma-4-e4b-it")
         self.assertEqual(route["defaultModel"], "gemma-4-e4b-it")
+
+    def test_large_model_uses_extended_ollama_timeout(self):
+        captured = {}
+        workspace = {
+            "ollama": {
+                "models": [{
+                    "name": "gempus4:tuned",
+                    "model": "gempus4:tuned",
+                    "details": {"parameter_size": "27B"},
+                }]
+            }
+        }
+
+        def fake_post(url, json, timeout):
+            captured["url"] = url
+            captured["json"] = json
+            captured["timeout"] = timeout
+            return FakeOllamaResponse()
+
+        with patch.object(server, "scan_workspace", return_value=workspace), \
+             patch.object(server.requests, "post", fake_post):
+            content, transport = server.call_ollama_with_transport("gempus4:tuned", "Say ok.")
+
+        self.assertEqual(content, "ok")
+        self.assertEqual(captured["url"], "http://localhost:11434/api/chat")
+        self.assertEqual(captured["json"]["model"], "gempus4:tuned")
+        self.assertEqual(captured["timeout"], server.LARGE_MODEL_REQUEST_TIMEOUT_SECONDS)
+        self.assertEqual(transport["timeoutSeconds"], server.LARGE_MODEL_REQUEST_TIMEOUT_SECONDS)
+
+    def test_large_model_name_fallback_uses_extended_ollama_timeout(self):
+        with patch.object(server, "scan_workspace", return_value={"ollama": {"models": []}}):
+            self.assertEqual(
+                server.ollama_request_timeout_seconds("gemma3:27b"),
+                server.LARGE_MODEL_REQUEST_TIMEOUT_SECONDS,
+            )
 
     def test_forge_context_is_created_outside_project_records(self):
         context = server.read_forge_context()
@@ -631,6 +669,50 @@ reason: Continue the active Forge flow.
         self.assertEqual(response.status_code, 200)
         self.assertIn("Ollama request timed out", response.get_json()["reply"])
 
+    def test_auto_run_plan_reply_is_transient_session_status(self):
+        sessions = {}
+        session_id = server.create_session_record(
+            sessions,
+            "Create a small page.",
+            "gemma-4",
+            requested_id="auto-plan-transient-test",
+            has_project_directory=False,
+        )
+        server.save_sessions(sessions, create_keys={session_id})
+        workspace = {
+            "agentCapacity": {"mode": "single-agent-audit", "maxParallelSubagents": 0},
+            "ollama": {"models": [{"name": "gemma-4:latest", "details": {"parameter_size": "4.6B"}}]},
+        }
+
+        with patch.object(server, "scan_workspace", return_value=workspace), \
+             patch.object(server, "call_ollama_with_transport", return_value=("## Project\nDraft plan", {
+                 "status": "ok",
+                 "model": "gemma-4",
+                 "elapsedMs": 1,
+                 "attempts": 1,
+                 "error": None,
+                 "timeoutSeconds": 1200,
+             })):
+            response = server.app.test_client().post("/api/plan", json={
+                "session_id": session_id,
+                "project": "Create a small page.",
+                "model": "gemma-4",
+                "checkpointMode": "auto run",
+            })
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["reply"], "## Project\nDraft plan")
+        self.assertFalse(payload["replyPersisted"])
+
+        stored = server.load_sessions()[session_id]
+        self.assertEqual(len(stored["messages"]), 2)
+        self.assertEqual(stored["messages"][-1]["role"], "user")
+
+        with open(os.path.join(server.session_dir(session_id), "project-context.md"), "r") as f:
+            context = f.read()
+        self.assertNotIn("## Project\nDraft plan", context)
+
     def test_auto_run_section_waits_when_small_model_review_fails(self):
         sessions = {}
         session_id = server.create_session_record(
@@ -964,8 +1046,8 @@ VERIFICATION:
             },
         )
 
-        with patch.object(server, "run_research_passes_if_needed", return_value=None):
-            with patch.object(server, "run_completion_review_if_needed", return_value={"passed": True}):
+        with patch.object(server, "run_research_passes_if_needed", return_value=None) as research_mock:
+            with patch.object(server, "run_completion_review_if_needed", return_value={"passed": True}) as review_mock:
                 finalized = server.finalize_card_result(
                     "tool-test",
                     {"project": "Test"},
@@ -977,6 +1059,23 @@ VERIFICATION:
 
         self.assertEqual(finalized["status"], "needs-attention")
         self.assertIn("Axon analyze failed", finalized["checkpoint"])
+        research_mock.assert_not_called()
+        review_mock.assert_not_called()
+
+    def test_session_card_run_lock_blocks_overlapping_cards(self):
+        acquired, running = server.try_start_session_card_run("lock-session", "intake")
+        self.assertTrue(acquired)
+        self.assertIsNone(running)
+
+        acquired, running = server.try_start_session_card_run("lock-session", "gsd")
+        self.assertFalse(acquired)
+        self.assertEqual(running, "intake")
+
+        server.finish_session_card_run("lock-session", "intake")
+        acquired, running = server.try_start_session_card_run("lock-session", "gsd")
+        self.assertTrue(acquired)
+        self.assertIsNone(running)
+        server.finish_session_card_run("lock-session", "gsd")
 
     def test_socraticode_card_runs_real_semantic_search(self):
         workspace = os.path.join(self.tmp.name, "semantic-card")
@@ -1309,9 +1408,13 @@ acceptance:
         )
 
         self.assertIn("CONTINUATION REPAIR MODE", prompt)
+        self.assertIn("REMAINING WORK CONTRACT", prompt)
         self.assertIn("Do not start over", prompt)
         self.assertIn("Starting over is allowed only if", prompt)
         self.assertIn("complete the rest of the original request", prompt)
+        self.assertIn("Original project request is intentionally omitted", prompt)
+        self.assertNotIn("PROJECT CONTEXT CONTRACT", prompt)
+        self.assertNotIn("Build a news page with the top 3 articles.", prompt)
         self.assertIn("Harness file-inspection output", prompt)
         self.assertIn("output/index.html", prompt)
         self.assertIn("Existing Article", prompt)
@@ -1348,6 +1451,24 @@ acceptance:
 
         self.assertNotIn("CONTINUATION REPAIR MODE", prompt)
         self.assertNotIn("Harness file-inspection output", prompt)
+
+    def test_project_context_prompt_loads_internal_context_writer_skill(self):
+        prompt = server.build_project_context_prompt(
+            "Create an installable GitHub operations skill suite with scripts that support --dry-run.",
+            "auto",
+            [],
+            model="gemma-4",
+        )
+
+        self.assertIn("Context Writer operating skill", prompt)
+        self.assertIn("Context is an attention budget", prompt)
+        self.assertIn("Never set skill.use to `context-writer`", prompt)
+        self.assertIn("skills/<suite-slug>-NN/SKILL.md", prompt)
+
+    def test_context_writer_skill_is_not_downstream_selectable(self):
+        skills = server.discover_installed_skills()
+
+        self.assertNotIn("context-writer", skills)
 
     def test_skill_alias_resolves_web_browse_to_scrapling(self):
         skills = {
@@ -1519,6 +1640,76 @@ acceptance:
         self.assertIn("scrapling manual", prompt)
         self.assertIn("Pre-Delivery Checklist", prompt)
 
+    def test_gsd_context_prompt_compacts_project_context_contract(self):
+        long_raw = "LONG_RAW_SENTINEL " + ("x" * 9000)
+        session = {
+            "project": "Build the contest announcement page with verified sources and screenshots.",
+            "model": "gemma-4-e4b-it",
+            "projectContextRaw": f"---\nnotes: {long_raw}\n---",
+            "projectContext": {
+                "project": {
+                    "name": "Gemma Forge contest winner announcement",
+                    "type": "website",
+                    "domain": "AI contest research",
+                },
+                "intent": {
+                    "summary": "Create a sourced announcement page.",
+                    "audience": "contest reviewers",
+                },
+                "deliverable": {
+                    "format": "html",
+                    "count": 1,
+                    "path_pattern": "output/index.html",
+                    "partial": False,
+                    "scope": "single page",
+                },
+                "capabilities_required": ["web_browse", "screenshot_capture", "emit_files"],
+                "content_requirements": [
+                    {"count": 3, "item": "verified source citations", "scope": "page", "source": "contest site"},
+                    {"count": 2, "item": "screenshots", "scope": "workspace", "source": "live browser"},
+                ],
+                "constraints": {
+                    "hard_requirements": ["Do not invent winners.", "Cite every researched claim."],
+                },
+                "skill_plan": [
+                    {
+                        "skill": "gsd",
+                        "role": "phase planning and verification routing",
+                        "staged_path": ".gforge/skills/gsd",
+                    }
+                ],
+                "tool_plan": [
+                    {
+                        "step": "Research the contest source page",
+                        "tool": "scrapling-official",
+                        "evidence": "research/contest.md",
+                        "instruction": "capture source URL, date, and claims",
+                    }
+                ],
+                "gsd_directives": {
+                    "planner_standard": "Use phased GSD plan with exact files and gates.",
+                    "counts_are_hard_gates": True,
+                },
+                "acceptance": [
+                    "output/index.html exists.",
+                    "research/contest.md contains cited source evidence.",
+                ],
+                "guidance": long_raw,
+            },
+        }
+
+        prompt = server.build_gsd_context_prompt_block(session)
+
+        self.assertLess(len(prompt), 3500)
+        self.assertNotIn("```yaml", prompt)
+        self.assertNotIn("```json", prompt)
+        self.assertNotIn("LONG_RAW_SENTINEL", prompt)
+        self.assertIn("GSD operating context", prompt)
+        self.assertIn("output/index.html", prompt)
+        self.assertIn("scrapling-official", prompt)
+        self.assertIn("research/contest.md", prompt)
+        self.assertIn(".gforge/skills/gsd", prompt)
+
     def test_gsd_planning_prompt_includes_staged_gsd_context(self):
         gsd_context = "GSD Skill Context marker\n### workflows/plan-phase.md\nDeep Work Rules"
         prompt = server.build_planning_prompt(
@@ -1550,8 +1741,9 @@ acceptance:
         ])
 
         self.assertIn("workflows/plan-phase.md", prompt)
-        self.assertIn("Anti-Shallow Execution Rules", prompt)
         self.assertIn("agents/gsd-planner.md", prompt)
+        self.assertIn("reference-only", prompt)
+        self.assertNotIn("Anti-Shallow Execution Rules", prompt)
 
     def test_run_gsd_card_forces_gsd_skill_staging(self):
         captured = {}
@@ -1598,12 +1790,14 @@ acceptance:
             server.run_gsd_card("session-test", {"project": "Plan the project"}, "gemma-4-e4b-it", "auto")
 
         self.assertEqual(captured["extra_keys"], ["gsd"])
-        self.assertEqual(captured["options"]["num_predict"], 768)
         self.assertEqual(captured["options"]["temperature"], 0.2)
-        self.assertIn("Capped GSD skill excerpts", captured["prompt"])
+        self.assertNotIn("num_predict", captured["options"])
+        self.assertIn("GSD staged package reference", captured["prompt"])
         self.assertIn(".gforge/skills/gsd", captured["prompt"])
-        self.assertIn("Every task needs acceptance criteria", captured["prompt"])
-        self.assertIn("Plans are prompts", captured["prompt"])
+        self.assertIn("workflows/plan-phase.md", captured["prompt"])
+        self.assertIn("agents/gsd-planner.md", captured["prompt"])
+        self.assertNotIn("Every task needs acceptance criteria", captured["prompt"])
+        self.assertNotIn("Plans are prompts", captured["prompt"])
         self.assertNotIn("FULL GSD MANUAL SHOULD NOT BE INJECTED", captured["prompt"])
 
     def test_run_gsd_card_surfaces_transport_failure(self):
@@ -1798,6 +1992,7 @@ open_questions: []
         self.assertIn("web_browse", server.detect_required_capabilities(gallery_prompt))
         self.assertIn("web_browse", server.detect_required_capabilities(yahoo_prompt))
         self.assertIn("screenshot_capture", server.detect_required_capabilities(yahoo_prompt))
+        self.assertTrue(server.source_screenshot_requested("Research 10 sources and save one screenshot per source."))
 
     def test_prepare_workspace_research_infers_yahoo_news_url(self):
         workspace_dir = os.path.join(self.tmp.name, "yahoo-research")
@@ -1840,6 +2035,181 @@ open_questions: []
 
         self.assertEqual(fetched_urls, ["https://news.yahoo.com/"])
         self.assertEqual(research["fetched"][0]["path"], "research/news-yahoo-com.md")
+
+    def test_github_operations_research_seeds_authoritative_docs_urls(self):
+        prompt = (
+            "Create an installable GitHub operations skill suite. Research at least "
+            "10 authoritative references covering org rulesets, branch protection, "
+            "deployment protection, GitHub Apps vs PATs, Actions permissions, CODEQL, "
+            "secret scanning, dependency review, GitHub Pages, runners, workflows, "
+            "issues, and PR lifecycle."
+        )
+
+        urls = server.infer_web_research_urls(prompt)
+
+        self.assertGreaterEqual(len(urls), 10)
+        self.assertTrue(all(url.startswith("https://docs.github.com/") for url in urls))
+        self.assertIn(
+            "https://docs.github.com/en/organizations/managing-organization-settings/creating-rulesets-for-repositories-in-your-organization",
+            urls,
+        )
+        self.assertIn("https://docs.github.com/en/rest/branches/branch-protection", urls)
+        self.assertIn(
+            "https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning",
+            urls,
+        )
+
+    def test_prepare_workspace_research_fetches_github_docs_seed_urls_without_explicit_urls(self):
+        workspace_dir = os.path.join(self.tmp.name, "github-docs-research")
+        os.makedirs(workspace_dir, exist_ok=True)
+        fetched_urls = []
+        screenshot_urls = []
+
+        def fake_fetch(url, mode="auto"):
+            fetched_urls.append(url)
+            return {
+                "ok": True,
+                "url": url,
+                "status": 200,
+                "mode": mode,
+                "title": "GitHub Docs",
+                "text": "GitHub documentation source.",
+            }
+
+        def fake_write(_workspace_dir, result):
+            index = len(fetched_urls)
+            return {
+                "url": result["url"],
+                "path": f"research/github-docs-{index:02d}.md",
+                "title": result["title"],
+                "ok": True,
+                "status": 200,
+                "mode": result["mode"],
+            }
+
+        def fake_screenshot(_workspace_dir, target, **_kwargs):
+            screenshot_urls.append(target)
+            return {"path": f"screenshots/github-docs-{len(screenshot_urls):02d}.png", "ok": True}
+
+        session = {
+            "project": (
+                "Create a GitHub operations research brief. Research at least 10 "
+                "authoritative references and save one screenshot per source."
+            ),
+            "projectContext": {
+                "deliverable": {"format": "markdown", "count": 1, "path_pattern": "research/summary.md"},
+                "capabilities_required": ["emit_files", "web_browse", "screenshot_capture"],
+            },
+        }
+
+        with patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server.tool_browse, "fetch_url", side_effect=fake_fetch), \
+                patch.object(server.tool_browse, "write_research_artifact", side_effect=fake_write), \
+                patch.object(server.tool_screenshot, "is_available", return_value=True), \
+                patch.object(server.tool_screenshot, "screenshot_into_workspace", side_effect=fake_screenshot):
+            research = server.prepare_workspace_research(workspace_dir, session)
+
+        self.assertGreaterEqual(len(research["fetched"]), 10)
+        self.assertEqual(len(research["fetched"]), len(research["screenshots"]))
+        self.assertEqual(fetched_urls, research["inferred_urls"])
+        self.assertEqual(screenshot_urls, research["inferred_urls"])
+        self.assertIsNone(research["skipped_reason"])
+
+    def test_prepare_workspace_research_reuses_existing_source_evidence_on_repair(self):
+        workspace_dir = os.path.join(self.tmp.name, "github-docs-research-repair")
+        os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
+
+        prompt = (
+            "Create an installable GitHub operations skill suite. Research at least "
+            "10 authoritative references and save one screenshot per source. Cover "
+            "org rulesets, branch protection, GitHub Apps vs PATs, Actions permissions, "
+            "CODEQL, secret scanning, dependency review, runners, workflows, issues, and PRs."
+        )
+        urls = server.infer_web_research_urls(prompt)
+        fetched = []
+        screenshots = []
+        for index, url in enumerate(urls, start=1):
+            research_path = f"research/source-{index:02d}.md"
+            screenshot_path = f"screenshots/source-{index:02d}.png"
+            server.write_project_file(workspace_dir, research_path, f"# Source\n\n{url}\n")
+            server.write_project_file(workspace_dir, screenshot_path, "png")
+            fetched.append({"url": url, "path": research_path, "ok": True, "status": 200, "mode": "request"})
+            screenshots.append({"kind": "source", "of": url, "path": screenshot_path, "ok": True})
+        server.write_project_file(
+            workspace_dir,
+            "artifacts/model-execution.json",
+            json.dumps({"research": {"fetched": fetched, "screenshots": screenshots}}, indent=2),
+        )
+
+        session = {
+            "project": prompt,
+            "projectContext": {
+                "deliverable": {"format": "markdown", "count": 15, "path_pattern": "skills/github-ops-NN/SKILL.md"},
+                "capabilities_required": ["emit_files", "web_browse", "screenshot_capture"],
+            },
+        }
+
+        with patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server.tool_browse, "fetch_url") as fetch_mock, \
+                patch.object(server.tool_screenshot, "screenshot_into_workspace") as screenshot_mock:
+            research = server.prepare_workspace_research(workspace_dir, session)
+
+        self.assertTrue(research["reused"])
+        self.assertEqual(len(research["fetched"]), len(urls))
+        fetch_mock.assert_not_called()
+        screenshot_mock.assert_not_called()
+
+    def test_installable_skill_suite_context_uses_bundle_paths_not_flat_output_docs(self):
+        prompt = (
+            "Create an installable GitHub operations skill suite for AI agents covering "
+            "org rulesets, branch protection automation, environments, GitHub Apps vs PATs, "
+            "CODEQL, secret scanning, and issue/PR lifecycle. Research at least 10 "
+            "authoritative references. Each script must support --dry-run."
+        )
+        raw = f"""{server.CONTEXT_BEGIN_MARKER}
+---
+project:
+  name: GitHub Operations Skill Suite
+  type: doc
+  domain: DevOps
+intent:
+  surface_ask: "{prompt}"
+  underlying_need: Create GitHub operations skills.
+  success_means: Files exist.
+deliverable:
+  format: markdown
+  count: 15
+  path_pattern: output/github_ops_skill_suite-NN.md
+  encoding: gforge_file_block
+  partial: false
+  scope: Flat docs
+  anti_deflection: stub
+content_requirements:
+  - count: 15
+    item: skill files
+    scope: suite
+    source: covering required GitHub topics
+capabilities_required:
+  - emit_files
+constraints:
+  hard_requirements: []
+  tone: [technical]
+skill:
+  use: code-writer
+  staged_path: .gforge/skills/code-writer
+source_inputs: []
+tool_plan: []
+acceptance: []
+open_questions: []
+{server.CONTEXT_END_MARKER}"""
+
+        parsed, _yaml, errors = server.parse_project_context(raw, project_text=prompt, model="gemma-4")
+
+        self.assertFalse(errors, errors)
+        self.assertEqual(parsed["project"]["type"], "code")
+        self.assertEqual(parsed["deliverable"]["path_pattern"], "skills/github-ops-NN/SKILL.md")
+        self.assertEqual(parsed["deliverable"]["count"], 15)
+        self.assertIn("Installable skill suite means actual bundled files", "\n".join(parsed["constraints"]["hard_requirements"]))
 
     def test_source_screenshot_capture_is_bounded_and_not_full_page(self):
         workspace_dir = os.path.join(self.tmp.name, "bounded-source-screenshot")
@@ -2965,6 +3335,66 @@ open_questions: []
         self.assertFalse(validation["passed"])
         self.assertTrue(any("research/*.md" in item for item in validation["failures"]))
 
+    def test_installable_skill_suite_requires_bundle_structure_and_scripts(self):
+        workspace_dir = os.path.join(self.tmp.name, "flat-skill-suite")
+        os.makedirs(os.path.join(workspace_dir, "output"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "output", "github_ops_skill_suite-01.md"), "w") as f:
+            f.write("---\ntitle: Flat doc\n---\nReference: https://docs.github.com/\n")
+
+        session = {
+            "project": "Create an installable GitHub operations skill suite. Each script must support --dry-run.",
+            "projectContext": {
+                "deliverable": {"format": "markdown", "count": 1, "path_pattern": "skills/github-ops-NN/SKILL.md"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [{"count": 1, "item": "skill files", "scope": "suite", "source": "skill suite"}],
+            },
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "output/github_ops_skill_suite-01.md"}],
+            "summary": "Created a skill suite.",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertTrue(any("flat `output/*.md` summaries" in item for item in validation["failures"]))
+        self.assertTrue(any("no real script files" in item for item in validation["failures"]))
+
+    def test_skill_file_content_requirement_counts_bundle_skill_files(self):
+        workspace_dir = os.path.join(self.tmp.name, "bundled-skill-suite")
+        for index in range(1, 3):
+            server.write_project_file(workspace_dir, f"skills/github-ops-{index:02d}/SKILL.md", f"# Skill {index}\n")
+            server.write_project_file(workspace_dir, f"skills/github-ops-{index:02d}/scripts/run.py", "print('dry-run')\n")
+
+        session = {
+            "project": "Create an installable GitHub operations skill suite. Each script must support --dry-run.",
+            "projectContext": {
+                "deliverable": {"format": "markdown", "count": 2, "path_pattern": "skills/github-ops-NN/SKILL.md"},
+                "capabilities_required": ["emit_files"],
+                "content_requirements": [{"count": 2, "item": "skill files", "scope": "suite", "source": "skill suite"}],
+            },
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [
+                {"path": "skills/github-ops-01/SKILL.md"},
+                {"path": "skills/github-ops-01/scripts/run.py"},
+                {"path": "skills/github-ops-02/SKILL.md"},
+                {"path": "skills/github-ops-02/scripts/run.py"},
+            ],
+            "summary": "Created installable skills.",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertTrue(validation["passed"], validation["failures"])
+        self.assertEqual(validation["contentRequirements"][0]["actual"], 2)
+
     def test_source_screenshot_request_not_satisfied_by_output_screenshot(self):
         workspace_dir = os.path.join(self.tmp.name, "source-screenshot-evidence")
         os.makedirs(os.path.join(workspace_dir, "screenshots"), exist_ok=True)
@@ -2994,6 +3424,138 @@ open_questions: []
 
         self.assertFalse(validation["passed"])
         self.assertTrue(any("source screenshot" in item for item in validation["failures"]))
+
+    def test_research_urls_and_source_screenshots_use_twenty_five_item_cap(self):
+        workspace_dir = os.path.join(self.tmp.name, "research-cap")
+        os.makedirs(workspace_dir, exist_ok=True)
+        urls = [f"https://example.com/source-{index}" for index in range(30)]
+        session = {
+            "project": (
+                "Research these URLs and save one screenshot per source: "
+                + " ".join(urls)
+            ),
+            "projectContext": {
+                "deliverable": {"format": "markdown", "count": 1, "path_pattern": "output/report.md"},
+                "capabilities_required": ["emit_files", "web_browse", "screenshot_capture"],
+                "content_requirements": [],
+            },
+        }
+        fetched_urls = []
+        screenshot_urls = []
+
+        def fake_fetch_url(url, mode="auto"):
+            fetched_urls.append(url)
+            return {"ok": True, "url": url, "mode": mode, "status": 200, "text": "source text"}
+
+        def fake_write_research_artifact(_workspace_dir, result):
+            return {
+                "ok": True,
+                "url": result["url"],
+                "path": f"research/source-{len(fetched_urls):02d}.md",
+            }
+
+        def fake_screenshot(_workspace_dir, target, mode="url", full_page=False):
+            screenshot_urls.append(target)
+            return {"ok": True, "path": f"screenshots/source-{len(screenshot_urls):02d}.png"}
+
+        with patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server.tool_browse, "fetch_url", side_effect=fake_fetch_url), \
+                patch.object(server.tool_browse, "write_research_artifact", side_effect=fake_write_research_artifact), \
+                patch.object(server.tool_screenshot, "is_available", return_value=True), \
+                patch.object(server.tool_screenshot, "screenshot_into_workspace", side_effect=fake_screenshot):
+            research = server.prepare_workspace_research(workspace_dir, session)
+
+        self.assertEqual(server.project_research_budget({"project": "small task"})["maxPasses"], 25)
+        self.assertEqual(len(research["inferred_urls"]), 25)
+        self.assertEqual(len(research["fetched"]), 25)
+        self.assertEqual(len(research["screenshots"]), 25)
+        self.assertEqual(fetched_urls, urls[:25])
+        self.assertEqual(screenshot_urls, urls[:25])
+
+    def test_model_written_research_file_does_not_satisfy_harness_fetch_evidence(self):
+        workspace_dir = os.path.join(self.tmp.name, "model-research-is-not-source-evidence")
+        os.makedirs(os.path.join(workspace_dir, "research"), exist_ok=True)
+        with open(os.path.join(workspace_dir, "research", "authoritative_references_summary.md"), "w") as f:
+            f.write("# Claimed research\n\nhttps://docs.github.com/example\n")
+
+        session = {
+            "project": "Research at least 10 authoritative references.",
+            "projectContext": {
+                "deliverable": {
+                    "format": "markdown",
+                    "count": 1,
+                    "path_pattern": "research/authoritative_references_summary.md",
+                },
+                "capabilities_required": ["emit_files", "web_browse"],
+                "content_requirements": [],
+            },
+        }
+        metadata = {
+            "modelAuthored": True,
+            "files": [{"path": "research/authoritative_references_summary.md"}],
+            "research": {"fetched": [], "screenshots": []},
+            "summary": "Wrote the research artifact.",
+            "notes": [],
+            "verification": [],
+        }
+
+        validation = server.validate_model_authored_workspace(workspace_dir, metadata, session)
+
+        self.assertFalse(validation["passed"])
+        self.assertEqual(validation["sourceEvidence"]["researchArtifacts"], 0)
+        self.assertTrue(any("no harness-fetched" in item for item in validation["failures"]))
+
+    def test_authoritative_references_content_count_uses_distinct_urls(self):
+        text = "\n".join(
+            f"- R{index:02d}: https://docs.github.com/example/{index}"
+            for index in range(1, 12)
+        )
+
+        self.assertEqual(server.normalize_quantity_item("authoritative references"), "reference")
+        self.assertEqual(
+            server.count_content_units(
+                text,
+                "authoritative references",
+                requirement={"item": "authoritative references", "count": 10},
+            ),
+            11,
+        )
+
+    def test_execution_blocks_before_model_when_required_source_evidence_is_missing(self):
+        workspace_dir = os.path.join(self.tmp.name, "source-evidence-block")
+        os.makedirs(workspace_dir, exist_ok=True)
+        session = {
+            "project": (
+                "Create a research brief. Research at least 10 authoritative references "
+                "and save one screenshot per source."
+            ),
+            "projectContext": {
+                "deliverable": {
+                    "format": "markdown",
+                    "count": 1,
+                    "path_pattern": "research/authoritative_references_summary.md",
+                },
+                "capabilities_required": ["emit_files", "web_browse", "screenshot_capture"],
+                "content_requirements": [],
+            },
+        }
+
+        with patch.object(server, "prepare_workspace_skill_context", return_value={"root": ".gforge/skills", "staged": []}), \
+                patch.object(server, "prepare_workspace_source_inputs", return_value={"requested": False}), \
+                patch.object(server, "prepare_harness_maintenance_context", return_value={"requested": False, "actionsFile": "artifacts/maintenance-actions.json"}), \
+                patch.object(server, "prepare_workspace_git_references", return_value={"requested": False, "available": True, "cloned": []}), \
+                patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server, "call_ollama_execution_payload", side_effect=AssertionError("model should not run")):
+            execution = server.execute_model_authored_project("session-test", session, "gemma-4", workspace_dir)
+
+        self.assertEqual(execution["files"], [])
+        self.assertTrue(execution["metadata"]["executionBlocked"])
+        self.assertEqual(execution["metadata"]["blockerType"], "source-evidence")
+        self.assertFalse(execution["validation"]["passed"])
+        self.assertFalse(any("model-authored execution returned no writable files" in item for item in execution["validation"]["failures"]))
+        self.assertFalse(any("authenticity gate failed" in item for item in execution["validation"]["failures"]))
+        self.assertTrue(any("web research/scraping" in item for item in execution["validation"]["failures"]))
+        self.assertTrue(any("source screenshot" in item for item in execution["validation"]["failures"]))
 
     def test_local_link_validator_ignores_javascript_template_href(self):
         workspace_dir = os.path.join(self.tmp.name, "template-link")

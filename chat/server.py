@@ -58,6 +58,8 @@ _EVENT_LOCK = threading.Lock()
 _EVENT_SUBSCRIBERS = []
 _EVENT_SEQ = 0
 EVENT_LOG_FILENAME = "terminal-events.jsonl"
+_SESSION_CARD_RUN_LOCK = threading.Lock()
+_SESSION_CARD_RUNS_IN_PROGRESS = {}
 
 # ContextVar lets nested calls (ollama, browse, screenshot, validation)
 # inherit the session_id of the card / endpoint they were invoked from
@@ -74,6 +76,27 @@ def event_session_scope(session_id):
         yield
     finally:
         _event_session_ctx.reset(token)
+
+
+def try_start_session_card_run(session_id, card_id):
+    key = str(session_id or "").strip()
+    if not key:
+        return False, "unknown"
+    with _SESSION_CARD_RUN_LOCK:
+        running = _SESSION_CARD_RUNS_IN_PROGRESS.get(key)
+        if running:
+            return False, running
+        _SESSION_CARD_RUNS_IN_PROGRESS[key] = str(card_id or "")
+        return True, None
+
+
+def finish_session_card_run(session_id, card_id):
+    key = str(session_id or "").strip()
+    if not key:
+        return
+    with _SESSION_CARD_RUN_LOCK:
+        if _SESSION_CARD_RUNS_IN_PROGRESS.get(key) == str(card_id or ""):
+            _SESSION_CARD_RUNS_IN_PROGRESS.pop(key, None)
 
 
 def emit_event(kind, message, **extra):
@@ -314,8 +337,9 @@ MODEL_PROVISION_TEMPLATE = """{{ if .System }}<start_of_turn>system
 {{ end }}<start_of_turn>model
 {{ .Response }}<end_of_turn>"""
 SMALL_MODEL_REVIEW_MAX_B = 8.0
-SMALL_TASK_RESEARCH_BUDGET = 2
-LARGE_TASK_RESEARCH_BUDGET = 4
+WORKER_TASK_ITEM_CAP = 25
+SMALL_TASK_RESEARCH_BUDGET = WORKER_TASK_ITEM_CAP
+LARGE_TASK_RESEARCH_BUDGET = WORKER_TASK_ITEM_CAP
 POST_REVIEW_REPAIR_ATTEMPTS = 2
 AXON_CLI = shutil.which("axon") or os.path.join(os.path.expanduser("~"), ".local", "bin", "axon")
 SOCRATICODE_CLI = shutil.which("socraticode")
@@ -400,6 +424,19 @@ SKILL_COPY_IGNORE_NAMES = {
 SKILL_CONTEXT_TOTAL_LIMIT = 14000
 SKILL_CONTEXT_FILE_LIMIT = 5000
 SKILL_CONTEXT_FOCUSED_FILE_LIMIT = 3200
+REFERENCE_ONLY_SKILL_KEYS = {"gsd"}
+GSD_SKILL_ENTRYPOINTS = [
+    ("SKILL.md", "package overview and Codex-style usage rules"),
+    ("workflows/do.md", "route freeform GSD intent to the right workflow"),
+    ("workflows/quick.md", "small focused task workflow"),
+    ("workflows/new-project.md", "new project initialization"),
+    ("workflows/map-codebase.md", "existing codebase mapping"),
+    ("workflows/plan-phase.md", "phase planning and acceptance gates"),
+    ("workflows/execute-phase.md", "phase execution routing"),
+    ("workflows/verify-work.md", "verification and review gates"),
+    ("agents/gsd-planner.md", "planner role expectations"),
+    ("templates/roadmap.md", "roadmap output shape"),
+]
 SKILL_PROMPT_ENTRYPOINTS = {
     "gsd": [
         "workflows/plan-phase.md",
@@ -539,6 +576,41 @@ def read_forge_context():
         return FALLBACK_FORGE_CONTEXT
 
 
+def compact_forge_context():
+    return """Gemma Forge operating context (compact):
+- Authenticity rule: do not fake, pre-bake, or claim successful work unless the selected local Gemma model produced it and verification artifacts support it.
+- Treat every conversation as one project workspace. The protocol-card worker owns Forge Flow, GSD, Execution, SocratiCode, Axon, Verification, and Handoff.
+- Chat may answer questions or request one worker action; it should not simulate a protocol card run.
+- Staged skills live under `.gforge/skills`. Use staged relative paths and role boundaries instead of absolute `/Users/...` paths.
+- Key staged skill roles: `scrapling-official` for web/source acquisition, `ui-ux-pro-max` for interface design, `code-writer` for source files, `gsd` for phase planning/execution/verification routing, `socraticode` for semantic codebase discovery, `axon` for structural graph/impact analysis, `pdf` for PDF/OCR work, and `mcp-builder` for MCP servers.
+- GSD is a package: point the worker to `.gforge/skills/gsd` and the matching workflow file instead of pasting the GSD manual into the prompt.
+- Do not claim a scraper, command, screenshot, API, external model, SocratiCode, Axon, or staged skill script ran unless the harness recorded evidence.
+- Ask whether a project directory exists only when that answer changes the workflow."""
+
+
+CONTEXT_WRITER_SKILL_FILE = os.path.join(PROJECT_ROOT, "skills", "context-writer", "SKILL.md")
+
+
+def read_context_writer_skill_prompt():
+    try:
+        with open(CONTEXT_WRITER_SKILL_FILE, "r", encoding="utf-8") as f:
+            content = f.read(7000)
+    except OSError:
+        return ""
+
+    if content.startswith("---"):
+        end = content.find("\n---", 3)
+        if end >= 0:
+            content = content[end + 4:].strip()
+    if not content.strip():
+        return ""
+    return "\n".join([
+        "Context Writer operating skill (for this Project Context card only):",
+        "Do not write `context-writer` into `skill.use`; that field is for downstream execution.",
+        truncate_text(content.strip(), 6500),
+    ])
+
+
 def skill_install_roots():
     return [
         ("harness", os.path.join(GFORGE_DATA_ROOT, "skills")),
@@ -672,6 +744,9 @@ APP_SKILL_BLOCKLIST = {
     # inside Gemma Forge project runs, even if an old copy exists under the
     # harness skills directory.
     "webot-flow",
+    # Internal Project Context Writer operating skill. Loaded directly into
+    # the intake prompt; never selectable as a downstream execution skill.
+    "context-writer",
 }
 CORE_HARNESS_SKILL_KEYS = {
     "axon",
@@ -1422,6 +1497,28 @@ def requested_skill_keys(session, skills):
     return sorted(requested)
 
 
+def project_context_tool_skill_keys(session, skills):
+    if not isinstance(session, dict):
+        return []
+    skills = user_facing_skills(skills)
+    context = session.get("projectContext")
+    if not isinstance(context, dict):
+        return []
+
+    selected = []
+    for item in context.get("tool_plan", []) if isinstance(context.get("tool_plan"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        key, _reason = resolve_skill_reference(item.get("tool"), skills)
+        if key and key not in selected:
+            selected.append(key)
+
+    capabilities = set(context.get("capabilities_required", []) if isinstance(context.get("capabilities_required"), list) else [])
+    if capabilities.intersection({"web_browse", "web_fetch"}) and "scrapling-official" in skills and "scrapling-official" not in selected:
+        selected.append("scrapling-official")
+    return selected
+
+
 def skill_copy_ignores(_directory, names):
     ignored = set()
     for name in names:
@@ -1577,17 +1674,22 @@ def resolve_skill_selection(session, skills):
     # whatever Context Writer picked, and (b) substitute when Context
     # Writer's pick was invalid or empty. Project text "use any skills
     # you have to help" or "ui/ux design" etc. drives this.
+    tool_picks = project_context_tool_skill_keys(session, skills)
     keyword_picks = list(requested_skill_keys(session, skills))
 
     if context_none:
-        if keyword_picks:
+        combined = []
+        for key in [*tool_picks, *keyword_picks]:
+            if key and key not in combined:
+                combined.append(key)
+        if combined:
             emit_event(
                 "skill",
-                "Project Context skill.use 'none' overridden by request keywords: "
-                + ", ".join(keyword_picks),
-                selected=keyword_picks,
+                "Project Context skill.use 'none' overridden by request/tool routing: "
+                + ", ".join(combined),
+                selected=combined,
             )
-            return keyword_picks
+            return combined
         return []
 
     if context_pick:
@@ -1595,12 +1697,18 @@ def resolve_skill_selection(session, skills):
         # preserving order and de-duplicating.
         seen = set()
         combined = []
-        for key in [context_pick, *keyword_picks]:
+        for key in [context_pick, *tool_picks, *keyword_picks]:
             if key and key not in seen:
                 seen.add(key)
                 combined.append(key)
         return combined
-    return keyword_picks
+    seen = set()
+    combined = []
+    for key in [*tool_picks, *keyword_picks]:
+        if key and key not in seen:
+            seen.add(key)
+            combined.append(key)
+    return combined
 
 
 def write_skill_manifest(workspace_dir, staged):
@@ -1712,31 +1820,77 @@ def skill_role_guidance(skill_key):
     })
 
 
+def build_gsd_reference_lines(relative_skill_path, existing_paths=None):
+    existing = set(existing_paths or [])
+    lines = [
+        "GSD staged package reference (reference-only; do not paste the manuals into the prompt):",
+        f"- Package root: `{relative_skill_path}`",
+        "- Match the request to one GSD workflow, then follow that file from the staged package.",
+        "- Planning starts with `workflows/plan-phase.md` plus `agents/gsd-planner.md`.",
+        "- Execution uses `workflows/execute-phase.md`; verification uses `workflows/verify-work.md`.",
+        "- Keep user-facing output concise; do not quote or restate GSD workflow files.",
+        "Useful staged entrypoints:",
+    ]
+    for relative_path, purpose in GSD_SKILL_ENTRYPOINTS:
+        if existing and relative_path not in existing:
+            continue
+        lines.append(f"- `{relative_path}` - {purpose}.")
+    return lines
+
+
 def build_skill_capability_catalog_prompt(skills):
     catalog = user_facing_skills(skills)
     if not catalog:
         return "- No user-facing skills are installed."
     lines = [
-        "Installed user-facing skill capability catalog:",
+        "Installed user-facing skill capability catalog (compact routing summary):",
         "- Pick skills for capability fit, not because a word sounds nearby.",
         "- Higher-level code intelligence tools should stay inactive for simple file/content generation.",
-        "- Advanced technical phrasing should activate the exact skill(s) below when it matches their role.",
+        "- Detailed skill files are staged later; do not need them pasted into Project Context.",
     ]
     for key in ordered_skill_keys(catalog):
         skill = catalog[key]
         role = skill_role_guidance(key)
-        aliases = skill_prompt_alias_preview(skill, limit=10)
+        aliases = skill_prompt_alias_preview(skill, limit=4)
         alias_text = ", ".join(aliases) if aliases else "(none)"
-        description = truncate_text(skill.get("description", ""), 260) if skill.get("description") else ""
-        lines.append(f"- `{key}` — {role.get('role', 'supporting instructions')}.")
-        if description:
-            lines.append(f"  Use when: {description}")
-        lines.append(f"  Trigger language: {alias_text}")
+        description = truncate_text(skill.get("description", ""), 120) if skill.get("description") else ""
         guidance = role.get("guidance", [])
+        use_when = description or (guidance[0] if guidance else "")
+        suffix = f" Use when: {use_when}" if use_when else ""
+        lines.append(f"- `{key}` - {role.get('role', 'supporting instructions')}.{suffix}")
+        lines.append(f"  Triggers: {alias_text}")
+        if key == "gsd":
+            lines.append("  GSD detail stays in staged package paths such as `workflows/plan-phase.md`; do not front-load the manual.")
+            continue
         if guidance:
-            lines.append(f"  Routing rule: {guidance[0]}")
-            if len(guidance) > 1:
-                lines.append(f"  Boundary: {guidance[-1]}")
+            lines.append(f"  Rule: {guidance[0]}")
+    return "\n".join(lines)
+
+
+def build_project_context_skill_catalog_prompt(staged_skills):
+    lines = [
+        "Skill routing notes (compact):",
+        "- `context-writer` is the current card's internal operating skill; never choose it for downstream `skill.use`.",
+        "- Prefer the staged/relevant skills listed above; deterministic routing may add matching skills after YAML validation.",
+        "- Use `none` only when no skill fits the primary deliverable or required source work.",
+        "- `scrapling-official`: web research, scraping, source acquisition, source screenshots.",
+        "- `ui-ux-pro-max`: responsive page/interface design, visual polish, layout, accessibility.",
+        "- `code-writer`: source-code deliverables such as HTML, JS, Python, SQL, shell, tests.",
+        "- `gsd`: phase planning, milestones, execution routing, verification gates; detail lives under `.gforge/skills/gsd/workflows/`.",
+        "- `socraticode`: existing-codebase semantic search and relevant-file discovery.",
+        "- `axon`: structural graph, impact, call graph, dependency, and dead-code analysis.",
+        "- `logo-generator`: SVG logo/icon/brand mark output.",
+        "- `pdf`: PDF/OCR/forms/extraction/generation work.",
+        "- `mcp-builder`: MCP server/tool/resource/prompt/transport work.",
+    ]
+    if staged_skills:
+        names = ", ".join(
+            f"`{skill.get('key') or skill.get('name')}`"
+            for skill in staged_skills
+            if isinstance(skill, dict) and (skill.get("key") or skill.get("name"))
+        )
+        if names:
+            lines.append(f"- Currently staged/relevant: {names}.")
     return "\n".join(lines)
 
 
@@ -1782,6 +1936,19 @@ def build_skill_context_prompt(workspace_dir, staged):
     remaining = SKILL_CONTEXT_TOTAL_LIMIT
     for index, skill in enumerate(requested_skills):
         skill_dir = os.path.join(workspace_dir, skill["path"])
+        key = normalize_skill_key(skill.get("key") or skill.get("name") or "")
+        if key in REFERENCE_ONLY_SKILL_KEYS:
+            existing_paths = {
+                relative_path
+                for relative_path, _purpose in GSD_SKILL_ENTRYPOINTS
+                if os.path.isfile(os.path.join(skill_dir, relative_path))
+            }
+            lines.extend(["", f"## {skill['name']} Skill Context", ""])
+            if key == "gsd":
+                lines.extend(build_gsd_reference_lines(skill["path"], existing_paths))
+            else:
+                lines.append(f"- Staged skill path: `{skill['path']}`")
+            continue
         slots_left = max(1, len(requested_skills) - index)
         skill_budget = max(1, remaining // slots_left)
         snippets, used = read_skill_prompt_snippets(skill_dir, min(remaining, skill_budget))
@@ -1791,6 +1958,27 @@ def build_skill_context_prompt(workspace_dir, staged):
             lines.extend(snippets)
         if remaining <= 0:
             break
+    return "\n".join(lines)
+
+
+def build_chat_skill_reference_prompt(skill_context):
+    if not isinstance(skill_context, dict):
+        return "No Gemma Forge skills are staged for this chat turn."
+    staged = skill_context.get("staged") if isinstance(skill_context.get("staged"), list) else []
+    if not staged:
+        return "No Gemma Forge skills are staged for this chat turn."
+    lines = [
+        "Staged skill references for this chat turn (reference-only):",
+        f"- Skills root: `{skill_context.get('root', WORKSPACE_SKILLS_ROOT)}`",
+        "- The chat agent should not paste skill manuals. Use worker actions when a protocol card should run.",
+        "- The protocol-card worker consumes the staged package paths below.",
+    ]
+    for skill in staged:
+        key = normalize_skill_key(skill.get("key") or skill.get("name") or "")
+        role = skill_role_guidance(key)
+        lines.append(f"- `{skill.get('name', key)}` at `{skill.get('path')}` - {role.get('role', 'supporting instructions')}.")
+        if key == "gsd":
+            lines.append("  GSD entrypoints: `workflows/plan-phase.md`, `workflows/execute-phase.md`, `workflows/verify-work.md`, `agents/gsd-planner.md`.")
     return "\n".join(lines)
 
 
@@ -2907,7 +3095,8 @@ def chat():
         record_model_route(model, "api-chat")
         
         try:
-            response = requests.post(ollama_chat_url, json=payload, timeout=1200)
+            timeout_seconds = ollama_request_timeout_seconds(model)
+            response = requests.post(ollama_chat_url, json=payload, timeout=timeout_seconds)
             if response.status_code == 200:
                 reply = response.json().get("message", {}).get("content", "")
                 return save_and_respond(session_id, message, reply)
@@ -2927,7 +3116,7 @@ def chat():
             "prompt": message,
             "stream": False
         }
-        response = requests.post(ollama_gen_url, json=gen_payload, timeout=1200)
+        response = requests.post(ollama_gen_url, json=gen_payload, timeout=timeout_seconds)
         response.raise_for_status()
         reply = response.json().get("response", "")
         
@@ -3104,30 +3293,43 @@ def run_session_card(session_id, card_id):
         })
     # Build correction context BEFORE the rerun overwrites the card's lastRun.
     correction = build_correction_from_state(session, card_id, issue_note) if issue_note else None
-    # event_session_scope stamps session_id onto every emit_event called
-    # inside (including nested ollama, browse, screenshot, validation
-    # events from card handlers) so the SSE subscriber filter routes them
-    # only to the matching session's terminal.
-    with event_session_scope(session_id):
-        if correction:
-            emit_event("card-start", f"{card_id} starting (resolve: {len(correction.get('findings', []))} findings + user note)",
-                       session=session_id, model=model, mode=mode)
-        else:
-            emit_event("card-start", f"{card_id} starting", session=session_id, model=model, mode=mode)
-        result = run_card_action(session_id, session, card_id, model, mode, correction=correction)
-        finalize_card_result(session_id, session, card_id, model, result, human_verify, correction=correction)
-        update_card_state(session, card_id, result)
-        emit_event("card-end", f"{card_id}: {result.get('summary', '')[:200]}",
-                   session=session_id, status=result.get("status"),
-                   artifact=result.get("artifact"))
-    session.setdefault("messages", [])
-    session["messages"].append({
-        "role": "agent",
-        "content": f"[{result['title']}] {result['summary']}\n\n{result['details']}",
-    })
-    write_session_context(session_id, session)
-    save_sessions(sessions, update_keys={session_id})
-    return jsonify({"result": result, "session": session})
+    acquired, running_card = try_start_session_card_run(session_id, card_id)
+    if not acquired:
+        return jsonify({
+            "error": (
+                f"Another Forge Section is already running for this project: {running_card}. "
+                f"Wait for it to finish before starting {card_id}."
+            ),
+            "runningCard": running_card,
+        }), 409
+
+    try:
+        # event_session_scope stamps session_id onto every emit_event called
+        # inside (including nested ollama, browse, screenshot, validation
+        # events from card handlers) so the SSE subscriber filter routes them
+        # only to the matching session's terminal.
+        with event_session_scope(session_id):
+            if correction:
+                emit_event("card-start", f"{card_id} starting (resolve: {len(correction.get('findings', []))} findings + user note)",
+                           session=session_id, model=model, mode=mode)
+            else:
+                emit_event("card-start", f"{card_id} starting", session=session_id, model=model, mode=mode)
+            result = run_card_action(session_id, session, card_id, model, mode, correction=correction)
+            finalize_card_result(session_id, session, card_id, model, result, human_verify, correction=correction)
+            update_card_state(session, card_id, result)
+            emit_event("card-end", f"{card_id}: {result.get('summary', '')[:200]}",
+                       session=session_id, status=result.get("status"),
+                       artifact=result.get("artifact"))
+        session.setdefault("messages", [])
+        session["messages"].append({
+            "role": "agent",
+            "content": f"[{result['title']}] {result['summary']}\n\n{result['details']}",
+        })
+        write_session_context(session_id, session)
+        save_sessions(sessions, update_keys={session_id})
+        return jsonify({"result": result, "session": session})
+    finally:
+        finish_session_card_run(session_id, card_id)
 
 @app.route('/api/sessions/<session_id>/cards/<card_id>/verify', methods=['POST'])
 def verify_session_card(session_id, card_id):
@@ -3232,20 +3434,26 @@ def plan():
     if not reply:
         reply = transport_failure_message(transport)
 
+    auto_run_mode = str(checkpoint_mode or "").strip().lower() == "auto run"
+    reply_persisted = False
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
-        sessions[session_id].setdefault("messages", [])
-        sessions[session_id]["messages"].append({"role": "agent", "content": reply})
-        write_session_context(session_id, sessions[session_id])
-        save_sessions(sessions, update_keys={session_id})
+        if not auto_run_mode:
+            sessions[session_id].setdefault("messages", [])
+            sessions[session_id]["messages"].append({"role": "agent", "content": reply})
+            write_session_context(session_id, sessions[session_id])
+            save_sessions(sessions, update_keys={session_id})
+            reply_persisted = True
 
     cards = default_cards(session_for_prompt.get("projectMode", "unknown"))
     if session_id and session_id in sessions and isinstance(sessions[session_id], dict):
         cards = sessions[session_id].get("cards", cards)
 
-    return jsonify({"reply": reply, "cards": cards})
+    return jsonify({"reply": reply, "cards": cards, "replyPersisted": reply_persisted})
 
 
 OLLAMA_REQUEST_TIMEOUT_SECONDS = 1200
+LARGE_MODEL_REQUEST_TIMEOUT_SECONDS = 1900
+LARGE_MODEL_TIMEOUT_MIN_B = 20.0
 OLLAMA_KEEP_ALIVE = "30m"
 # Harness-wide temperature for card work in the flow. Some Modelfile defaults
 # are too high for instruction-following, and the model
@@ -3258,7 +3466,7 @@ OLLAMA_KEEP_ALIVE = "30m"
 # num_ctx / num_predict are NOT overridden here — those stay at each
 # Modelfile's defaults (gempus4:tuned's 65536 ctx, etc.).
 OLLAMA_DEFAULT_OPTIONS = {"temperature": 0.3}
-PLANNING_MODEL_OPTIONS = {"temperature": 0.2, "num_predict": 768}
+PLANNING_MODEL_OPTIONS = {"temperature": 0.2}
 TINY_MODEL_MAX_B = 1.5
 
 
@@ -3268,6 +3476,15 @@ def planning_model_options(model):
     if size is not None and size <= TINY_MODEL_MAX_B:
         options["num_predict"] = 384
     return options
+
+
+def ollama_request_timeout_seconds(model):
+    size = selected_model_size_b(model)
+    if size is None:
+        size = parse_parameter_size_b(model)
+    if size is not None and size >= LARGE_MODEL_TIMEOUT_MIN_B:
+        return LARGE_MODEL_REQUEST_TIMEOUT_SECONDS
+    return OLLAMA_REQUEST_TIMEOUT_SECONDS
 
 
 def call_ollama_with_transport(model, prompt, options_override=None):
@@ -3292,6 +3509,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
     """
     record_model_route(model, "harness-card")
     started = time.time()
+    timeout_seconds = ollama_request_timeout_seconds(model)
     options = dict(OLLAMA_DEFAULT_OPTIONS)
     if isinstance(options_override, dict):
         options.update(options_override)
@@ -3310,7 +3528,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
             response = requests.post(
                 "http://localhost:11434/api/chat",
                 json=body,
-                timeout=OLLAMA_REQUEST_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
             response.raise_for_status()
             content = response.json().get("message", {}).get("content", "")
@@ -3323,7 +3541,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
                 "elapsedMs": elapsed_ms,
                 "attempts": attempt,
                 "error": None,
-                "timeoutSeconds": OLLAMA_REQUEST_TIMEOUT_SECONDS,
+                "timeoutSeconds": timeout_seconds,
             }
         except requests.ConnectionError as error:
             last_error = error
@@ -3338,7 +3556,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
                 "elapsedMs": elapsed_ms,
                 "attempts": attempt,
                 "error": str(error),
-                "timeoutSeconds": OLLAMA_REQUEST_TIMEOUT_SECONDS,
+                "timeoutSeconds": timeout_seconds,
             }
         except requests.Timeout as error:
             elapsed_ms = int((time.time() - started) * 1000)
@@ -3346,7 +3564,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
                 "call-ollama",
                 "Ollama request timed out.",
                 error,
-                {"model": model, "timeoutSeconds": OLLAMA_REQUEST_TIMEOUT_SECONDS},
+                {"model": model, "timeoutSeconds": timeout_seconds},
             )
             return "", {
                 "status": "timeout",
@@ -3354,7 +3572,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
                 "elapsedMs": elapsed_ms,
                 "attempts": attempt,
                 "error": str(error),
-                "timeoutSeconds": OLLAMA_REQUEST_TIMEOUT_SECONDS,
+                "timeoutSeconds": timeout_seconds,
             }
         except (requests.RequestException, ValueError) as error:
             elapsed_ms = int((time.time() - started) * 1000)
@@ -3365,7 +3583,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
                 "elapsedMs": elapsed_ms,
                 "attempts": attempt,
                 "error": str(error),
-                "timeoutSeconds": OLLAMA_REQUEST_TIMEOUT_SECONDS,
+                "timeoutSeconds": timeout_seconds,
             }
 
     elapsed_ms = int((time.time() - started) * 1000)
@@ -3375,7 +3593,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
         "elapsedMs": elapsed_ms,
         "attempts": 2,
         "error": str(last_error) if last_error else "unknown",
-        "timeoutSeconds": OLLAMA_REQUEST_TIMEOUT_SECONDS,
+        "timeoutSeconds": timeout_seconds,
     }
 
 
@@ -3396,46 +3614,151 @@ def build_gsd_context_prompt_block(session):
     if not isinstance(session, dict):
         session = {"project": str(session or "")}
     context = session.get("projectContext") if isinstance(session.get("projectContext"), dict) else {}
-    raw_yaml = session.get("projectContextRaw") if isinstance(session.get("projectContextRaw"), str) else ""
-    if not raw_yaml and context:
-        raw_yaml = dump_project_context_yaml(context)
+    project_info = context.get("project") if isinstance(context.get("project"), dict) else {}
+    intent = context.get("intent") if isinstance(context.get("intent"), dict) else {}
+    deliverable = context.get("deliverable") if isinstance(context.get("deliverable"), dict) else {}
+    constraints = context.get("constraints") if isinstance(context.get("constraints"), dict) else {}
     source_inputs = context.get("source_inputs") if isinstance(context.get("source_inputs"), list) else []
     tool_plan = context.get("tool_plan") if isinstance(context.get("tool_plan"), list) else []
     gsd_directives = context.get("gsd_directives") if isinstance(context.get("gsd_directives"), dict) else {}
     skill_plan = context.get("skill_plan") if isinstance(context.get("skill_plan"), list) else []
+    content_requirements = context.get("content_requirements") if isinstance(context.get("content_requirements"), list) else []
+    acceptance = listify(context.get("acceptance"))
+    capabilities = listify(context.get("capabilities_required"))
+
+    def short(value, limit=180):
+        text = "" if value is None else str(value)
+        text = text.replace("\n", " ").strip()
+        return truncate_text(text, limit)
+
+    def compact_list(values, limit=260, max_items=6):
+        items = [short(value, limit) for value in listify(values) if short(value, limit)]
+        rendered = ", ".join(items[:max_items])
+        if len(items) > max_items:
+            rendered += f", +{len(items) - max_items} more"
+        return rendered
+
     lines = [
         "GSD operating context (binding):",
-        f"- Selected model: `{session.get('model', DEFAULT_MODEL)}`",
-        "- Do not rephrase the user request as the plan. Convert intent into executable phases with tool routing and verification gates.",
-        "- Every stated count is a hard gate. A plan that delivers fewer items than requested is wrong.",
-        "- Every staged skill is an operational instruction source. Use it when it fits; ignore it quietly when it does not.",
-        "- For web research, Scrapling is the first browser/scraping option. Research must create/cite workspace artifacts.",
-        "- For local file/directory references, Execution must use imported workspace-relative source paths and command evidence.",
-        "- Use the GSD suite perspective: discovery/map-codebase/research-phase/plan-phase/execute-phase/verify-work/audit/review as applicable, not a shallow bullet list.",
+        f"- Model: `{session.get('model', DEFAULT_MODEL)}`",
+        "- Convert intent into executable phases with tool routing, artifacts, and verification gates.",
+        "- Counts and source inputs are hard gates.",
+        "- Staged skills are instructions; use matching `.gforge/skills/...` paths.",
+        "- Web research routes to Scrapling and must leave cited workspace artifacts.",
+        "- Local files route through workspace-relative paths and command evidence.",
+        "- Use GSD workflows: discovery, map, research, plan, execute, verify, audit, review.",
         "",
     ]
-    if raw_yaml:
-        lines.extend(["Project Context contract:", "```yaml", raw_yaml.strip(), "```", ""])
+
+    summary_lines = []
+    project_label = compact_list([project_info.get("name"), project_info.get("type"), project_info.get("domain")], limit=80)
+    if project_label:
+        summary_lines.append(f"- Project: {project_label}")
+    user_request = short(session.get("project"), 520)
+    if user_request:
+        summary_lines.append(f"- User request: {user_request}")
+    intent_summary = compact_list([intent.get("summary"), intent.get("primary_goal"), intent.get("audience")], limit=160, max_items=3)
+    if intent_summary:
+        summary_lines.append(f"- Intent: {intent_summary}")
+    deliverable_bits = compact_list([
+        deliverable.get("count"),
+        deliverable.get("format"),
+        deliverable.get("path_pattern") or deliverable.get("path"),
+        deliverable.get("scope"),
+    ], limit=140, max_items=4)
+    if deliverable_bits:
+        summary_lines.append(f"- Deliverable: {deliverable_bits}")
+    if deliverable.get("partial") is not None:
+        summary_lines.append(f"- Partial delivery allowed: {bool(deliverable.get('partial'))}")
+    if capabilities:
+        summary_lines.append(f"- Required capabilities: {compact_list(capabilities, limit=80, max_items=10)}")
+
+    hard_requirements = []
+    if isinstance(constraints.get("hard_requirements"), list):
+        hard_requirements = constraints.get("hard_requirements")
+    elif isinstance(constraints.get("hard_requirements"), str):
+        hard_requirements = [constraints.get("hard_requirements")]
+    if hard_requirements:
+        summary_lines.append(f"- Hard constraints: {compact_list(hard_requirements, limit=140, max_items=5)}")
+
+    if summary_lines:
+        lines.extend(["Project Context summary:", *summary_lines, ""])
+
+    if content_requirements:
+        lines.append("Content requirements:")
+        for item in content_requirements[:6]:
+            if isinstance(item, dict):
+                parts = []
+                for key in ("count", "item", "scope", "source", "must_include"):
+                    value = item.get(key)
+                    if value not in (None, "", []):
+                        parts.append(f"{key}={compact_list(value, limit=90, max_items=4)}")
+                if parts:
+                    lines.append(f"- {'; '.join(parts)}")
+            elif item:
+                lines.append(f"- {short(item, 180)}")
+        if len(content_requirements) > 6:
+            lines.append(f"- +{len(content_requirements) - 6} more content requirements")
+        lines.append("")
+
     if source_inputs:
         lines.append("Source inputs that GSD must route:")
-        for item in source_inputs:
+        for item in source_inputs[:6]:
             if isinstance(item, dict):
-                lines.append(f"- `{item.get('original_path')}` ({item.get('kind')}) -> workspace import before execution")
+                path = short(item.get("original_path") or item.get("path"), 180)
+                kind = short(item.get("kind"), 60)
+                imported = short(item.get("workspace_path"), 180)
+                suffix = f" -> `{imported}`" if imported else " -> workspace import before execution"
+                lines.append(f"- `{path}` ({kind}){suffix}")
+        if len(source_inputs) > 6:
+            lines.append(f"- +{len(source_inputs) - 6} more source inputs")
         lines.append("")
     if skill_plan:
         lines.append("Skill plan:")
-        for item in skill_plan:
+        for item in skill_plan[:8]:
             if isinstance(item, dict):
-                lines.append(f"- `{item.get('skill')}`: {item.get('role')} at `{item.get('staged_path')}`")
+                skill = short(item.get("skill"), 80)
+                role = short(item.get("role"), 160)
+                staged_path = short(item.get("staged_path"), 180)
+                lines.append(f"- `{skill}`: {role} at `{staged_path}`")
+        if len(skill_plan) > 8:
+            lines.append(f"- +{len(skill_plan) - 8} more staged skills")
         lines.append("")
     if tool_plan:
         lines.append("Tool plan:")
-        for item in tool_plan:
+        for item in tool_plan[:8]:
             if isinstance(item, dict):
-                lines.append(f"- {item.get('step')}: `{item.get('tool')}` with evidence `{item.get('evidence')}`")
+                step = short(item.get("step"), 140)
+                tool = short(item.get("tool"), 80)
+                evidence = short(item.get("evidence"), 120)
+                instruction = short(item.get("instruction"), 160)
+                line = f"- {step}: `{tool}` with evidence `{evidence}`"
+                if instruction:
+                    line += f" ({instruction})"
+                lines.append(line)
+        if len(tool_plan) > 8:
+            lines.append(f"- +{len(tool_plan) - 8} more tool-routing steps")
         lines.append("")
     if gsd_directives:
-        lines.extend(["GSD directives:", "```json", json.dumps(gsd_directives, indent=2), "```", ""])
+        lines.append("GSD directives:")
+        for key in (
+            "planner_standard",
+            "research_routing",
+            "execution_routing",
+            "failure_rule",
+            "counts_are_hard_gates",
+            "source_inputs_are_hard_gates",
+        ):
+            if key in gsd_directives:
+                lines.append(f"- {key}: {short(gsd_directives.get(key), 220)}")
+        lines.append("")
+    if acceptance:
+        lines.append("Acceptance checks:")
+        for item in acceptance[:6]:
+            lines.append(f"- {short(item, 180)}")
+        if len(acceptance) > 6:
+            lines.append(f"- +{len(acceptance) - 6} more acceptance checks")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -3446,15 +3769,6 @@ def build_gsd_skill_context_section(skill_context_prompt):
         "GSD Skill Context (staged instructions for this planning pass):\n"
         f"{skill_context_prompt}\n"
     )
-
-
-GSD_PLANNING_CONTEXT_ENTRYPOINTS = [
-    ("SKILL.md", 800),
-    ("workflows/plan-phase.md", 1500),
-    ("agents/gsd-planner.md", 1500),
-    ("references/checkpoints.md", 400),
-]
-GSD_PLANNING_CONTEXT_LIMIT = 4200
 
 
 def build_compact_gsd_skill_context(workspace_dir, skill_context):
@@ -3478,40 +3792,19 @@ def build_compact_gsd_skill_context(workspace_dir, skill_context):
     except ValueError:
         return ""
 
-    lines = [
-        "Capped GSD skill excerpts copied from the staged skill files:",
-        f"- Staged skill path: `{relative_skill_path}`",
-        "- Use these excerpts as the authoritative GSD planning rules for this card.",
-        "- Keep the response concise; do not quote or restate the excerpts back.",
-    ]
-
-    remaining = GSD_PLANNING_CONTEXT_LIMIT
-    for relative_path, path_limit in GSD_PLANNING_CONTEXT_ENTRYPOINTS:
-        if remaining <= 0:
-            break
-        path = os.path.join(skill_dir, relative_path)
-        if not os.path.isfile(path):
-            continue
-        content = focused_skill_file_content(path, relative_path, min(path_limit, remaining))
-        content = content[:remaining]
-        if not content.strip():
-            continue
-        lines.extend([
-            "",
-            f"### {relative_path}",
-            "```text",
-            content,
-            "```",
-        ])
-        remaining -= len(content)
-    return "\n".join(lines)
+    existing_paths = {
+        relative_path
+        for relative_path, _purpose in GSD_SKILL_ENTRYPOINTS
+        if os.path.isfile(os.path.join(skill_dir, relative_path))
+    }
+    return "\n".join(build_gsd_reference_lines(relative_skill_path, existing_paths))
 
 
 def build_planning_prompt(project, checkpoint_mode, resource_state, gsd_skill_context=None):
     session = project if isinstance(project, dict) else {"project": project}
     project_text = session.get("project", "")
     capacity = resource_state.get("agentCapacity", {})
-    forge_context = read_forge_context()
+    forge_context = compact_forge_context()
     research_policy = research_budget_text(session)
     gsd_context = build_gsd_context_prompt_block(session)
     skill_context_section = build_gsd_skill_context_section(gsd_skill_context)
@@ -3527,19 +3820,14 @@ Project to plan:
 
 {skill_context_section}
 
-Use these built-in protocol cards:
-- Forge Flow: orient on project state, read project map/context, verify local environment, protect user work.
-- GSD: turn project intent into phases, execution steps, success criteria, and verification.
-- Project Execution: materialize planned files, run validation, repair failures, retest, and write delivery artifacts.
-- SocratiCode: use semantic codebase search when a codebase needs mapping or feature discovery.
-- Axon: use structural analysis before refactors, impact checks, dead-code review, and dependency reasoning.
+Protocol cards: Forge Flow=orientation; GSD=phase plan; Execution=files/validation/repair; SocratiCode=semantic map; Axon=impact graph.
 
 Checkpoint mode: {checkpoint_mode}
 System resource mode: {capacity.get("mode", "unknown")}
 Subagent capacity: {capacity.get("maxParallelSubagents", 0)}
 Review strategy: {capacity.get("reviewStrategy", "Run a careful audit pass before verification.")}
 Research policy: {research_policy}
-Small-model completion policy: when the active model is {SMALL_MODEL_REVIEW_MAX_B}B parameters or less, every Forge Section receives one extra independent review before it can be marked complete.
+Small-model policy: <= {SMALL_MODEL_REVIEW_MAX_B}B gets one independent review before completion.
 
 If subagent capacity is zero, do not pretend parallel review happened. Instead, review each step as an auditor who assumes the prior implementation may be wrong or incomplete.
 
@@ -3557,7 +3845,7 @@ def build_mode_aware_planning_prompt(session, checkpoint_mode, resource_state):
     capacity = resource_state.get("agentCapacity", {})
     project_mode = session.get("projectMode", "unknown")
     project_directory = session.get("projectDirectory", "")
-    forge_context = read_forge_context()
+    forge_context = compact_forge_context()
     research_policy = research_budget_text(session)
     gsd_context = build_gsd_context_prompt_block(session)
     base = f"""You are the Gemma Forge planning agent.
@@ -3626,7 +3914,7 @@ def build_session_prompt(session, message, skill_context=None):
     linked = session.get("bridges", [])
     history = session.get("messages", [])[-10:]
     history_lines = [f"{item.get('role')}: {item.get('content')}" for item in history]
-    forge_context = read_forge_context()
+    forge_context = compact_forge_context()
     research_policy = research_budget_text(session)
     workspace_dir = (session.get("projectDirectory") or "").strip()
     workspace_exists = bool(workspace_dir) and os.path.isdir(workspace_dir)
@@ -3683,9 +3971,7 @@ Project Execution card first to create one. For now, answer the user's
 question in plain text — file emission is disabled until the workspace
 exists."""
 
-    skill_block = (skill_context or {}).get("prompt") or (
-        "No Gemma Forge skills are staged for this chat turn."
-    )
+    skill_block = build_chat_skill_reference_prompt(skill_context)
     worker_action_block = f"""
 
 Worker handoff:
@@ -3861,6 +4147,30 @@ def build_correction_from_state(session, card_id, user_note):
 
 
 def finalize_card_result(session_id, session, card_id, model, result, human_verify, correction=None):
+    # User override path only applies to deterministic tool cards. Re-running
+    # those tools often returns the same environment finding, so Resolve can
+    # intentionally advance after the finding has been reviewed.
+    user_override_note = ""
+    if isinstance(correction, dict):
+        user_override_note = str(correction.get("userNote", "")).strip()
+    override_applies = (
+        user_override_note
+        and card_id in {"axon", "socraticode"}
+    )
+
+    tool_execution = result.get("toolExecution")
+    if isinstance(tool_execution, dict) and tool_execution.get("requiresAttention"):
+        if override_applies:
+            tool_execution["requiresAttention"] = False
+            tool_execution.setdefault("userOverride", user_override_note)
+        else:
+            result["status"] = "needs-attention"
+            result["checkpoint"] = (
+                f"{tool_execution.get('tool', 'Tool')} needs attention: "
+                f"{tool_execution.get('reason', 'review the tool artifact before continuing.')}"
+            )
+            return result
+
     research = run_research_passes_if_needed(session_id, session, card_id, model, result)
     if research:
         result["researchPasses"] = research
@@ -3875,19 +4185,6 @@ def finalize_card_result(session_id, session, card_id, model, result, human_veri
             result["postReviewRepairs"] = repairs
             review = result.get("extraReview", review)
 
-    # User override path — only applies to tool cards (axon, socraticode)
-    # because re-running those tools never changes their deterministic
-    # findings, so without an override the chain would loop on Resolve.
-    # For execution/verification, the correction flows into the model
-    # prompt and a re-run can actually fix things, so no override needed.
-    user_override_note = ""
-    if isinstance(correction, dict):
-        user_override_note = str(correction.get("userNote", "")).strip()
-    override_applies = (
-        user_override_note
-        and card_id in {"axon", "socraticode"}
-    )
-
     if review and not review.get("passed"):
         if override_applies:
             # User reviewed the findings + explicitly chose to advance.
@@ -3898,19 +4195,6 @@ def finalize_card_result(session_id, session, card_id, model, result, human_veri
         else:
             result["status"] = "needs-attention"
             result["checkpoint"] = small_model_review_checkpoint(review)
-            return result
-
-    tool_execution = result.get("toolExecution")
-    if isinstance(tool_execution, dict) and tool_execution.get("requiresAttention"):
-        if override_applies:
-            tool_execution["requiresAttention"] = False
-            tool_execution.setdefault("userOverride", user_override_note)
-        else:
-            result["status"] = "needs-attention"
-            result["checkpoint"] = (
-                f"{tool_execution.get('tool', 'Tool')} needs attention: "
-                f"{tool_execution.get('reason', 'review the tool artifact before continuing.')}"
-            )
             return result
 
     result["status"] = "awaiting-human" if human_verify else "complete"
@@ -4033,7 +4317,9 @@ def repair_execution_after_review(session_id, session, model, result, review, at
     os.makedirs(workspace_dir, exist_ok=True)
     session["projectMode"] = "existing-directory"
     session["projectDirectory"] = workspace_dir
-    execution = execute_model_authored_project(session_id, session, model, workspace_dir, review)
+    repair_review = dict(review or {})
+    repair_review["repairAttempt"] = attempt
+    execution = execute_model_authored_project(session_id, session, model, workspace_dir, repair_review)
     activate_post_execution_cards(session)
 
     result["summary"] = "Post-review continuation repair updated model-authored execution and verification packaging."
@@ -4160,7 +4446,7 @@ def build_post_review_repair_artifact(card_id, repairs, review):
 def run_research_passes_if_needed(session_id, session, card_id, model, result):
     budget = project_research_budget(session)
     research = {
-        "policy": "Up to 2 research passes for small tasks and up to 4 for larger tasks.",
+        "policy": f"Up to {WORKER_TASK_ITEM_CAP} research passes are available when the task requires them.",
         "taskSize": budget["taskSize"],
         "maxPasses": budget["maxPasses"],
         "used": 0,
@@ -4888,6 +5174,9 @@ def normalize_quantity_item(item):
     text = re.sub(r"[^a-z0-9]+", " ", str(item or "").lower()).strip()
     singular_aliases = {
         "articles": "article",
+        "references": "reference",
+        "citations": "citation",
+        "sources": "source",
         "headlines": "headline",
         "stories": "story",
         "checks": "check",
@@ -5492,7 +5781,8 @@ def skill_prompt_alias_preview(skill, limit=14):
 
 
 def build_project_context_prompt(project, mode, staged_skills, model=None, previous_attempt=None, validation_errors=None):
-    skill_catalog_block = build_skill_capability_catalog_prompt(discover_installed_skills())
+    context_writer_skill_block = read_context_writer_skill_prompt()
+    skill_catalog_block = build_project_context_skill_catalog_prompt(staged_skills)
     skills_block = "(none staged)"
     if staged_skills:
         lines = []
@@ -5549,6 +5839,8 @@ If the user's request needs anything in CANNOT, you MUST:
 
 Your job: take the user's natural-language request, understand what they REALLY need, and produce a strict structured contract that every later card in the harness will follow. The next agents are small local models and will pattern-match against your YAML keys. Make the contract unambiguous.
 
+{context_writer_skill_block}
+
 Take a moment. Reason carefully through seven steps in order:
 
 1. RESTATE the user's request literally (quote it, no paraphrase).
@@ -5588,6 +5880,17 @@ Take a moment. Reason carefully through seven steps in order:
      deliverable.format is html and deliverable.count is the HTML file count
      only. The CSS/JS file is a support file named in acceptance/requirements,
      not a second html deliverable.
+5d. SPECIAL CASE: installable / bundled skill suites.
+   - If the user asks for an installable skill, bundled skill, skill suite,
+     agent skill pack, or similar, the deliverable is the ACTUAL bundle layout,
+     not flat documentation in `output/*.md`.
+   - Use `deliverable.format: markdown` for the primary `SKILL.md` files.
+   - Use `deliverable.path_pattern: skills/<suite-slug>-NN/SKILL.md`.
+   - `deliverable.count` is the number of skill `SKILL.md` files requested.
+   - If the user requests scripts, CLIs, commands, or dry-run behavior, require
+     companion files under the matching skill directory, e.g.
+     `skills/<suite-slug>-01/scripts/audit_rulesets.py`; do not satisfy this
+     with prose-only command examples.
 6. MAP source material and tools into agent-digestible context.
    - If the user names a local file or directory, treat it as binding source material. The harness imports it to the workspace.
    - Downstream agents must use copied workspace-relative paths, not original absolute paths, in commands.
@@ -5702,6 +6005,7 @@ Rules:
 - If source screenshots are requested, acceptance must include a source-screenshot evidence
   check. Render screenshots of the generated output are separate and are not scrape proof.
 - skill.use should name the strongest single matching installed skill from the catalog. The harness may add more matching skills deterministically during staging.
+- Never set skill.use to `context-writer`; that skill is only for this Project Context card.
 - SocratiCode and Axon are higher-level codebase tools. Use them for existing-codebase discovery/structure/impact/dead-code work, not simple fresh content/file tasks.
 - UI/UX Pro Max is the design-system/interface suite. Use it for UI, dashboards, layout, states, charts, accessibility, and responsive presentation.
 - Scrapling is the first browser/scraping option. Use it for web fetch, crawling, JS-rendered pages, anti-bot/stealth, adaptive selectors, and structured website extraction.
@@ -5747,6 +6051,10 @@ def parse_project_context(text, project_text="", model=None):
 def infer_recovered_context_deliverable(project_text):
     text = str(project_text or "")
     lowered = text.lower()
+    if installable_skill_suite_requested(text):
+        count = requested_skill_suite_count(text)
+        slug = installable_skill_suite_slug(text)
+        return "markdown", count, f"skills/{slug}-NN/SKILL.md"
     if re.search(r"\b(html|landing\s+page|web\s?page|website|site|page)\b", lowered):
         count = requested_html_file_count(text) or 1
         return "html", count, "index.html"
@@ -5784,6 +6092,108 @@ def extract_title_requirement(project_text):
 def extract_brand_letters_requirement(project_text):
     match = re.search(r"\bbrand\s+letters?\s+([A-Za-z0-9]{2,12})\b", str(project_text or ""), re.IGNORECASE)
     return match.group(1).upper() if match else ""
+
+
+def installable_skill_suite_requested(project_text):
+    text = str(project_text or "").lower()
+    if not re.search(r"\bskills?\b|\bskill\s+suite\b", text):
+        return False
+    return bool(re.search(r"\b(?:installable|bundled|bundle|agent[-\s]?ready|ai[-\s]?agent)\b", text))
+
+
+def requested_skill_suite_count(project_text, parsed=None):
+    if isinstance(parsed, dict):
+        for requirement in parsed.get("content_requirements") or []:
+            if not isinstance(requirement, dict):
+                continue
+            item = normalize_quantity_item(requirement.get("item", ""))
+            if item in {"skill", "skill file"} or "skill" in str(requirement.get("item", "")).lower():
+                expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
+                if expected:
+                    return expected
+        deliverable = parsed.get("deliverable") if isinstance(parsed.get("deliverable"), dict) else {}
+        expected = parse_positive_int(deliverable.get("count"))
+        if expected:
+            return expected
+
+    text = str(project_text or "")
+    patterns = [
+        r"\b(\d{1,3})\s+(?:distinct\s+|complete\s+)?(?:skills?|skill\s+files?|skill\s+modules?|modules?)\b",
+        r"\bcover(?:ing)?\s*[:\-][^.\n]+",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if not match:
+            continue
+        if match.lastindex:
+            expected = parse_positive_int(match.group(1))
+            if expected:
+                return expected
+    return 1
+
+
+def installable_skill_suite_slug(project_text):
+    text = str(project_text or "")
+    lowered = text.lower()
+    if "github" in lowered or re.search(r"\bgh\b", lowered):
+        return "github-ops"
+    match = re.search(r"\b(?:create|build|write|author)\s+(?:an?\s+)?(?:installable\s+|bundled\s+)?([A-Za-z0-9][A-Za-z0-9\s_-]{3,80}?)\s+skill\s+suite\b", text, re.IGNORECASE)
+    candidate = match.group(1) if match else "generated"
+    return compact_slug(candidate, max_length=32, fallback="generated")
+
+
+def normalize_installable_skill_suite_context(parsed, project_text):
+    if not isinstance(parsed, dict) or not installable_skill_suite_requested(project_text):
+        return
+
+    deliverable = parsed.get("deliverable") if isinstance(parsed.get("deliverable"), dict) else {}
+    parsed["deliverable"] = deliverable
+    count = requested_skill_suite_count(project_text, parsed)
+    slug = installable_skill_suite_slug(project_text)
+
+    deliverable["format"] = "markdown"
+    deliverable["count"] = max(count, 1)
+    deliverable["path_pattern"] = f"skills/{slug}-NN/SKILL.md"
+    deliverable["encoding"] = "gforge_file_block"
+    deliverable["partial"] = False
+    deliverable["scope"] = (
+        f"Installable skill bundle with {deliverable['count']} skill directories under `skills/`, "
+        "each containing `SKILL.md` plus requested companion scripts/docs."
+    )
+    deliverable["anti_deflection"] = (
+        "An installable skill suite is a directory bundle, not flat prose. Emit real "
+        "`skills/<skill-key>/SKILL.md` files and companion scripts/docs inside those "
+        "skill directories when requested."
+    )
+
+    project = parsed.get("project") if isinstance(parsed.get("project"), dict) else {}
+    parsed["project"] = project
+    project["type"] = "code"
+
+    constraints = parsed.get("constraints") if isinstance(parsed.get("constraints"), dict) else {}
+    hard_requirements = constraints.get("hard_requirements") if isinstance(constraints.get("hard_requirements"), list) else []
+    hard_requirements = [str(item).strip() for item in hard_requirements if str(item).strip()]
+    additions = [
+        "Installable skill suite means actual bundled files under `skills/<skill-key>/SKILL.md`, not flat `output/*.md` summaries.",
+        "Each skill directory must be self-contained enough to install or copy as a skill bundle.",
+        "When scripts are requested, emit companion script files under the relevant skill directory, and make each script support `--dry-run`, auth/scope validation, non-destructive defaults, and usage docs.",
+    ]
+    for item in additions:
+        if item not in hard_requirements:
+            hard_requirements.append(item)
+    constraints["hard_requirements"] = hard_requirements
+    parsed["constraints"] = constraints
+
+    acceptance = parsed.get("acceptance") if isinstance(parsed.get("acceptance"), list) else []
+    acceptance = [str(item).strip() for item in acceptance if str(item).strip()]
+    acceptance_additions = [
+        f"At least {deliverable['count']} installable `SKILL.md` files exist under `skills/{slug}-*/SKILL.md`.",
+        "The suite includes real companion scripts/docs where the user requested script behavior, not prose-only command descriptions.",
+    ]
+    for item in acceptance_additions:
+        if item not in acceptance:
+            acceptance.append(item)
+    parsed["acceptance"] = acceptance
 
 
 def recover_project_context_from_request(project_text, model=None):
@@ -6014,6 +6424,9 @@ def enrich_project_context(parsed, project_text, model=None):
         deliverable = {}
         parsed["deliverable"] = deliverable
 
+    normalize_installable_skill_suite_context(parsed, project_text or "")
+    deliverable = parsed.get("deliverable") if isinstance(parsed.get("deliverable"), dict) else {}
+
     fmt = str(deliverable.get("format", "")).strip().lower()
     canonical_fmt = canonical_deliverable_format(fmt)
     if canonical_fmt and canonical_fmt != fmt:
@@ -6022,7 +6435,14 @@ def enrich_project_context(parsed, project_text, model=None):
 
     canonical_anti = anti_deflection_text_for(fmt)
     if canonical_anti:
-        deliverable["anti_deflection"] = canonical_anti
+        if installable_skill_suite_requested(project_text or ""):
+            deliverable["anti_deflection"] = (
+                "An installable skill suite is a directory bundle, not flat prose. Emit real "
+                "`skills/<skill-key>/SKILL.md` files and companion scripts/docs inside those "
+                f"skill directories when requested. {canonical_anti}"
+            )
+        else:
+            deliverable["anti_deflection"] = canonical_anti
 
     normalize_html_css_support_bundle_context(parsed, project_text or "")
 
@@ -7806,13 +8226,18 @@ def current_workspace_file_records(workspace_dir, file_items):
     return records
 
 
-def previous_execution_file_records(workspace_dir):
+def previous_execution_metadata(workspace_dir):
     metadata_path = os.path.join(workspace_dir, "artifacts", "model-execution.json")
     try:
-        with open(metadata_path, "r") as f:
+        with open(metadata_path, "r", encoding="utf-8") as f:
             metadata = json.load(f)
     except (OSError, json.JSONDecodeError):
-        return []
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def previous_execution_file_records(workspace_dir):
+    metadata = previous_execution_metadata(workspace_dir)
     files = metadata.get("files") if isinstance(metadata, dict) and isinstance(metadata.get("files"), list) else []
     return current_workspace_file_records(workspace_dir, files)
 
@@ -7835,6 +8260,87 @@ def merge_file_records(*record_groups):
     return [merged[path] for path in order if path in merged]
 
 
+def ok_harness_research_artifacts(workspace_dir, research):
+    fetched = research.get("fetched") if isinstance(research, dict) and isinstance(research.get("fetched"), list) else []
+    return [
+        item for item in fetched
+        if isinstance(item, dict)
+        and item.get("ok")
+        and workspace_relative_file_exists(workspace_dir, item.get("path"))
+    ]
+
+
+def ok_harness_source_screenshots(workspace_dir, research):
+    screenshots = research.get("screenshots") if isinstance(research, dict) and isinstance(research.get("screenshots"), list) else []
+    return [
+        item for item in screenshots
+        if isinstance(item, dict)
+        and item.get("kind") == "source"
+        and item.get("ok")
+        and workspace_relative_file_exists(workspace_dir, item.get("path"))
+    ]
+
+
+def previous_research_covers_urls(workspace_dir, research, urls, wants_source_screenshots):
+    if not isinstance(research, dict):
+        return False
+    requested_urls = [str(url or "").strip() for url in urls or [] if str(url or "").strip()]
+    if not requested_urls:
+        return False
+
+    fetched = ok_harness_research_artifacts(workspace_dir, research)
+    fetched_urls = {str(item.get("url") or "").strip() for item in fetched if str(item.get("url") or "").strip()}
+    if not all(url in fetched_urls for url in requested_urls):
+        return False
+
+    if wants_source_screenshots:
+        screenshots = ok_harness_source_screenshots(workspace_dir, research)
+        screenshot_urls = {
+            str(item.get("of") or item.get("target") or "").strip()
+            for item in screenshots
+            if str(item.get("of") or item.get("target") or "").strip()
+        }
+        if not all(url in screenshot_urls for url in requested_urls):
+            return False
+
+    return True
+
+
+def source_evidence_requirement_text(session):
+    project_context = session.get("projectContext") if isinstance(session, dict) else {}
+    return project_context_reference_text(
+        project_context if isinstance(project_context, dict) else {},
+        extra_text=session.get("project", "") if isinstance(session, dict) else "",
+    )
+
+
+def source_evidence_blockers(workspace_dir, session, research):
+    text = source_evidence_requirement_text(session)
+    capabilities = set(session_capabilities_required(session))
+    capabilities.update(detect_required_capabilities(text))
+    blockers = []
+
+    if capabilities.intersection({"web_browse", "web_fetch"}):
+        ok_research = ok_harness_research_artifacts(workspace_dir, research)
+        if not ok_research:
+            reason = research.get("skipped_reason") if isinstance(research, dict) else ""
+            suffix = f" ({reason})" if reason else ""
+            blockers.append(
+                "web research/scraping is required, but the harness has no successful "
+                f"fetched source artifact to give the worker{suffix}."
+            )
+
+    if source_screenshot_requested(text):
+        ok_screenshots = ok_harness_source_screenshots(workspace_dir, research)
+        if not ok_screenshots:
+            blockers.append(
+                "source screenshot capture is required, but the harness has no successful "
+                "source screenshot artifact to give the worker."
+            )
+
+    return blockers
+
+
 def execute_model_authored_project(session_id, session, model, workspace_dir, review=None):
     fallback = {
         "summary": "Gemma did not return a valid file payload.",
@@ -7848,6 +8354,80 @@ def execute_model_authored_project(session_id, session, model, workspace_dir, re
     maintenance_context = prepare_harness_maintenance_context(workspace_dir, session)
     research = prepare_workspace_research(workspace_dir, session)
     git_references = prepare_workspace_git_references(workspace_dir, session)
+    blockers = source_evidence_blockers(workspace_dir, session, research)
+    if blockers:
+        message = "Execution blocked before model call: " + " ".join(blockers)
+        emit_event("tool", message, blocked=True)
+        transport = {
+            "status": "blocked",
+            "model": model,
+            "elapsedMs": 0,
+            "attempts": 0,
+            "error": " ".join(blockers),
+            "timeoutSeconds": ollama_request_timeout_seconds(model),
+        }
+        metadata = {
+            "model": model,
+            "modelAuthored": False,
+            "executionBlocked": True,
+            "blockerType": "source-evidence",
+            "requestedProject": session.get("project", ""),
+            "summary": "Execution blocked before model call because required source evidence was not available.",
+            "files": [],
+            "rejectedFiles": [],
+            "staleDeliverables": [],
+            "commands": [],
+            "commandRuns": [],
+            "notes": blockers,
+            "verification": ["Resolve source acquisition before running model-authored execution."],
+            "research": research,
+            "gitReferences": git_references,
+            "sourceInputs": source_inputs,
+            "harnessMaintenance": {
+                "requested": maintenance_context.get("requested"),
+                "manifest": maintenance_context.get("manifest"),
+                "actionsFile": maintenance_context.get("actionsFile"),
+                "targets": [],
+                "actions": {
+                    "requested": False,
+                    "actionsFile": maintenance_context.get("actionsFile"),
+                    "applied": [],
+                    "skipped": [],
+                },
+            },
+            "skillContext": {
+                "root": skill_context.get("root"),
+                "staged": [
+                    {
+                        "name": item.get("name"),
+                        "path": item.get("path"),
+                        "requested": item.get("requested"),
+                    }
+                    for item in skill_context.get("staged", [])
+                ],
+            },
+            "raw": "",
+            "transport": transport,
+            "createdAt": utc_now(),
+        }
+        write_project_file(workspace_dir, "artifacts/model-execution.json", json.dumps(metadata, indent=2))
+        validation = validate_model_authored_workspace(workspace_dir, metadata, session)
+        write_project_file(workspace_dir, "artifacts/validation.json", json.dumps(validation, indent=2))
+        return {
+            "summary": metadata["summary"],
+            "files": [],
+            "rejectedFiles": [],
+            "commands": [],
+            "commandRuns": [],
+            "maintenanceActions": metadata["harnessMaintenance"]["actions"],
+            "notes": metadata["notes"],
+            "verification": metadata["verification"],
+            "validation": validation,
+            "screenshots": [],
+            "gitReferences": git_references,
+            "metadata": metadata,
+        }
+
     payload, raw, transport = call_ollama_execution_payload(
         model,
         build_model_execution_prompt(session, workspace_dir, review, skill_context, research, git_references, source_inputs, maintenance_context),
@@ -8998,7 +9578,7 @@ Workspace command execution is available for this run.
 """
 
 
-def dedupe_urls(urls, limit=8):
+def dedupe_urls(urls, limit=WORKER_TASK_ITEM_CAP):
     seen = []
     for url in urls or []:
         cleaned = str(url or "").strip().rstrip(".,;:)>]'\"")
@@ -9012,9 +9592,50 @@ def dedupe_urls(urls, limit=8):
     return seen
 
 
-def infer_web_research_urls(project_text, limit=8):
+GITHUB_OPERATIONS_DOC_SEED_URLS = [
+    "https://docs.github.com/en/organizations/managing-organization-settings/creating-rulesets-for-repositories-in-your-organization",
+    "https://docs.github.com/en/organizations/managing-organization-settings/managing-rulesets-for-repositories-in-your-organization",
+    "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets",
+    "https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets",
+    "https://docs.github.com/en/rest/orgs/rules",
+    "https://docs.github.com/en/rest/repos/rules",
+    "https://docs.github.com/en/rest/branches/branch-protection",
+    "https://docs.github.com/actions/deployment/targeting-different-environments",
+    "https://docs.github.com/en/actions/concepts/workflows-and-actions/deployment-environments",
+    "https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments",
+    "https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/create-custom-protection-rules",
+    "https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps",
+    "https://docs.github.com/en/actions/concepts/security/github_token",
+    "https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs",
+    "https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens",
+    "https://docs.github.com/en/code-security/concepts/code-scanning/codeql/about-code-scanning-with-codeql",
+    "https://docs.github.com/en/code-security/secret-scanning/introduction/about-secret-scanning",
+    "https://docs.github.com/en/code-security/concepts/supply-chain-security/about-supply-chain-security",
+    "https://docs.github.com/en/pages/getting-started-with-github-pages/about-github-pages",
+    "https://docs.github.com/en/actions/concepts/runners/github-hosted-runners",
+]
+
+
+def github_operations_docs_research_requested(text):
+    lowered = str(text or "").lower()
+    if not re.search(r"\b(github|gh)\b", lowered):
+        return False
+    return bool(re.search(
+        r"\b("
+        r"authoritative references?|official docs?|rulesets?|branch protection|"
+        r"deployment protection|environments?|github apps?|personal access tokens?|"
+        r"\bpats?\b|token scopes?|actions permissions?|github_token|codeql|"
+        r"secret scanning|dependency review|repo settings|repository settings|"
+        r"issues?|pull requests?|\bprs?\b|github pages|runners?|workflows?|"
+        r"storage|local-to-remote|live product protocols?"
+        r")\b",
+        lowered,
+    ))
+
+
+def infer_web_research_urls(project_text, limit=WORKER_TASK_ITEM_CAP):
     """
-    Infer a small set of web-research targets when the user asked for live
+    Infer a bounded set of web-research targets when the user asked for live
     source work in natural language but did not paste explicit URLs.
 
     This is intentionally conservative and transparent: it only seeds obvious
@@ -9033,6 +9654,9 @@ def infer_web_research_urls(project_text, limit=8):
         r"\b(scrape|scraping|crawl|research|review|check\s+out|look\s+at|capture)\b",
         lowered,
     )
+    if github_operations_docs_research_requested(text) and web_research_requested:
+        urls.extend(GITHUB_OPERATIONS_DOC_SEED_URLS)
+
     if gallery_requested and web_research_requested:
         urls.extend([
             "https://www.hauserwirth.com/",
@@ -9054,6 +9678,10 @@ def source_screenshot_requested(project_text):
     source_terms = r"(sites?|websites?|pages?|sources?|urls?|headlines?|articles?|galleries|gallery\s+sites?)"
     screenshot_terms = r"(screenshots?|screen\s+captures?)"
     if re.search(rf"\b{screenshot_terms}\s+(of|from|for)\s+(the\s+)?{source_terms}\b", lowered):
+        return True
+    if re.search(rf"\b{screenshot_terms}\s+per\s+{source_terms}\b", lowered):
+        return True
+    if re.search(rf"\b(one|1|each|every)\s+{screenshot_terms}\s+(per|for|of)\s+{source_terms}\b", lowered):
         return True
     if re.search(rf"\b(take|capture|save|grab)\s+{screenshot_terms}\b", lowered) and re.search(rf"\b{source_terms}\b", lowered):
         return True
@@ -9078,12 +9706,28 @@ def prepare_workspace_research(workspace_dir, session):
     caps_required = session_capabilities_required(session)
     wants_browse = any(c in {"web_browse", "web_fetch"} for c in caps_required)
     wants_source_screenshots = "screenshot_capture" in set(caps_required) and source_screenshot_requested(project_text)
-    urls = infer_web_research_urls(project_text or "", limit=8)
+    urls = infer_web_research_urls(project_text or "", limit=WORKER_TASK_ITEM_CAP)
 
     if not wants_browse and not urls:
         return {"fetched": [], "screenshots": [], "skipped_reason": "no browse capability required and no URLs in request"}
     if not urls:
         return {"fetched": [], "screenshots": [], "skipped_reason": "browse capability required but no source URLs could be inferred"}
+
+    previous_research = previous_execution_metadata(workspace_dir).get("research")
+    if previous_research_covers_urls(workspace_dir, previous_research, urls, wants_source_screenshots):
+        fetched_count = len(ok_harness_research_artifacts(workspace_dir, previous_research))
+        screenshot_count = len(ok_harness_source_screenshots(workspace_dir, previous_research))
+        emit_event(
+            "browse",
+            f"reuse existing source research: {fetched_count} fetched artifact(s), {screenshot_count} source screenshot(s)",
+            mode="cache",
+            ok=True,
+        )
+        reused = dict(previous_research)
+        reused["inferred_urls"] = urls
+        reused["skipped_reason"] = None
+        reused["reused"] = True
+        return reused
 
     fetched = []
     for url in urls:
@@ -9108,7 +9752,7 @@ def prepare_workspace_research(workspace_dir, session):
                 "error": "playwright screenshot tool is not available",
             })
         else:
-            for url in urls[:5]:
+            for url in urls[:WORKER_TASK_ITEM_CAP]:
                 emit_event("screenshot", f"source {url}", mode="url")
                 try:
                     artifact = tool_screenshot.screenshot_into_workspace(
@@ -9322,6 +9966,48 @@ def repair_snapshot_readable_path(relative_path):
     return None
 
 
+def compact_repair_snapshot_content(relative_path, content):
+    if relative_path not in {"artifacts/model-execution.json", "artifacts/validation.json"}:
+        return content
+    try:
+        payload = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return content
+    if not isinstance(payload, dict):
+        return content
+
+    if relative_path == "artifacts/model-execution.json":
+        research = payload.get("research") if isinstance(payload.get("research"), dict) else {}
+        compact = {
+            "summary": payload.get("summary", ""),
+            "files": [
+                item.get("path")
+                for item in payload.get("files", [])
+                if isinstance(item, dict) and item.get("path")
+            ],
+            "rejectedFiles": payload.get("rejectedFiles", []),
+            "commands": payload.get("commands", []),
+            "notes": payload.get("notes", []),
+            "verification": payload.get("verification", []),
+            "researchEvidence": {
+                "fetched": len([item for item in research.get("fetched", []) if isinstance(item, dict) and item.get("ok")]),
+                "screenshots": len([item for item in research.get("screenshots", []) if isinstance(item, dict) and item.get("ok")]),
+                "reused": bool(research.get("reused")),
+            },
+            "transport": payload.get("transport", {}),
+        }
+        return json.dumps(compact, indent=2)
+
+    compact = {
+        "passed": payload.get("passed"),
+        "failures": payload.get("failures", []),
+        "fileCount": payload.get("fileCount"),
+        "contentRequirements": payload.get("contentRequirements", []),
+        "sourceEvidence": payload.get("sourceEvidence", {}),
+    }
+    return json.dumps(compact, indent=2)
+
+
 def add_repair_snapshot_file(items, seen, workspace_dir, relative_path, per_file_limit):
     safe_path = repair_snapshot_readable_path(relative_path)
     if not safe_path or safe_path in seen:
@@ -9335,6 +10021,7 @@ def add_repair_snapshot_file(items, seen, workspace_dir, relative_path, per_file
             content = f.read(per_file_limit + 1)
     except OSError:
         return False
+    content = compact_repair_snapshot_content(safe_path, content)
     if "\x00" in content[:200]:
         return False
     seen.add(safe_path)
@@ -9409,7 +10096,17 @@ USER CORRECTION (authoritative human steer):
 > {user_note}
 """
 
-    snapshot = build_workspace_repair_snapshot(session, workspace_dir)
+    attempt = parse_positive_int(review.get("repairAttempt")) or 1
+    max_files = max(4, 12 - ((attempt - 1) * 4))
+    per_file_limit = max(700, 1600 - ((attempt - 1) * 300))
+    total_limit = max(5000, 12000 - ((attempt - 1) * 3000))
+    snapshot = build_workspace_repair_snapshot(
+        session,
+        workspace_dir,
+        max_files=max_files,
+        per_file_limit=per_file_limit,
+        total_limit=total_limit,
+    )
     return f"""
 CONTINUATION REPAIR MODE (binding on this retry):
 
@@ -9424,6 +10121,7 @@ Your job:
 - Do not re-create the project, do not replace the whole file set, and do not re-emit files that are already correct.
 - Emit only files that must be repaired or added. The harness preserves omitted existing files during repair.
 - Proceed from the existing workspace and complete the rest of the original request for delivery.
+- This is repair attempt {attempt}; context is intentionally reduced to remaining blockers and a bounded file snapshot.
 
 Reviewer findings (structured):
 {json.dumps(review_payload, indent=2)}
@@ -9432,24 +10130,120 @@ Reviewer findings (structured):
 """
 
 
+def read_previous_validation_payload(workspace_dir):
+    path = os.path.join(workspace_dir, "artifacts", "validation.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def build_repair_contract_context_block(session, workspace_dir, review):
+    context = session.get("projectContext") if isinstance(session, dict) else {}
+    deliverable = context.get("deliverable") if isinstance(context, dict) and isinstance(context.get("deliverable"), dict) else {}
+    content_requirements = context.get("content_requirements") if isinstance(context, dict) and isinstance(context.get("content_requirements"), list) else []
+    metadata = previous_execution_metadata(workspace_dir)
+    validation = read_previous_validation_payload(workspace_dir)
+    existing_files = [
+        item.get("path")
+        for item in metadata.get("files", [])
+        if isinstance(item, dict) and item.get("path")
+    ]
+    failures = listify(review.get("validationFailures")) or listify(validation.get("failures"))
+
+    lines = [
+        "",
+        "REMAINING WORK CONTRACT (binding repair brief):",
+        "- This is not a fresh run. Existing workspace files are preserved unless you emit the same path with complete replacement content.",
+        "- Do not repeat source acquisition or research. Use the existing `research/` and `screenshots/` artifacts already on disk.",
+        f"- deliverable.format: `{deliverable.get('format', '')}`",
+        f"- deliverable.path_pattern: `{deliverable.get('path_pattern', '')}`",
+        f"- deliverable.count: `{deliverable.get('count', '')}`",
+        f"- deliverable.scope: {deliverable.get('scope', '')}",
+    ]
+    if existing_files:
+        lines.append("- Existing files already on disk, preserved if omitted:")
+        for path in existing_files[:25]:
+            lines.append(f"  * `{path}`")
+        if len(existing_files) > 25:
+            lines.append(f"  * ... {len(existing_files) - 25} more")
+    if content_requirements:
+        lines.append("- Remaining validation gates:")
+        for requirement in content_requirements:
+            lines.append(f"  * {content_requirement_line(requirement)}")
+    if failures:
+        lines.append("- Current blockers to fix, and only these blockers:")
+        for failure in failures:
+            lines.append(f"  * {failure}")
+    lines.extend([
+        "",
+        "Repair output rule:",
+        "- Emit only missing or corrected files as full `<<<GFORGE_FILE:path>>>` blocks.",
+        "- If the previous structure is wrong, add the correct remaining bundle/files; do not rewrite unrelated working artifacts.",
+    ])
+    return "\n".join(lines)
+
+
+def build_repair_skill_context_summary(skill_context):
+    staged = skill_context.get("staged") if isinstance(skill_context, dict) else []
+    lines = [
+        "Staged skills are still available by path; repair mode does not repeat full skill manuals.",
+    ]
+    for item in staged or []:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name") or "skill"
+        path = item.get("path") or ""
+        lines.append(f"- `{name}` at `{path}`")
+    return "\n".join(lines)
+
+
+def build_repair_research_context_block(research):
+    if not isinstance(research, dict):
+        return ""
+    fetched = research.get("fetched") if isinstance(research.get("fetched"), list) else []
+    screenshots = research.get("screenshots") if isinstance(research.get("screenshots"), list) else []
+    ok_fetched = [item for item in fetched if isinstance(item, dict) and item.get("ok")]
+    ok_screenshots = [item for item in screenshots if isinstance(item, dict) and item.get("ok")]
+    if not ok_fetched and not ok_screenshots:
+        return build_research_context_block(research)
+    lines = [
+        "",
+        "Existing source evidence available for this repair:",
+        f"- Research artifacts: {len(ok_fetched)} under `research/`.",
+        f"- Source screenshots: {len(ok_screenshots)} under `screenshots/`.",
+        "- Cite the existing paths where needed; do not re-state that you fetched them yourself.",
+    ]
+    for item in ok_fetched[:25]:
+        lines.append(f"  * `{item.get('path')}` - {item.get('url')}")
+    return "\n".join(lines)
+
+
 def build_model_execution_prompt(session, workspace_dir, review=None, skill_context=None, research=None, git_references=None, source_inputs=None, maintenance_context=None):
     review_block = build_repair_continuation_block(session, workspace_dir, review)
-    skill_block = (skill_context or {}).get("prompt", "No Gemma Forge skills are staged for this workspace.")
+    repair_mode = bool(review)
+    skill_block = build_repair_skill_context_summary(skill_context or {}) if repair_mode else (skill_context or {}).get("prompt", "No Gemma Forge skills are staged for this workspace.")
 
-    context_block = build_execution_context_block(session)
-    research_block = build_research_context_block(research)
+    context_block = build_repair_contract_context_block(session, workspace_dir, review) if repair_mode else build_execution_context_block(session)
+    research_block = build_repair_research_context_block(research) if repair_mode else build_research_context_block(research)
     git_reference_block = build_git_reference_context_block(git_references)
     source_inputs_block = build_source_inputs_context_block(source_inputs)
     maintenance_block = build_harness_maintenance_context_block(maintenance_context)
     workspace_exec_block = build_workspace_exec_policy_block(session, maintenance_context)
+    original_request_block = (
+        "Original project request is intentionally omitted in continuation repair mode; use the remaining-work contract and blockers below."
+        if repair_mode else
+        f"Original project request (raw, for reference only — follow the contract above):\n{session.get('project', '')}"
+    )
 
     return f"""You are Gemma Forge Project Execution.
 
 You are the selected local Gemma model. You must do the user's requested task yourself.
 Do not assume a built-in demo task. Do not return placeholder files.
 {context_block}
-Original project request (raw, for reference only — follow the contract above):
-{session.get('project', '')}
+{original_request_block}
 
 Workspace root:
 {workspace_dir}
@@ -9478,7 +10272,7 @@ VERIFICATION:
 
 Rules:
 - Every file path must be relative to the workspace root.
-- Final deliverable files must match deliverable.path_pattern from the contract. Support scripts/manifests may live under `scripts/`, `tools/`, or `artifacts/` only when needed to inspect imported sources, generate binary deliverables, or validate the result.
+- Final deliverable files must match deliverable.path_pattern from the contract. Support scripts/manifests may live under `scripts/`, `tools/`, or `artifacts/` when needed to inspect imported sources, generate binary deliverables, or validate the result. For installable skill-suite contracts whose path pattern ends in `/SKILL.md`, support scripts/docs may also live inside the matching `skills/<skill-key>/` directory.
 - Do not use absolute paths or parent directory traversal.
 - Do not write into `.gforge/`; it is reserved for harness-provided support context.
 - Include complete file contents, not patches.
@@ -10133,6 +10927,11 @@ def path_pattern_parts(deliverable):
                 first_path_token = token
                 break
     pattern_dir = os.path.dirname(first_path_token) if first_path_token else ""
+    if pattern_dir:
+        parts = pattern_dir.replace(os.sep, "/").split("/")
+        wildcard_index = next((i for i, part in enumerate(parts) if "NN" in part or "*" in part), None)
+        if wildcard_index is not None:
+            pattern_dir = "/".join(parts[:wildcard_index])
     pattern_ext = os.path.splitext(os.path.basename(first_path_token))[1].lower()
     if not pattern_ext and fmt in DELIVERABLE_FORMAT_EXTENSIONS:
         exts = [ext for ext in DELIVERABLE_FORMAT_EXTENSIONS[fmt] if ext]
@@ -10369,6 +11168,65 @@ def validate_deliverable_file_count(files, project_context):
         f"deliverable.count expected at least {expected} `{fmt}` file(s) matching `{path_pattern}`, "
         f"but the model wrote {len(matching)}."
     ]
+
+
+def file_backed_content_requirement_count(files, project_context, requirement):
+    if not isinstance(requirement, dict) or not isinstance(project_context, dict):
+        return None
+    text = content_requirement_text(requirement)
+    item_text = str(requirement.get("item", "") or "").lower()
+    deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+    path_pattern = str(deliverable.get("path_pattern", "") or "").replace("\\", "/").lower()
+
+    if "skill" in f"{item_text} {text}" and "file" in f"{item_text} {text}" and path_pattern.endswith("/skill.md"):
+        return len([
+            item for item in files or []
+            if isinstance(item, dict)
+            and str(item.get("path", "")).replace("\\", "/").lower().endswith("/skill.md")
+            and file_matches_deliverable(item.get("path", ""), deliverable)
+        ])
+
+    return None
+
+
+def validate_installable_skill_suite_structure(workspace_dir, files, session):
+    project_text = session.get("project", "") if isinstance(session, dict) else ""
+    if not installable_skill_suite_requested(project_text):
+        return []
+
+    failures = []
+    project_context = session.get("projectContext") if isinstance(session, dict) and isinstance(session.get("projectContext"), dict) else {}
+    deliverable = project_context.get("deliverable") if isinstance(project_context.get("deliverable"), dict) else {}
+    skill_files = [
+        item for item in files or []
+        if isinstance(item, dict)
+        and str(item.get("path", "")).replace("\\", "/").lower().endswith("/skill.md")
+        and file_matches_deliverable(item.get("path", ""), deliverable)
+    ]
+    if not skill_files:
+        failures.append(
+            "installable skill suite requested, but no bundled `skills/<skill-key>/SKILL.md` deliverables were written; "
+            "flat `output/*.md` summaries do not satisfy an installable skill bundle."
+        )
+
+    if re.search(r"\bscripts?\b|--dry-run\b|\bdry\s+run\b", project_text, re.IGNORECASE):
+        script_files = []
+        for item in files or []:
+            if not isinstance(item, dict):
+                continue
+            relative_path = str(item.get("path", "") or "").replace("\\", "/")
+            ext = os.path.splitext(relative_path)[1].lower()
+            if re.search(r"^skills/[^/]+/scripts?/", relative_path) and ext in {".py", ".sh", ".js", ".mjs", ".ts"}:
+                safe_path = safe_workspace_relative_path(relative_path)
+                if safe_path and os.path.isfile(os.path.join(workspace_dir, safe_path)):
+                    script_files.append(relative_path)
+        if not script_files:
+            failures.append(
+                "installable skill suite requested companion scripts/dry-run behavior, but no real script files "
+                "were written under `skills/<skill-key>/scripts/`."
+            )
+
+    return failures
 
 
 def code_deliverable_files_for_extensions(files, project_context, extensions):
@@ -11347,6 +12205,13 @@ def count_content_units(text, item, requirement=None):
         ]
         return max(candidates)
 
+    if normalized_item in {"reference", "citation", "source"}:
+        urls = {
+            match.rstrip(".,;:)>]'\"")
+            for match in re.findall(r"https?://[^\s,)>'\"]+", text or "", re.IGNORECASE)
+        }
+        return len(urls)
+
     if normalized_item in {"option", "variant", "concept"}:
         labels = set(re.findall(r"\b(?:option|variant|concept)\s*(?:#|no\.?|number)?\s*(\d+)\b", text, re.IGNORECASE))
         candidates = [
@@ -11467,7 +12332,8 @@ def validate_content_quantity_requirements(workspace_dir, files, project_context
         expected = parse_positive_int(requirement.get("minimum_total")) or parse_positive_int(requirement.get("count"))
         if not expected or expected <= 1:
             continue
-        actual = count_content_units(combined_text, requirement.get("item", "items"), requirement=requirement)
+        file_backed_actual = file_backed_content_requirement_count(files, project_context, requirement)
+        actual = file_backed_actual if file_backed_actual is not None else count_content_units(combined_text, requirement.get("item", "items"), requirement=requirement)
         result = {
             "item": requirement.get("item", "items"),
             "expected": expected,
@@ -11501,17 +12367,6 @@ def workspace_relative_file_exists(workspace_dir, relative_path):
     return os.path.isfile(os.path.join(workspace_dir, safe_path))
 
 
-def disk_research_artifact_count(workspace_dir):
-    research_dir = os.path.join(workspace_dir, "research")
-    try:
-        return len([
-            name for name in os.listdir(research_dir)
-            if name.lower().endswith(".md") and os.path.isfile(os.path.join(research_dir, name))
-        ])
-    except OSError:
-        return 0
-
-
 def validate_requested_source_evidence(workspace_dir, metadata, session):
     failures = []
     evidence = {
@@ -11529,33 +12384,19 @@ def validate_requested_source_evidence(workspace_dir, metadata, session):
     capabilities.update(detect_required_capabilities(project_text))
     research = metadata.get("research") if isinstance(metadata, dict) and isinstance(metadata.get("research"), dict) else {}
 
-    fetched = research.get("fetched") if isinstance(research.get("fetched"), list) else []
-    ok_research = [
-        item for item in fetched
-        if isinstance(item, dict)
-        and item.get("ok")
-        and workspace_relative_file_exists(workspace_dir, item.get("path"))
-    ]
-    disk_count = disk_research_artifact_count(workspace_dir)
-    evidence["researchArtifacts"] = max(len(ok_research), disk_count)
+    ok_research = ok_harness_research_artifacts(workspace_dir, research)
+    evidence["researchArtifacts"] = len(ok_research)
 
     if capabilities.intersection({"web_browse", "web_fetch"}):
         evidence["webResearchRequired"] = True
-        if not ok_research and disk_count <= 0:
+        if not ok_research:
             failures.append(
                 "web research/scraping was required by the request, but no harness-fetched "
                 "`research/*.md` artifact was found on disk. Skill staging or model claims "
                 "do not satisfy source research evidence."
             )
 
-    screenshots = research.get("screenshots") if isinstance(research.get("screenshots"), list) else []
-    ok_source_screenshots = [
-        item for item in screenshots
-        if isinstance(item, dict)
-        and item.get("kind") == "source"
-        and item.get("ok")
-        and workspace_relative_file_exists(workspace_dir, item.get("path"))
-    ]
+    ok_source_screenshots = ok_harness_source_screenshots(workspace_dir, research)
     evidence["sourceScreenshots"] = len(ok_source_screenshots)
     if source_screenshot_requested(project_text):
         evidence["sourceScreenshotsRequired"] = True
@@ -11574,10 +12415,11 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
     files = metadata.get("files", []) if isinstance(metadata, dict) else []
     transport = metadata.get("transport") if isinstance(metadata, dict) else None
     transport_status = transport.get("status") if isinstance(transport, dict) else None
+    execution_blocked = bool(metadata.get("executionBlocked")) if isinstance(metadata, dict) else False
 
-    if transport_status and transport_status != "ok":
+    if transport_status and transport_status != "ok" and not execution_blocked:
         failures.append(transport_failure_message(transport))
-    elif not files:
+    elif not files and not execution_blocked:
         failures.append("model-authored execution returned no writable files")
 
     project_context = session.get("projectContext") if isinstance(session, dict) else {}
@@ -11594,6 +12436,9 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
 
     file_count_failures = validate_deliverable_file_count(files, project_context)
     failures.extend(file_count_failures)
+
+    skill_suite_failures = validate_installable_skill_suite_structure(workspace_dir, files, session)
+    failures.extend(skill_suite_failures)
 
     file_integrity_failures = validate_deliverable_file_integrity(workspace_dir, files, project_context)
     failures.extend(file_integrity_failures)
@@ -11631,10 +12476,10 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
 
     authenticity = {
         "model": metadata.get("model") if isinstance(metadata, dict) else session.get("model", DEFAULT_MODEL),
-        "source": "model-authored-execution",
+        "source": "harness-preflight" if execution_blocked else "model-authored-execution",
         "modelAuthored": bool(metadata.get("modelAuthored")) if isinstance(metadata, dict) else False,
     }
-    if not authenticity["modelAuthored"]:
+    if not authenticity["modelAuthored"] and not execution_blocked:
         failures.append("authenticity gate failed: no model-authored execution metadata was found")
 
     result_payload = {

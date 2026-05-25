@@ -56,6 +56,33 @@ class SkillRoutingTest(unittest.TestCase):
             expected=["code-writer"],
         )
 
+    def test_project_context_tool_plan_stages_named_operational_skills(self):
+        selected = server.resolve_skill_selection(
+            {
+                "project": "Create an installable GitHub operations skill suite.",
+                "messages": [],
+                "projectContext": {
+                    "skill": {"use": "code-writer"},
+                    "capabilities_required": ["emit_files", "web_browse"],
+                    "tool_plan": [
+                        {
+                            "step": "Fetch live web sources.",
+                            "tool": "scrapling-official",
+                            "evidence": "research/*.md",
+                        },
+                        {
+                            "step": "Capture source screenshots.",
+                            "tool": "playwright screenshot capture",
+                            "evidence": "screenshots/*.png",
+                        },
+                    ],
+                },
+            },
+            fake_skills(),
+        )
+
+        self.assertEqual(selected[:2], ["code-writer", "scrapling-official"])
+
     def test_scrapling_routes_advanced_browser_scraping(self):
         self.assert_routes(
             "Crawl this dynamic website with JavaScript rendering, adaptive selectors, and Cloudflare Turnstile bypass.",

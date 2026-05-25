@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-25 (UTC) — DEV submission draft and media polished.
+Last updated: 2026-05-25 (UTC) — source-evidence gates and Context Writer skill validated.
 
 ## Verified ground truth
 
@@ -8,7 +8,7 @@ Last updated: 2026-05-25 (UTC) — DEV submission draft and media polished.
 - Branch: `main` tracking `origin/main`; current branch head is the
   installable repo state for this backup pass once pushed to GitHub.
   Runtime/generated/private harness state remains local/SSD-only.
-- Harness Flask server source: `chat/server.py` (12,674 lines).
+- Harness Flask server source: `chat/server.py` (13,589 lines).
 - Harness URL: `http://127.0.0.1:5005/`. Server PID file at
   `/private/tmp/gemma-forge-server.pid`; check before assuming it is
   running.
@@ -64,6 +64,38 @@ the contest demo path works end-to-end.** Driving doc:
     again; switching sessions no longer shows the same global provisioning
     tail in every project.
 - Locally verified current behavior:
+  - Contest clean-install blocker is fixed and pushed to GitHub. Root cause:
+    the launcher/provisioner expected ignored
+    `skills/ui-ux-pro-max/src/...` files during final bundled-skill depth
+    checks, even though the installable repo contains the tracked
+    `.claude/skills/ui-ux-pro-max/` bundle. Commit `3471615`
+    (`Fix clean install UI skill depth check`) updates
+    `launch_forge.command`, `tools/provision_clean_install.py`, and
+    `tools/verify_clean_install.sh` so fresh clones accept either the full
+    source bundle or the tracked `.claude` bundle. Ian reran the test and
+    confirmed provisioning worked; the remaining message was only port
+    `5005` already in use because an existing harness server was still
+    running.
+  - Emergency GSD failure fix is live. Root cause was two-part:
+    GSD/Project Context prompt payloads were still too large in places,
+    and planning/GSD calls capped `num_predict`; `gemma-4-e4b-it`
+    returned empty for planning-style prompts under that cap but
+    succeeded when the cap was omitted. `chat/server.py` now compacts
+    GSD Project Context summaries, points to staged GSD package paths
+    instead of injecting manuals/raw YAML, removes the default
+    `num_predict` cap for non-tiny planning/GSD calls, blocks overlapping
+    card runs per session, and short-circuits known tool transport
+    failures before research/review can add extra model calls. Tiny
+    <=1.5B models still use the bounded prediction budget.
+  - Emergency verification: focused GSD/race/tool-attention tests passed;
+    full `.venv/bin/python -m unittest discover -s tests -p '*_test.py'`
+    passed (`136 tests`); `npm run check` passed; `git diff --check`
+    passed. LaunchAgent restarted to PID `98432`, endpoint
+    `http://127.0.0.1:5005` returned OK, and a fresh throwaway live
+    `/cards/gsd/run` smoke using `gemma-4-e4b-it` completed with
+    transport `ok` in `15782 ms`. Throwaway smoke sessions were deleted.
+    Pre-edit backup:
+    `/Users/webot/Backups/gemma-forge/20260525T030724Z-pre-emergency-gsd-race/`.
   - Project Context intake now has deterministic recovery when the small model
     emits invalid YAML even after its repair attempt. The harness rebuilds a
     strict contract from the original request, preserves web/screenshot
@@ -397,10 +429,22 @@ the contest demo path works end-to-end.** Driving doc:
   `skills/webot-flow/`, `skills/gsd/`, `skills/socraticode/`.
 - GitHub alignment note: the latest installable repo state on `main`
   contains the chat worker-action, per-session runner isolation,
-  cross-session save race tests, skill-depth utilization work, and docs.
+  cross-session save race tests, skill-depth utilization work, docs, and
+  contest clean-install UI skill-depth packaging fix (`3471615`).
   Runtime/generated/private state remains excluded from GitHub and preserved in
   SSD/local backups.
 - Latest backup locations:
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260525T180042Z-full-live-local-working-state/`
+    (full live local working state before the public source-evidence/context-writer
+    push; includes repo checkout, harness runtime/session data, model cache, and
+    `restore-archive.tar`)
+  - `/Users/webot/Backups/gemma-forge/20260525T042858Z-pre-contest-wrapup-state/`
+    (`.handoffs/CURRENT_STATE.md` and `project-map.md` before local wrap-up
+    notes for the contest clean-install skill-depth fix)
+  - `/Users/webot/Backups/gemma-forge/20260525T041547Z-pre-contest-provision-skill-depth/`
+    (`launch_forge.command`, `tools/provision_clean_install.py`, and
+    `tools/verify_clean_install.sh` before the pushed clean-install
+    skill-depth packaging fix)
   - `/Volumes/PHIXERO/Backups/gemma-forge/20260525T003855Z-full-live-local-working-state/`
     (post-intake-contract-recovery alignment backup target created by
     `npm run backup:live -- --timestamp 20260525T003855Z`; preserve repo
@@ -2248,6 +2292,57 @@ the contest demo path works end-to-end.** Driving doc:
   compatible Hugging Face repos from Settings. Validation: `git diff --check`
   and `npm run check` passed. Full live-state alignment backup target:
   `/Volumes/PHIXERO/Backups/gemma-forge/20260525T015344Z-full-live-local-working-state/`.
+
+- **2026-05-25 — Emergency small-model prompt compaction.**
+  Fixed the `/api/plan` empty-response pattern from
+  `session_1779676499313` (`gemma-4-e4b-it ← empty (14808 ms)`) without
+  doing a full backup/alignment pass. Root cause was prompt bloat in the
+  planning/chat worker path: the worker was carrying the full `forge.md`
+  operating manual, and GSD-related prompt paths could still paste workflow
+  excerpts instead of pointing to the staged package. `chat/server.py` now
+  uses a compact Forge operating summary for planning/chat prompts, keeps
+  Project Context's skill catalog compact, makes GSD prompt context
+  reference-only with staged entrypoints such as
+  `.gforge/skills/gsd/workflows/plan-phase.md`, and keeps chat worker skill
+  context to staged paths/roles rather than manuals. Pre-edit backup:
+  `/Users/webot/Backups/gemma-forge/20260525T024710Z-pre-gsd-context/server.py`.
+  Verification: focused GSD/skill-routing tests passed; full unittest
+  discovery passed (134 tests); `npm run check` passed; `git diff --check`
+  passed. Live LaunchAgent restarted to PID `72543`, harness root and
+  `/api/model/route` returned OK, and a sessionless live `/api/plan` probe
+  using the failed contest prompt returned HTTP `200` with a non-empty
+  response in `11247 ms`.
+
+- **2026-05-25 — Contest clean-install UI skill-depth fix.**
+  Fixed the end-of-provision failure:
+  `Bundled skill(s) were not staged deeply enough: ui-ux-pro-max`.
+  The installer/provision/verification path now accepts either the full
+  ignored upstream `skills/ui-ux-pro-max/src/...` bundle or the tracked
+  installable `.claude/skills/ui-ux-pro-max/` bundle. Commit `3471615`
+  was pushed directly to `origin/main` as an emergency contest fix.
+  Verification: `npm run check`, `git diff --check`, direct syntax checks
+  for the edited scripts, and a clean committed-HEAD archive simulation of
+  `tools/provision_clean_install.py::require_skills()` passed with
+  `src` absent and `.claude/skills/ui-ux-pro-max/scripts/search.py`
+  present. Ian reran the install test successfully; the final
+  `Address already in use` message was only because port `5005` already had
+  an existing harness server.
+
+- **2026-05-25 — Source-evidence gates and Context Writer discipline.**
+  Added harness-owned source-evidence validation for research/screenshot work:
+  model-authored `research/*.md` files no longer count as proof that browsing
+  happened, and Execution blocks before the worker call when required fetched
+  source artifacts or source screenshots are missing. Broad GitHub operations
+  research prompts now seed official GitHub Docs URLs so the harness can fetch
+  and screenshot real sources before generation. Repair prompts now reuse
+  existing source evidence and focus on remaining blockers instead of replaying
+  the full original context. Added bundled internal
+  `skills/context-writer/SKILL.md`, loaded directly by Project Context and
+  blocklisted from downstream execution skill selection. Verification:
+  focused source/retry/context-writer tests passed, full unittest discovery
+  passed (`152 tests`), `npm run check` passed, and `git diff --check` passed
+  before public push preparation. Full external backup:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260525T180042Z-full-live-local-working-state/`.
 
 ## Product philosophy (load-bearing)
 

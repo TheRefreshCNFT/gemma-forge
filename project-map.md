@@ -29,6 +29,10 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - `.planning/` - local planning artifacts for the contest sprint.
 - `skills/` - bundled protocol skills staged by the launcher into
   `~/.gforge/harness/skills/` for one-package installs.
+  - `skills/context-writer/SKILL.md` - internal Project Context Writer
+    operating skill for contract shaping, context curation, skill routing,
+    and continuation-repair discipline. It is loaded directly by the intake
+    prompt and is not selectable as a downstream execution skill.
 - `tools/` - clean-install verification/orchestration scripts used to
   prove a fresh clone can install and run the harness.
   - `tools/harness_service.sh` - canonical macOS service helper for the
@@ -329,7 +333,9 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   when the repo copy is newer/fuller or required deep files are missing.
   It also strips stale `.git`, cache, `.DS_Store`, and AppleDouble artifacts
   from staged bundled skill copies. Clean-install provisioning and verification
-  fail if the required deep GSD or UI/UX Pro Max files are absent.
+  fail if required deep GSD files are absent, and accept UI/UX Pro Max from
+  either the full upstream `src/` bundle or the tracked
+  `.claude/skills/ui-ux-pro-max/` installable bundle.
 - Axon and SocratiCode are support-tool cards; skipped, unavailable, and degraded states are shown explicitly and never claimed as successful tool runs.
 - Axon runs only when graphable source files exist. HTML-only work is reported as not Axon-indexable instead of triggering a false structural scan.
 - SocratiCode is installed under `~/.gforge/tools` when needed and is called through a real MCP stdio bridge from the Flask harness.

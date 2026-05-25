@@ -229,7 +229,7 @@ def fetch_url(url: str, mode: str = "auto", timeout: int = 1200) -> dict:
 URL_PATTERN = re.compile(r"(https?://[^\s,)>'\"]+)", re.IGNORECASE)
 
 
-def extract_urls(text: str, limit: int = 8) -> list:
+def extract_urls(text: str, limit: int = 25) -> list:
     """Pull http(s) URLs out of free-form text, in order, deduped."""
     if not text:
         return []

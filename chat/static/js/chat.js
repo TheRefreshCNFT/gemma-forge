@@ -1677,23 +1677,22 @@ async function startPlanning() {
             })
         });
         const data = await planRes.json();
+        const planReplyPersisted = data.replyPersisted !== false;
+        const plannedMessages = planReplyPersisted && data.reply
+            ? [...(created.session.messages || []), { role: "agent", content: data.reply }]
+            : (created.session.messages || []);
         if (sessionsCache[planningSessionId]) {
             sessionsCache[planningSessionId].cards = data.cards || sessionsCache[planningSessionId].cards || defaultCards;
-            if (data.reply) {
-                sessionsCache[planningSessionId].messages = [
-                    ...(created.session.messages || []),
-                    { role: "agent", content: data.reply }
-                ];
-            }
+            sessionsCache[planningSessionId].messages = plannedMessages;
         }
         if (isSelectedSession(planningSessionId)) {
-            output.textContent = data.reply || "Plan created.";
+            output.textContent = humanVerify
+                ? (data.reply || "Plan created.")
+                : "Planning complete. Running Project Context.";
             await refreshModelRouteStatus();
             renderWorkflowCards(data.cards || defaultCards);
             setAllHumanVerify(humanVerify);
-            if (data.reply) {
-                renderSessionMessages([...(created.session.messages || []), { role: "agent", content: data.reply }]);
-            }
+            renderSessionMessages(plannedMessages);
         }
         await fetchSessions();
         if (!isSelectedSession(planningSessionId)) {
