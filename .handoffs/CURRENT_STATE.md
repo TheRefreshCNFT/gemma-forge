@@ -392,9 +392,9 @@ the contest demo path works end-to-end.** Driving doc:
   Runtime/generated/private state remains excluded from GitHub and preserved in
   SSD/local backups.
 - Latest backup locations:
-  - `/Volumes/PHIXERO/Backups/gemma-forge/20260525T003356Z-full-live-local-working-state/`
+  - `/Volumes/PHIXERO/Backups/gemma-forge/20260525T003855Z-full-live-local-working-state/`
     (post-intake-contract-recovery alignment backup target created by
-    `npm run backup:live -- --timestamp 20260525T003356Z`; preserve repo
+    `npm run backup:live -- --timestamp 20260525T003855Z`; preserve repo
     snapshot, ignored repo/runtime files, `~/.gforge/harness`, LaunchAgent
     metadata, and restore archive; intentionally omit `~/.gforge/models` per
     Ian)

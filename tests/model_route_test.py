@@ -1558,15 +1558,86 @@ acceptance:
 
         def fake_prepare(workspace_dir, session, extra_keys=None):
             captured["extra_keys"] = extra_keys
-            return {"prompt": "GSD staged context"}
+            skill_dir = os.path.join(workspace_dir, ".gforge", "skills", "gsd")
+            os.makedirs(os.path.join(skill_dir, "workflows"), exist_ok=True)
+            os.makedirs(os.path.join(skill_dir, "agents"), exist_ok=True)
+            os.makedirs(os.path.join(skill_dir, "references"), exist_ok=True)
+            with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+                f.write("GSD skill root. Prefer workflow stated inputs and success criteria.")
+            with open(os.path.join(skill_dir, "workflows", "plan-phase.md"), "w") as f:
+                f.write("<deep_work_rules>\nEvery task needs acceptance criteria.\n</deep_work_rules>")
+            with open(os.path.join(skill_dir, "agents", "gsd-planner.md"), "w") as f:
+                f.write("Plans are prompts with exact files, action, verify, and must_haves.")
+            return {
+                "prompt": "FULL GSD MANUAL SHOULD NOT BE INJECTED",
+                "staged": [{
+                    "name": "gsd",
+                    "key": "gsd",
+                    "path": ".gforge/skills/gsd",
+                    "requested": True,
+                }],
+            }
+
+        def fake_call(model, prompt, options_override=None):
+            captured["model"] = model
+            captured["prompt"] = prompt
+            captured["options"] = options_override
+            return "plan", {
+                "status": "ok",
+                "model": model,
+                "elapsedMs": 10,
+                "attempts": 1,
+                "error": None,
+                "timeoutSeconds": server.OLLAMA_REQUEST_TIMEOUT_SECONDS,
+            }
 
         with patch.object(server, "scan_workspace", return_value={"agentCapacity": {}}), \
                 patch.object(server, "prepare_workspace_skill_context", side_effect=fake_prepare), \
-                patch.object(server, "call_ollama", return_value="plan"), \
+                patch.object(server, "call_ollama_with_transport", side_effect=fake_call), \
                 patch.object(server, "write_artifact", return_value="/tmp/gsd-plan.md"):
             server.run_gsd_card("session-test", {"project": "Plan the project"}, "gemma-4-e4b-it", "auto")
 
         self.assertEqual(captured["extra_keys"], ["gsd"])
+        self.assertEqual(captured["options"]["num_predict"], 768)
+        self.assertEqual(captured["options"]["temperature"], 0.2)
+        self.assertIn("Capped GSD skill excerpts", captured["prompt"])
+        self.assertIn(".gforge/skills/gsd", captured["prompt"])
+        self.assertIn("Every task needs acceptance criteria", captured["prompt"])
+        self.assertIn("Plans are prompts", captured["prompt"])
+        self.assertNotIn("FULL GSD MANUAL SHOULD NOT BE INJECTED", captured["prompt"])
+
+    def test_run_gsd_card_surfaces_transport_failure(self):
+        def fake_prepare(workspace_dir, session, extra_keys=None):
+            skill_dir = os.path.join(workspace_dir, ".gforge", "skills", "gsd")
+            os.makedirs(skill_dir, exist_ok=True)
+            with open(os.path.join(skill_dir, "SKILL.md"), "w") as f:
+                f.write("GSD skill root.")
+            return {
+                "staged": [{
+                    "name": "gsd",
+                    "key": "gsd",
+                    "path": ".gforge/skills/gsd",
+                    "requested": True,
+                }],
+            }
+
+        transport = {
+            "status": "timeout",
+            "model": "gemma-4-e4b-it",
+            "elapsedMs": 1200000,
+            "attempts": 1,
+            "error": "timeout",
+            "timeoutSeconds": 1200,
+        }
+        with patch.object(server, "scan_workspace", return_value={"agentCapacity": {}}), \
+                patch.object(server, "prepare_workspace_skill_context", side_effect=fake_prepare), \
+                patch.object(server, "call_ollama_with_transport", return_value=("", transport)), \
+                patch.object(server, "write_artifact", return_value="/tmp/gsd-plan.md"):
+            result = server.run_gsd_card("session-test", {"project": "Plan the project"}, "gemma-4-e4b-it", "auto")
+
+        self.assertEqual(result["summary"], "GSD planning transport failed.")
+        self.assertIn("Ollama request timed out", result["details"])
+        self.assertTrue(result["toolExecution"]["requiresAttention"])
 
     def test_harness_capabilities_include_workspace_git_and_exec_when_available(self):
         with patch.object(server.tool_workspace, "can_clone_repositories", return_value=True), \

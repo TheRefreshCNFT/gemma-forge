@@ -175,7 +175,6 @@ log "verifying restore archive"
 shasum -a 256 "$archive" > "$backup_root/manifests/archive.sha256"
 shasum -a 256 -c "$backup_root/manifests/archive.sha256" > "$backup_root/manifests/checksum-verify.txt"
 tar -tzf "$archive" > "$backup_root/manifests/restore-verify.txt"
-find "$backup_root" -type f | sort > "$backup_root/manifests/file-list.txt"
 
 if [ -e "$backup_root/runtime/gforge-harness/models" ] \
   || [ -e "$backup_root/runtime/gforge-models" ] \
@@ -187,6 +186,14 @@ fi
 printf 'Verified absent from backup:\n- %s/runtime/gforge-harness/models\n- %s/runtime/gforge-models\n- %s/runtime/models\n- %s/repo/gemma-forge/.gforge/models\n' \
   "$backup_root" "$backup_root" "$backup_root" "$backup_root" \
   > "$backup_root/manifests/model-cache-verify.txt"
+
+log "final AppleDouble cleanup"
+find "$backup_root" -name '._*' -delete
+: > "$backup_root/manifests/appledouble-files.txt"
+find "$backup_root" -name '._*' -print > "$backup_root/manifests/appledouble-files.txt"
+find "$backup_root" -name '._*' -delete
+find "$backup_root" -type f | sort > "$backup_root/manifests/file-list.txt"
+find "$backup_root" -name '._*' -delete
 
 log "backup verified: $backup_root"
 printf '%s\n' "$backup_root"

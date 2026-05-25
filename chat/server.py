@@ -3448,6 +3448,65 @@ def build_gsd_skill_context_section(skill_context_prompt):
     )
 
 
+GSD_PLANNING_CONTEXT_ENTRYPOINTS = [
+    ("SKILL.md", 800),
+    ("workflows/plan-phase.md", 1500),
+    ("agents/gsd-planner.md", 1500),
+    ("references/checkpoints.md", 400),
+]
+GSD_PLANNING_CONTEXT_LIMIT = 4200
+
+
+def build_compact_gsd_skill_context(workspace_dir, skill_context):
+    if not isinstance(skill_context, dict):
+        return ""
+    staged = skill_context.get("staged") if isinstance(skill_context.get("staged"), list) else []
+    gsd_skill = None
+    for item in staged:
+        if not isinstance(item, dict):
+            continue
+        key = normalize_skill_key(str(item.get("key") or item.get("name") or ""))
+        if key == "gsd":
+            gsd_skill = item
+            break
+    if not gsd_skill:
+        return ""
+
+    relative_skill_path = gsd_skill.get("path") or f"{WORKSPACE_SKILLS_ROOT}/gsd"
+    try:
+        skill_dir = safe_workspace_child(workspace_dir, relative_skill_path)
+    except ValueError:
+        return ""
+
+    lines = [
+        "Capped GSD skill excerpts copied from the staged skill files:",
+        f"- Staged skill path: `{relative_skill_path}`",
+        "- Use these excerpts as the authoritative GSD planning rules for this card.",
+        "- Keep the response concise; do not quote or restate the excerpts back.",
+    ]
+
+    remaining = GSD_PLANNING_CONTEXT_LIMIT
+    for relative_path, path_limit in GSD_PLANNING_CONTEXT_ENTRYPOINTS:
+        if remaining <= 0:
+            break
+        path = os.path.join(skill_dir, relative_path)
+        if not os.path.isfile(path):
+            continue
+        content = focused_skill_file_content(path, relative_path, min(path_limit, remaining))
+        content = content[:remaining]
+        if not content.strip():
+            continue
+        lines.extend([
+            "",
+            f"### {relative_path}",
+            "```text",
+            content,
+            "```",
+        ])
+        remaining -= len(content)
+    return "\n".join(lines)
+
+
 def build_planning_prompt(project, checkpoint_mode, resource_state, gsd_skill_context=None):
     session = project if isinstance(project, dict) else {"project": project}
     project_text = session.get("project", "")
@@ -6618,22 +6677,34 @@ def run_gsd_card(session_id, session, model, mode):
     workspace_dir = resolve_execution_workspace(session_id, session, session.get("project", ""))
     os.makedirs(workspace_dir, exist_ok=True)
     skill_context = prepare_workspace_skill_context(workspace_dir, session, extra_keys=["gsd"])
-    details = call_ollama(
-        model,
-        build_planning_prompt(
-            session,
-            mode,
-            resource_state,
-            gsd_skill_context=(skill_context or {}).get("prompt"),
-        ),
+    prompt = build_planning_prompt(
+        session,
+        mode,
+        resource_state,
+        gsd_skill_context=build_compact_gsd_skill_context(workspace_dir, skill_context),
     )
+    details, transport = call_ollama_with_transport(
+        model,
+        prompt,
+        options_override=planning_model_options(model),
+    )
+    tool_execution = {
+        "tool": "gsd",
+        "status": transport.get("status", "unknown"),
+        "blocking": transport.get("status") != "ok",
+        "requiresAttention": transport.get("status") != "ok",
+        "reason": transport_failure_message(transport) if transport.get("status") != "ok" else "GSD plan generated.",
+    }
+    if not details:
+        details = transport_failure_message(transport)
     artifact = write_artifact(session_id, "gsd-plan.md", details)
     return card_result(
         "GSD Planning",
-        "Phase plan generated from the project record.",
+        "Phase plan generated from the project record." if transport.get("status") == "ok" else "GSD planning transport failed.",
         details,
         "Review the phases and verify each phase has a testable done condition.",
         artifact,
+        {"toolExecution": tool_execution, "transport": transport},
     )
 
 
@@ -11562,7 +11633,6 @@ def validate_model_authored_workspace(workspace_dir, metadata, session):
         "model": metadata.get("model") if isinstance(metadata, dict) else session.get("model", DEFAULT_MODEL),
         "source": "model-authored-execution",
         "modelAuthored": bool(metadata.get("modelAuthored")) if isinstance(metadata, dict) else False,
-        "rule": "Only the selected local Gemma model completing the requested task through the harness counts as a real verified result.",
     }
     if not authenticity["modelAuthored"]:
         failures.append("authenticity gate failed: no model-authored execution metadata was found")
