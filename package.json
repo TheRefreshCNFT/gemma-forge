@@ -4,13 +4,14 @@
   "private": true,
   "description": "Local Gemma work harness for project planning, execution, and verification.",
   "scripts": {
-    "check": "python3 -m py_compile chat/server.py chat/workspace_scan.py chat/tool_runtime.py src/app.py src/config.py src/hf_engine.py src/utils.py tests/model_route_test.py tests/integration_test.py tests/skill_routing_test.py tests/maintenance_access_test.py && node --check chat/static/js/chat.js && bash -n tools/harness_service.sh tools/backup_live_state.sh",
+    "check": "python3 -m py_compile chat/server.py chat/workspace_scan.py chat/tool_runtime.py src/app.py src/config.py src/hf_engine.py src/utils.py tests/model_route_test.py tests/integration_test.py tests/skill_routing_test.py tests/maintenance_access_test.py && node --check chat/static/js/chat.js && bash -n tools/harness_service.sh tools/backup_live_state.sh tools/desktop_harness_action.sh tools/install_desktop_shortcuts.sh",
     "harness:start": "bash tools/harness_service.sh start",
     "harness:stop": "bash tools/harness_service.sh stop",
     "harness:restart": "bash tools/harness_service.sh restart",
     "harness:status": "bash tools/harness_service.sh status",
     "harness:logs": "bash tools/harness_service.sh logs",
     "harness:open": "bash tools/harness_service.sh open",
+    "harness:desktop-shortcuts": "bash tools/install_desktop_shortcuts.sh",
     "backup:live": "bash tools/backup_live_state.sh"
   },
   "engines": {

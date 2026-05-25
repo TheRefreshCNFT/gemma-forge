@@ -671,10 +671,11 @@ button {
 
 .planner-grid {
     grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr);
+    grid-template-rows: minmax(0, 1fr);
     align-items: stretch;
     /* V2 — fill the remaining vertical space of .main so the intake
        and cards columns stretch to bottom-align with the sidebar. */
-    flex: 1 1 auto;
+    flex: 1 1 0;
     min-height: 0;
 }
 
@@ -1078,6 +1079,7 @@ textarea {
 .intake-panel {
     display: flex;
     flex-direction: column;
+    min-height: 0;
 }
 
 /* V7 — Inline help-trigger lives next to the "What project are we
@@ -1984,6 +1986,8 @@ textarea {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
 }
 
 .session-conversation-card {
@@ -1995,6 +1999,9 @@ textarea {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .session-conversation-card .session-conversation-header {
@@ -2010,7 +2017,9 @@ textarea {
 
 
 .session-conversation-card .session-messages {
-    max-height: 320px;
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
     overflow-y: auto;
     background: var(--panel);
     border: 1px solid var(--line);
@@ -2026,6 +2035,7 @@ textarea {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    flex: 0 0 auto;
 }
 
 .session-conversation-card .message-compose textarea {
