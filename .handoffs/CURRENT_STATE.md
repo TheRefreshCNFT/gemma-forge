@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-25 (UTC) — Public README/repo protection prep applied.
+Last updated: 2026-05-25 (UTC) — Current screenshot README polish pushed.
 
 ## Verified ground truth
 
@@ -2224,6 +2224,21 @@ the contest demo path works end-to-end.** Driving doc:
   tests.skill_routing_test tests.maintenance_access_test` passed (134 tests).
   Full live-state alignment backup target:
   `/Volumes/PHIXERO/Backups/gemma-forge/20260525T013714Z-full-live-local-working-state/`.
+
+- **2026-05-25 — Current screenshots and default model-size docs.**
+  README now uses the current Forge Harness screenshot set under
+  `docs/submission-media/screenshots/current/`, with a compact product tour for
+  Forge Harness readiness, guided project workflow, Forge Station evidence
+  stream, Settings model provisioning, and the project rail. Public wording now
+  uses Forge Flow while preserving the internal `skills/webot-flow/` source
+  path for maintainers. Docs now clarify there is no separate model-size picker
+  in the core flow: Gemma Forge defaults to `gemma-4-e4b-it`, the Gemma 4 E4B /
+  4B-class lane. User-facing docs note the approximate readiness budget
+  (10 GB disk / 8 GB RAM), the current quantized Ollama artifact size
+  (~5 GB), and the ability to import installed Ollama models or provision other
+  compatible Hugging Face repos from Settings. Validation: `git diff --check`
+  and `npm run check` passed. Full live-state alignment backup target:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260525T015344Z-full-live-local-working-state/`.
 
 ## Product philosophy (load-bearing)
 

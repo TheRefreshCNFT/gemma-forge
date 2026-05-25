@@ -10,7 +10,7 @@ tags: devchallenge, gemmachallenge, gemma
 
 Gemma Forge is a local Gemma 4 work harness that makes local AI useful before the user has to understand the machinery.
 
-It starts by scanning the user's machine, checking Ollama and model readiness, recommending a practical Gemma 4 Forge Brain, and opening a project-focused workspace. From there, the user can describe what they want done in plain language. Gemma Forge turns that request into protocol cards for context, planning, execution, code intelligence, verification, and handoff.
+It starts by scanning the user's machine, checking Ollama and model readiness, defaulting to the practical `gemma-4-e4b-it` Forge Brain, and opening a project-focused workspace. From there, the user can describe what they want done in plain language. Gemma Forge turns that request into protocol cards for context, planning, execution, code intelligence, verification, and handoff.
 
 The goal is simple: everyone should be able to use local AI. Gemma Forge opens the door by putting Gemma 4 behind a guided workbench instead of a setup wall.
 
@@ -71,7 +71,9 @@ macOS users can also run:
 
 Gemma 4 is the planning and orchestration brain inside Gemma Forge.
 
-The default Forge Brain is `gemma-4-e4b-it`, the E4B / 4B-class local lane. I chose it as the default because Gemma Forge is trying to be usable on practical local hardware while still giving the model extra reasoning headroom for project planning, tool selection, repair loops, and verification. Smaller models are valuable, but the 4B-class default gives the harness a stronger first-run experience without making local AI feel out of reach.
+The default Forge Brain is `gemma-4-e4b-it`, the Gemma 4 E4B / 4B-class local lane. I chose it as the default because Gemma Forge is trying to be usable on practical local hardware while still giving the model extra reasoning headroom for project planning, tool selection, repair loops, and verification. The harness presents the expected local footprint before provisioning: about 10 GB of disk budget and 8 GB RAM for readiness, with the current quantized Ollama artifact around 5 GB on disk.
+
+Gemma Forge does not lock users into that default. Advanced users can import installed Ollama models or search/provision other compatible Hugging Face repos from Settings when they want a different local model.
 
 Gemma 4 is used to:
 

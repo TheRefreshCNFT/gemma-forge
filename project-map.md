@@ -105,7 +105,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   tool state before the app launches. Set `GFORGE_ALLOW_DEGRADED_TOOLS=1`
   only when intentionally launching with degraded support tools.
 - Forge Engine reports system, Ollama, tools, model paths, SocratiCode install/MCP/Qdrant state, Axon CLI/index state, and subagent capacity.
-- Forge Intelligence recommends `gemma-4-e4b-it` on first run and shows supported local model lanes without locking the selector.
+- Forge Intelligence defaults to `gemma-4-e4b-it` on first run. There is no separate size-selection step in the core flow; the default E4B / 4B-class lane uses a readiness budget of about 10 GB disk and 8 GB RAM, while the current quantized Ollama artifact is about 5 GB on disk. Users can still import installed Ollama models or provision other compatible Hugging Face repos from Settings.
 - Forge Brain selection is sent to project creation, planning, card runs, and project messages.
 - Every model-backed harness call records the attempted model route.
 - Initial planning calls use a bounded `num_predict` budget, with a
@@ -190,7 +190,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Bundled Forge skills now include `code-writer`, `pdf` from Anthropic's
   PDF skill, and `mcp-builder` from Anthropic's MCP builder skill,
   alongside `logo-generator`, `scrapling-official`, `ui-ux-pro-max`,
-  `axon`, `socraticode`, `gsd`, and `webot-flow`. These skills include
+  `axon`, `socraticode`, `gsd`, and Forge Flow (`skills/webot-flow/`). These skills include
   expanded routing keywords so Project Context can assign them from
   runnable code, logo/brand, PDF/form/OCR, MCP/server/tool-schema,
   browser/scraping, UI/UX, semantic codebase, graph/impact, and planning
@@ -293,9 +293,9 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
   it look professional/mobile friendly for UI/UX, little command-line
   utility/process files for Code Writer, brand symbol/app icon for Logo
   Generator, pull text from scanned documents for PDF, local tool server/API
-  as agent tools for MCP, find in this repo for SocratiCode, what breaks if
-  for Axon, task breakdown/milestones for GSD, and orient/backup/protect
-  live for Webot Flow. Broad web-research phrases are guarded so codebase
+    as agent tools for MCP, find in this repo for SocratiCode, what breaks if
+    for Axon, task breakdown/milestones for GSD, and orient/backup/protect
+  live for Forge Flow. Broad web-research phrases are guarded so codebase
   search requests stay with SocratiCode instead of accidentally staging
   Scrapling.
 - Project Context separates deliverable file count from repeated content

@@ -2,7 +2,15 @@
 
 This directory holds local media assets for the Gemma 4 Challenge submission.
 
-## Screenshots
+## Current Product Screenshots
+
+- `screenshots/current/01-forge-harness-overview.png` - main Forge Harness readiness view with environment checks and Forge Brain model pills.
+- `screenshots/current/02-project-intake-protocol-cards.png` - new project seed, Human Verify, protocol cards, and project-context chat.
+- `screenshots/current/03-forge-station-evidence-stream.png` - live work/event stream with skill staging, browser fetches, status codes, and screenshot evidence.
+- `screenshots/current/04-settings-model-provisioning.png` - Settings model import, Hugging Face search, Ollama naming, and provisioning controls.
+- `screenshots/current/05-project-sidebar.png` - compact project rail with active/done states and archive/delete actions.
+
+## Earlier Screenshots
 
 - `screenshots/01-setting-up-workspace.png`
 - `screenshots/02-forge-harness-ready.png`

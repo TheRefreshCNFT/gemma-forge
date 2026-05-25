@@ -43,7 +43,9 @@ Rationale:
 
 - The E4B / 4B-class lane gives extra reasoning headroom for planning, routing, repair, and verification.
 - It stays practical for local use compared with large workstation-only models.
-- Users can switch to another supported installed model from Forge Brain.
+- Default readiness budget: about 10 GB free disk and 8 GB RAM, with the current quantized Ollama artifact around 5 GB on disk.
+- There is no separate size-selection step in the core flow; Gemma Forge defaults to `gemma-4-e4b-it`.
+- Users can import installed Ollama models or search/provision other compatible Hugging Face repos from Settings.
 - Model route proof is visible through the harness: Forge Brain selection -> Flask harness -> Ollama `/api/chat`.
 
 ## Repository Status

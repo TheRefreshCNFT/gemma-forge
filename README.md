@@ -16,7 +16,7 @@
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
 
-![Gemma Forge harness](docs/submission-media/screenshots/02-forge-harness-ready.png)
+![Gemma Forge harness overview](docs/submission-media/screenshots/current/01-forge-harness-overview.png)
 
 ## Why Gemma Forge Exists
 
@@ -33,13 +33,55 @@ Gemma Forge is a local Gemma 4 work harness built for the [Gemma 4 Challenge: Bu
 The harness:
 
 - Scans local readiness: CPU, memory, disk, Ollama, installed models, tool state, and bundled skills.
-- Recommends a balanced Gemma 4 default model: `gemma-4-e4b-it`, the E4B / 4B-class lane chosen for extra reasoning headroom while staying practical for local use.
-- Lets users switch to any installed and supported local model from the Forge Brain selector.
+- Defaults to `gemma-4-e4b-it`, the Gemma 4 E4B / 4B-class lane chosen for extra reasoning headroom while staying practical for local use.
+- Shows users what the default model needs before provisioning: the harness reserves about 10 GB of disk and 8 GB of RAM for this lane, while the current quantized Ollama artifact is about 5 GB on disk.
+- Lets users import installed Ollama models or search/provision other compatible Hugging Face repos from Settings when they want a different local model.
 - Keeps each project in its own scoped workspace instead of one endless global chat.
 - Runs work through protocol cards for context, planning, execution, code intelligence, verification, and handoff.
 - Stages Forge skills into each project workspace so the local model can use the right instructions without depending on private absolute paths.
 - Records model route evidence so users can verify that local Gemma is doing the work.
 - Keeps generated project state out of the repository by default.
+
+## Product Tour
+
+Gemma Forge is organized around visible work surfaces, not hidden agent magic. The user can see the local environment, the default model, optional model provisioning, the active workflow card, project state, and the evidence stream that proves what happened.
+
+The hero screenshot above shows the main Forge Harness view: local readiness, Ollama reuse, bundled tool checks, and the active Forge Brain all in one place. There is no separate model-size picker in the core flow; Gemma Forge defaults to `gemma-4-e4b-it` and exposes other model choices through the Settings and Forge Brain model controls.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/submission-media/screenshots/current/02-project-intake-protocol-cards.png" alt="Project intake and protocol cards">
+      <br>
+      <strong>Guided Project Workflow</strong>
+      <br>
+      New work starts with a project seed. The left side captures the goal, constraints, and project-directory choice. The right side shows protocol cards, the active section, Human Verify controls, and the project-context chat used to continue or audit a specific project.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/submission-media/screenshots/current/03-forge-station-evidence-stream.png" alt="Forge Station evidence stream">
+      <br>
+      <strong>Forge Station</strong>
+      <br>
+      Forge Station is the live evidence rail. It shows card starts, skill selection, staged skills, browser fetches, HTTP status codes, character counts, screenshot captures, and other work events as they happen.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/submission-media/screenshots/current/04-settings-model-provisioning.png" alt="Settings model provisioning">
+      <br>
+      <strong>Models And Interfaces</strong>
+      <br>
+      Settings keeps model management in the app. Users can import installed Ollama models, search Hugging Face, name an Ollama model, provision supported repos, and confirm which model the harness actually called last. The default install target is `gemma-4-e4b-it`; users can still bring in other compatible local models when they want more control.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/submission-media/screenshots/current/05-project-sidebar.png" alt="Project sidebar with active and done work">
+      <br>
+      <strong>Project Rail</strong>
+      <br>
+      The project rail keeps active and finished work visible without turning the app into one endless chat. Each row shows the project title, state, and compact archive/delete actions so users can keep current work focused.
+    </td>
+  </tr>
+</table>
 
 ## Quick Start
 
@@ -88,7 +130,7 @@ Gemma Forge is local-first. A typical setup should have:
 - Git.
 - Ollama installed and running for local model calls.
 - Node.js 18 or newer for JavaScript validation checks.
-- A local Gemma model available through Ollama, or a model provisioned through the Forge settings UI.
+- A local Gemma model available through Ollama, or the default `gemma-4-e4b-it` model provisioned through the Forge settings UI.
 
 The harness stores its own runtime state under `~/.gforge` and leaves Ollama in its normal `~/.ollama` home.
 
@@ -97,9 +139,26 @@ The harness stores its own runtime state under `~/.gforge` and leaves Ollama in 
 When the app opens, Gemma Forge shows a workspace scan and readiness view:
 
 - Forge Engine reports local hardware, Ollama state, tool readiness, and support capacity.
-- Forge Intelligence shows supported Gemma lanes and whether they are installed or runnable.
+- Forge Intelligence shows the default Gemma 4 E4B lane, its readiness, and whether it is installed or runnable.
 - Forge Brain selects the active local model used by planning, execution, verification, and project chat.
 - Settings can import installed Ollama models, search Hugging Face, provision supported GGUF models, show model-route proof, and open meaningful harness errors.
+
+## Default Model
+
+Gemma Forge defaults to:
+
+```text
+gemma-4-e4b-it
+```
+
+This is the Gemma 4 E4B / 4B-class local lane. It is the default because it gives the harness more reasoning headroom for planning, skill routing, repair, and verification while still being realistic for local use.
+
+What to expect:
+
+- Approximate readiness budget: 10 GB free disk and 8 GB RAM.
+- Current quantized Ollama artifact: about 5 GB on disk.
+- No separate size-selection step is required for the default flow.
+- Users can still import installed Ollama models or provision other compatible Hugging Face repos from Settings.
 
 The first useful question is simple:
 
@@ -132,7 +191,7 @@ Gemma Forge ships with bundled skills so a fresh clone can do useful work withou
 
 Included skill families:
 
-- `webot-flow` for state, backup, and verification discipline.
+- `forge-flow` for state, backup, and verification discipline. The bundled source skill lives at `skills/webot-flow/`, but the product surface calls this Forge Flow.
 - `gsd` for project planning and phase execution.
 - `code-writer` for runnable source-code deliverables.
 - `scrapling-official` for web scraping, browsing, and extraction.
