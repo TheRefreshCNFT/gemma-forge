@@ -154,6 +154,21 @@ check_skill_file() {
     fi
 }
 
+check_ui_ux_pro_max_depth() {
+    check_skill_file ui-ux-pro-max "skill.json"
+    if [ -f "$SKILLS_DIR/ui-ux-pro-max/src/ui-ux-pro-max/templates/base/quick-reference.md" ] && \
+       [ -f "$SKILLS_DIR/ui-ux-pro-max/src/ui-ux-pro-max/scripts/search.py" ]; then
+        pass "skill depth staged: ui-ux-pro-max/src bundle"
+        return
+    fi
+    if [ -f "$SKILLS_DIR/ui-ux-pro-max/.claude/skills/ui-ux-pro-max/SKILL.md" ] && \
+       [ -f "$SKILLS_DIR/ui-ux-pro-max/.claude/skills/ui-ux-pro-max/scripts/search.py" ]; then
+        pass "skill depth staged: ui-ux-pro-max/.claude bundle"
+        return
+    fi
+    fail "skill depth missing: ui-ux-pro-max requires src bundle or tracked .claude bundle"
+}
+
 for skill in webot-flow gsd logo-generator scrapling-official ui-ux-pro-max axon socraticode pdf mcp-builder; do
     if [ -d "$SKILLS_DIR/$skill" ]; then
         pass "skill staged: $skill"
@@ -164,9 +179,7 @@ done
 check_skill_file gsd "workflows/plan-phase.md"
 check_skill_file gsd "agents/gsd-planner.md"
 check_skill_file gsd "templates/roadmap.md"
-check_skill_file ui-ux-pro-max "skill.json"
-check_skill_file ui-ux-pro-max "src/ui-ux-pro-max/templates/base/quick-reference.md"
-check_skill_file ui-ux-pro-max "src/ui-ux-pro-max/scripts/search.py"
+check_ui_ux_pro_max_depth
 
 # --- 5. Ollama service -----------------------------------------------------
 

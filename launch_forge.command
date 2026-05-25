@@ -288,13 +288,16 @@ skill_has_required_depth() {
             done
             ;;
         ui-ux-pro-max)
-            for required in \
-                "skill.json" \
-                "src/ui-ux-pro-max/templates/base/quick-reference.md" \
-                "src/ui-ux-pro-max/scripts/search.py"
-            do
-                [ -f "$skill_base/$required" ] || return 1
-            done
+            [ -f "$skill_base/skill.json" ] || return 1
+            if [ -f "$skill_base/src/ui-ux-pro-max/templates/base/quick-reference.md" ] && \
+               [ -f "$skill_base/src/ui-ux-pro-max/scripts/search.py" ]; then
+                return 0
+            fi
+            if [ -f "$skill_base/.claude/skills/ui-ux-pro-max/SKILL.md" ] && \
+               [ -f "$skill_base/.claude/skills/ui-ux-pro-max/scripts/search.py" ]; then
+                return 0
+            fi
+            return 1
             ;;
     esac
     return 0

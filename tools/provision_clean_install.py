@@ -38,10 +38,19 @@ REQUIRED_SKILL_FILES = {
         "agents/gsd-planner.md",
         "templates/roadmap.md",
     ),
+}
+REQUIRED_SKILL_FILE_SETS = {
     "ui-ux-pro-max": (
-        "skill.json",
-        "src/ui-ux-pro-max/templates/base/quick-reference.md",
-        "src/ui-ux-pro-max/scripts/search.py",
+        (
+            "skill.json",
+            "src/ui-ux-pro-max/templates/base/quick-reference.md",
+            "src/ui-ux-pro-max/scripts/search.py",
+        ),
+        (
+            "skill.json",
+            ".claude/skills/ui-ux-pro-max/SKILL.md",
+            ".claude/skills/ui-ux-pro-max/scripts/search.py",
+        ),
     ),
 }
 
@@ -108,6 +117,16 @@ def skill_missing_reason(name: str) -> str:
     ]
     if missing:
         return "missing required file(s): " + ", ".join(missing)
+    required_sets = REQUIRED_SKILL_FILE_SETS.get(name, ())
+    if required_sets and not any(
+        all((skill_dir / relative_path).exists() for relative_path in file_set)
+        for file_set in required_sets
+    ):
+        options = [
+            "[" + ", ".join(file_set) + "]"
+            for file_set in required_sets
+        ]
+        return "missing required file set: " + " or ".join(options)
     return ""
 
 
