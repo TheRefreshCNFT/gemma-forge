@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-25 (UTC) — Intake contract recovery fix applied.
+Last updated: 2026-05-25 (UTC) — Public README/repo protection prep applied.
 
 ## Verified ground truth
 
@@ -2203,6 +2203,27 @@ the contest demo path works end-to-end.** Driving doc:
   builds the restore archive from a temp directory with macOS xattrs disabled;
   and verifies both SHA-256 checksum and `tar -tzf` listing before reporting
   success. `npm run check` now syntax-checks both shell service scripts.
+
+- **2026-05-25 — Public README, submission docs, and GitHub protection.**
+  Public-facing docs now present Gemma Forge as a local Gemma 4 work harness:
+  `README.md` has the polished quick start, purpose, 4B/E4B default rationale,
+  skill list, maintenance mode, local-state/privacy boundaries, authenticity
+  rule, troubleshooting, and contribution path. `SUBMISSION_DRAFT.md` now
+  incorporates the "local AI for everyone", "pre-fueled skills", maintenance
+  mode, open-source Gemma 4, and 4B default reasoning notes. `CONTEST_READINESS.md`
+  now reflects the public repo, branch protection, security settings, and final
+  demo-video placeholder. `CONTRIBUTING.md`, `.github/CODEOWNERS`, and
+  `.github/pull_request_template.md` were added. Root `Modelfile` no longer
+  contains Ian's private GGUF path; it is now an explicit manual-import example.
+  GitHub read-back verified the repo is public, only `TheRefreshCNFT` has
+  collaborator access, `main` requires PR review plus CODEOWNERS review, stale
+  reviews are dismissed, force-push/delete are disabled, linear history and
+  conversation resolution are required, secret scanning/push protection are on,
+  and Dependabot security updates are enabled. Validation: `git diff --check`,
+  `npm run check`, and `.venv/bin/python -m unittest tests.model_route_test
+  tests.skill_routing_test tests.maintenance_access_test` passed (134 tests).
+  Full live-state alignment backup target:
+  `/Volumes/PHIXERO/Backups/gemma-forge/20260525T013714Z-full-live-local-working-state/`.
 
 ## Product philosophy (load-bearing)
 

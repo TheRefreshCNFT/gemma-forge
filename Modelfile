@@ -1,15 +1,22 @@
-FROM /Users/webot/Projects/gguf/models/google_gemma-4-E2B-it.gguf
+# Example Ollama Modelfile for manual local imports.
+#
+# Gemma Forge does not require this file for the default launcher flow.
+# Use the app Settings panel to import or provision models whenever possible.
+#
+# If you want to create an Ollama model manually, replace the FROM value with
+# the GGUF path on your own machine before running `ollama create`.
+
+FROM /absolute/path/to/your/gemma-4-e4b-it.gguf
+
 PARAMETER temperature 1.0
 PARAMETER top_p 0.95
 PARAMETER top_k 64
-SYSTEM "You are a helpful assistant.
-You figure things out.
-You don't lie.
-If something did not work or did not complete you honestly explain why."
+
+SYSTEM "You are a helpful local assistant. Be honest about what did and did not complete."
+
 TEMPLATE """{{ if .System }}<start_of_turn>system
 {{ .System }}<end_of_turn>
 {{ end }}{{ if .Prompt }}<start_of_turn>user
 {{ .Prompt }}<end_of_turn>
 {{ end }}<start_of_turn>model
-<thought>
 {{ .Response }}<end_of_turn>"""

@@ -1,159 +1,148 @@
-# Gemma 4 Challenge Readiness Plan
+# Gemma 4 Challenge Readiness
 
-Source reviewed: https://dev.to/devteam/join-the-gemma-4-challenge-3000-prize-pool-for-ten-winners-23in
+Source reviewed:
 
-Template reviewed: the "Build With Gemma 4 Submission Template" opens a DEV post prefill with frontmatter, the challenge submission sentence, and these required sections:
+- https://dev.to/challenges/google-gemma-2026-05-06
+- https://dev.to/page/gemma-4-challenge-2026-05-06-contest-rules
+
+The Build With Gemma 4 submission template asks for:
 
 - What I Built
 - Demo
 - Code
 - How I Used Gemma 4
 
-## Rule And Judging Checklist
+Judging emphasizes:
 
-- Submit under the Build With Gemma 4 prompt.
-- Build something useful or creative with Gemma 4 doing real work at the heart of the project.
-- Explain which Gemma 4 model is used and why that model is the right fit.
-- Include a demo link or video walkthrough.
-- Include a code repository link.
-- Optimize for the stated judging criteria:
-  - intentional and effective Gemma 4 model use
-  - technical implementation and code quality
-  - creativity and originality
-  - usability and user experience
-- Submission deadline from the challenge page: May 24, 2026 at 11:59 PM PDT.
+- Intentional and effective Gemma 4 use.
+- Technical implementation and code quality.
+- Creativity and originality.
+- Usability and user experience.
 
 ## Product Positioning
 
-Gemma Forge makes local free AI usable by people who do not want to learn model hosting, terminals, Ollama setup, or project-agent orchestration first.
+Gemma Forge is a local Gemma 4 work harness that removes the setup wall around local AI.
 
-The product goal is:
+Core story:
 
-- local AI that feels approachable
-- project-based memory instead of one endless global chat
-- focused projects for planning and implementation
-- project linking only when separate project threads need shared context
-- the smallest practical Gemma 4 model as the default brain
-- stronger models available when local resources support them
-- agent behavior that knows the harness and guides the user through it
+- Everyone should be able to use local AI.
+- Gemma Forge opens the door by turning Gemma 4 into a guided local workbench.
+- Users do not need to learn model hosting, terminal setup, Ollama internals, memory systems, or agent protocols before getting value.
+- The harness focuses on work: planning, execution, testing, evaluation, delivery, and handoff.
+- Gemma Forge ships with bundled skills and can use maintenance mode to create or update skills when the user needs more capability.
 
-## Current Strengths
+## Gemma 4 Use
 
-- Local resource scan on load.
-- Default small Gemma 4 model lane.
-- Ollama/model readiness detection.
-- Project-scoped records.
-- Active/Archived project split.
-- Archive, restore, delete, and link project controls.
-- Protocol cards for Intake, Forge Flow, GSD, Project Execution, SocratiCode, Axon, Verification, and Handoff.
-- Full Forge end-to-end card execution.
-- Human verify or auto-run mode per visible card.
-- Contextual help in key UI areas.
-- Harness-agent operating protocol now included in local Gemma prompts.
-- Gemma Forge state now defaults to `~/.gforge`; Ollama stays in `~/.ollama`.
-- Settings includes a meaningful error log and model-route status.
-- `pyproject.toml` exposes a `gemma-forge` CLI entry point.
+Default model:
 
-## Remaining Required Before Submission
+```text
+gemma-4-e4b-it
+```
 
-1. Record a short demo video.
-   - Show first load and "Setting up workspace".
-   - Show Forge Engine readiness.
-   - Show Forge Brain defaulting to the small model.
-   - Start a project with no directory.
-   - Run Full Forge.
-   - Show generated artifacts and verification.
-   - Show archive/restore and project linking.
+Rationale:
 
-2. Prepare public code access.
-   - Private repo is fine during prep.
-   - Make the repo public before posting unless the challenge page or DEV submission rules provide a private-access path for judges.
-   - Submission template asks for a repository link, so the final link should be accessible.
+- The E4B / 4B-class lane gives extra reasoning headroom for planning, routing, repair, and verification.
+- It stays practical for local use compared with large workstation-only models.
+- Users can switch to another supported installed model from Forge Brain.
+- Model route proof is visible through the harness: Forge Brain selection -> Flask harness -> Ollama `/api/chat`.
 
-3. Package install path.
-   - Minimum viable install: GitHub clone plus setup script.
-   - Git URL install path exists through `pyproject.toml` and the `gemma-forge` CLI.
-   - Better release: GitHub Release zip/tar with launcher scripts after final verification.
+## Repository Status
 
-4. Final docs.
-   - README now centers the Forge Harness.
-   - Add screenshots.
-   - Add install section for macOS/Linux.
-   - Add troubleshooting for Ollama and models.
-   - License file exists.
-
-5. Final verification.
-   - Fresh clone install test.
-   - Start harness on a clean environment.
-   - Verify no local user project records, models, tokens, logs, or generated artifacts are committed.
-   - Run syntax checks and browser smoke test.
-
-## Private Repo Status
-
-Private prep repository is created:
+Repository:
 
 ```text
 https://github.com/TheRefreshCNFT/gemma-forge
 ```
 
-Current visibility: private.
+Current public-release intent:
 
-Local git metadata is initialized and `origin` points to the private repo. No commit or push has been made yet.
+- Repo is public.
+- `main` should be maintainer-controlled.
+- External contributors should use forks and pull requests.
+- CODEOWNERS should require `@TheRefreshCNFT` review for repository changes.
+- Runtime data, generated sessions, model files, logs, local caches, and private machine artifacts must stay out of Git.
 
-Initial setup commands used:
+## Submission Assets
+
+Repository assets:
+
+- `README.md` - public project overview and getting-started guide.
+- `SUBMISSION_DRAFT.md` - DEV submission draft.
+- `docs/submission-media/README.md` - media index.
+- `docs/submission-media/demo-recording-guide.md` - live demo recording flow.
+- `docs/submission-media/screenshots/` - UI screenshots.
+- `docs/submission-media/processed/` - processed live demo clips.
+- `docs/model-routing-proof.md` - model-route proof path.
+
+Final post still needs one selected public demo URL or embedded DEV video.
+
+## Readiness Checklist
+
+- [x] Public repository exists.
+- [x] README centers the Forge Harness instead of the older model-forging GUI.
+- [x] Install path documented.
+- [x] Gemma 4 model-choice rationale documented.
+- [x] Local state and privacy boundaries documented.
+- [x] Maintenance mode documented.
+- [x] Contribution policy documented.
+- [x] Public repo file hygiene reviewed for local-only runtime paths.
+- [x] GitHub branch protection verified on `main`.
+- [x] Final validation run recorded after public-doc polish.
+- [ ] Final demo video URL selected and inserted into the DEV post.
+
+## GitHub Protection
+
+Verified repository settings:
+
+- Repository visibility is public.
+- Only `TheRefreshCNFT` is listed with collaborator/admin access.
+- Forking is allowed so outside contributors can submit pull requests.
+- `main` has branch protection enabled.
+- Pull request reviews are required.
+- CODEOWNERS review is required.
+- Stale reviews are dismissed after new pushes.
+- Force pushes are disabled.
+- Branch deletion is disabled.
+- Linear history and conversation resolution are required.
+- Secret scanning and push protection are enabled.
+- Dependabot security updates are enabled.
+
+## Verification Commands
+
+Main local checks:
 
 ```bash
-git init -b main
-gh repo create TheRefreshCNFT/gemma-forge --private --source=. --remote=origin --description "Gemma Forge local Gemma 4 work harness"
+npm run check
+python -m unittest tests.model_route_test
+python -m unittest tests.skill_routing_test
+python -m unittest tests.maintenance_access_test
 ```
 
-Do not commit until the file list is reviewed. The `.gitignore` now excludes local project records, generated project artifacts, Axon indexes, logs, model files, and local environment folders.
-
-Public release switch:
+Clean install check:
 
 ```bash
-gh repo edit TheRefreshCNFT/gemma-forge --visibility public
+./tools/verify_clean_install.sh
 ```
 
-Only run this after the submission files, screenshots, README, and install test are ready.
-
-## Download And Install Options
-
-### Immediate GitHub Install
+Full VM clean-install orchestration:
 
 ```bash
-git clone https://github.com/TheRefreshCNFT/gemma-forge.git
-cd gemma-forge
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m chat.server
+./tools/run_clean_install_test.sh
 ```
 
-Then open:
+## Public Repo Exclusions
 
-```text
-http://127.0.0.1:5005/
-```
+Do not commit:
 
-### GitHub Release
-
-Create a release zip with:
-
-- source code
-- requirements
-- launch scripts
-- README
-- demo screenshots
-- no project records, models, tokens, logs, or generated workspaces
-
-### pipx / Git URL Install
-
-Users can install from GitHub:
-
-```bash
-pipx install git+https://github.com/TheRefreshCNFT/gemma-forge
-gemma-forge
-```
-
-This is the cleanest "install it from GitHub" path, but it needs a small packaging pass before submission.
+- `.gforge/`
+- `.axon/`
+- `chat/session-data/`
+- `chat/sessions.json`
+- `chat/models.json`
+- `crash_log.txt`
+- `.venv/`
+- caches and bytecode
+- raw recordings
+- model weights
+- `.DS_Store`
+- `._*` AppleDouble files

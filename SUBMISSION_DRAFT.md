@@ -8,47 +8,51 @@ tags: devchallenge, gemmachallenge, gemma
 
 ## What I Built
 
-Gemma Forge is a local Gemma 4 work harness for people who want the benefits of local AI without needing to understand model setup, terminal commands, Ollama, or agent orchestration first.
+Gemma Forge is a local Gemma 4 work harness that makes local AI useful before the user has to understand the machinery.
 
-The product starts by scanning the user's machine and showing a plain-language readiness view. It selects the smallest practical Gemma 4 model by default, keeps stronger models available only when the system can support them, and gives the user a project-focused harness instead of a global chat box.
+It starts by scanning the user's machine, checking Ollama and model readiness, recommending a practical Gemma 4 Forge Brain, and opening a project-focused workspace. From there, the user can describe what they want done in plain language. Gemma Forge turns that request into protocol cards for context, planning, execution, code intelligence, verification, and handoff.
 
-Each project starts with one question: "What project are we planning?" From there, Gemma Forge activates protocol cards for intake, planning, execution, code intelligence, verification, and handoff. Users can run the full workflow with Full Forge, run one card with Forge Section, or enable Human verify checkpoints when they want to test along the way.
+The goal is simple: everyone should be able to use local AI. Gemma Forge opens the door by putting Gemma 4 behind a guided workbench instead of a setup wall.
 
-The intent is simple: make local, free AI feel usable by anyone at any skill level.
+Most consumers do not need to manage memory systems. They need useful work completed. Most businesses do not need extra ceremony either. They need planning, execution, testing, evaluation, and delivery. Gemma Forge lets the user give the local model a direction, add the skills the project needs, and let the harness keep the work scoped and verifiable.
 
-Gemma Forge stores its own project and harness state in `~/.gforge` while leaving Ollama in its standard `~/.ollama` home. That keeps the user's model runtime separate from project memory, error logs, bridges, and Gemma Forge artifacts.
+Gemma Forge also comes pre-fueled with bundled skills for planning, code writing, UI/UX, scraping, PDF work, MCP servers, codebase search, structural analysis, and handoff discipline. Need more fire? Drop in a skill. If the user does not know how to create one, Gemma Forge maintenance mode can help scaffold, stage, and verify a new skill through a controlled allowlist flow.
+
+The project is built in the open-source spirit of Gemma 4: local, inspectable, extensible, and practical for people who want AI they can run and adapt on their own machine.
 
 ## Demo
 
-TODO: Add video walkthrough link.
+Demo materials are in the repository:
 
-Recommended demo path:
+https://github.com/TheRefreshCNFT/gemma-forge/tree/main/docs/submission-media
 
-1. Launch Gemma Forge and show "Setting up workspace".
-2. Show Forge Engine detecting local resources, Ollama, tools, and subagent capacity.
-3. Show Forge Brain defaulting to the small Gemma 4 model.
-4. Start a no-directory project.
-5. Turn Human verify off and run Full Forge.
-6. Show generated files, validation, repair/retest, and handoff artifacts.
-7. Show Active/Archived projects and linked projects.
+Recommended video flow:
+
+1. Launch Gemma Forge and show the workspace scan.
+2. Show Forge Engine readiness and Forge Brain model route.
+3. Start a no-directory project from a plain-language goal.
+4. Run Full Forge with Human Verify off.
+5. Show Project Context, GSD Planning, Project Execution, Verification, and Handoff.
+6. Open the generated artifact.
+7. Show Settings with model route proof and local error visibility.
+
+Final DEV post note: embed the live walkthrough video here when the final public video URL is selected.
 
 ## Code
 
-TODO: Add public repository link once the private prep repo is ready to publish.
-
-Planned repository:
+Repository:
 
 https://github.com/TheRefreshCNFT/gemma-forge
 
-Planned install path:
+Quick start:
 
 ```bash
 git clone https://github.com/TheRefreshCNFT/gemma-forge.git
 cd gemma-forge
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-python -m chat.server
+pip install -e .
+gemma-forge
 ```
 
 Then open:
@@ -57,22 +61,26 @@ Then open:
 http://127.0.0.1:5005/
 ```
 
+macOS users can also run:
+
+```bash
+./launch_forge.command
+```
+
 ## How I Used Gemma 4
 
 Gemma 4 is the planning and orchestration brain inside Gemma Forge.
 
-The default model lane is `gemma-4-e4b-it`, the practical edge Gemma 4 model available in the harness. That choice is intentional: the project is not trying to prove that only high-end hardware can use local AI. It is trying to make local AI available to people who may not have a workstation, a cloud budget, or confidence with developer tooling, while giving the harness more reasoning headroom than the E2B lane.
+The default Forge Brain is `gemma-4-e4b-it`, the E4B / 4B-class local lane. I chose it as the default because Gemma Forge is trying to be usable on practical local hardware while still giving the model extra reasoning headroom for project planning, tool selection, repair loops, and verification. Smaller models are valuable, but the 4B-class default gives the harness a stronger first-run experience without making local AI feel out of reach.
 
 Gemma 4 is used to:
 
-- turn a raw project idea into a structured project plan
-- decide which protocol cards are relevant
-- write project-scoped context
-- generate GSD-style phase plans
-- prepare verification and handoff artifacts
-- help users understand what to do next when they do not know the harness
-- answer harness-operation questions from the current project
+- Convert a raw user request into a structured project contract.
+- Decide which protocol cards and skills are relevant.
+- Write project-scoped context and GSD-style phase plans.
+- Generate or repair deliverables through the Project Execution card.
+- Evaluate outputs against acceptance criteria and deterministic validation.
+- Explain next steps when the user does not know which control to use.
+- Produce handoff notes so work can resume cleanly.
 
-Gemma Forge also stays resource-aware. Larger Gemma 4 options can appear when installed or supported, but the user is not forced to understand model sizing before they can start.
-
-The core idea is that local AI should not begin with a setup wall. Gemma Forge puts the model behind a guided work harness, so the user can focus on the project instead of the machinery.
+Gemma Forge also records the model route: Forge Brain selection to Flask harness to Ollama `/api/chat`. That proof matters because the product's authenticity rule is strict. A valid result means the selected local Gemma model actually did the work through the harness. Deterministic scripts, screenshots, and validators can verify or package the result, but they do not replace Gemma 4 doing the task.

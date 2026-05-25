@@ -11,11 +11,14 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 ## Repository Structure
 
 - `README.md` - public overview, install path, and harness positioning.
+- `CONTRIBUTING.md` - public contribution policy and PR expectations.
 - `CONTEXT.md` - product memory, defaults, and contest intent.
 - `PROJECT_PLAN.md` - current hardening plan and final submission needs.
 - `SKILL.md` - agent-facing Gemma Forge harness behavior.
 - `forge.md` - hidden always-on Forge operating context, similar in role to an `AGENTS.md` for the harness.
 - `AGENTS.md` - local development and operating rules.
+- `.github/CODEOWNERS` - repository ownership rule for public PR review.
+- `.github/pull_request_template.md` - GitHub PR safety and verification checklist.
 - `.gitignore` - excludes local project records, generated workspaces, Axon indexes, logs, model files, and environments.
 - `package.json` - npm entrypoint for the required `npm run check` command.
 - `pyproject.toml` - Python package metadata and `gemma-forge` CLI entrypoint.
@@ -37,7 +40,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
     `launch_forge.command` after package install; pulls the embedding
     model, verifies bundled skills, initializes SocratiCode/Qdrant, and
     writes the Axon project index before the app launches.
-- `.git/` - initialized local git metadata pointing at private GitHub repo `https://github.com/TheRefreshCNFT/gemma-forge`.
+- `.git/` - initialized local git metadata pointing at public GitHub repo `https://github.com/TheRefreshCNFT/gemma-forge`.
 
 ## Harness Code
 
@@ -83,7 +86,7 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Harness URL: `http://127.0.0.1:5005/`.
 - Initial recommended Forge Brain: `gemma-4-e4b-it`.
 - Default embedding model for SocratiCode: `nomic-embed-text:latest`.
-- Current private repo: `https://github.com/TheRefreshCNFT/gemma-forge`.
+- Current public repo: `https://github.com/TheRefreshCNFT/gemma-forge`.
 - Full-state external backups: `/Volumes/PHIXERO/Backups/gemma-forge/`.
 - Backup policy: a full backup/state-alignment request means the live
   local working state is backed up to the external SSD and GitHub is
@@ -340,5 +343,5 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 
 - Record final demo video.
 - Confirm no local project record, token, model, generated workspace, or log data enters the public repo.
-- Make the private repo public when submission materials are ready.
+- Keep public GitHub protections aligned so outside contributors can submit PRs but cannot write directly to `main`.
 - Broaden deterministic verification beyond file/authenticity checks without adding task-specific generators.
