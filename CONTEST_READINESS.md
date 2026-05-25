@@ -73,6 +73,7 @@ Repository assets:
 - `docs/submission-media/README.md` - media index.
 - `docs/submission-media/demo-recording-guide.md` - live demo recording flow.
 - `docs/submission-media/screenshots/` - UI screenshots.
+- `docs/submission-media/screenshots/current/06-workspace-artifacts.png` - workspace artifact proof screenshot for the DEV post.
 - `docs/submission-media/processed/` - processed live demo clips.
 - `docs/model-routing-proof.md` - model-route proof path.
 

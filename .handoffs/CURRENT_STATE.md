@@ -1,6 +1,6 @@
 # CURRENT_STATE.md — Gemma Forge
 
-Last updated: 2026-05-25 (UTC) — One-command quick start docs polished.
+Last updated: 2026-05-25 (UTC) — DEV submission draft and media polished.
 
 ## Verified ground truth
 
@@ -34,6 +34,10 @@ the contest demo path works end-to-end.** Driving doc:
   manual Python path as the development fallback, and describes
   `gemma4:e4b` / `gemma-4-e4b-it` as the fixed first-run install default
   that users can change after setup through Settings.
+- Submission draft polish: `SUBMISSION_DRAFT.md` now follows the DEV
+  Gemma 4 Challenge template, includes the README hero image as the cover
+  image, embeds the current product screenshot mix, and adds a workspace
+  artifact screenshot showing session receipts and generated files.
 - User-verified current behavior:
   - The obsolete `plan-run-status` strip / text
     "Start a project to run active cards." is removed from the

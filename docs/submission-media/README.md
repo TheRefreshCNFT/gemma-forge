@@ -2,6 +2,10 @@
 
 This directory holds local media assets for the Gemma 4 Challenge submission.
 
+## DEV Cover Image
+
+- `screenshots/current/01-forge-harness-overview.png` - use this as the DEV post cover image. It is the same main product image used at the top of the GitHub README.
+
 ## Current Product Screenshots
 
 - `screenshots/current/01-forge-harness-overview.png` - main Forge Harness readiness view with environment checks and Forge Brain model pills.
@@ -9,6 +13,7 @@ This directory holds local media assets for the Gemma 4 Challenge submission.
 - `screenshots/current/03-forge-station-evidence-stream.png` - live work/event stream with skill staging, browser fetches, status codes, and screenshot evidence.
 - `screenshots/current/04-settings-model-provisioning.png` - Settings model import, Hugging Face search, Ollama naming, and provisioning controls.
 - `screenshots/current/05-project-sidebar.png` - compact project rail with active/done states and archive/delete actions.
+- `screenshots/current/06-workspace-artifacts.png` - session workspace evidence showing project context, planning, research, execution, verification, handoff files, screenshots, and generated artifacts.
 
 ## Earlier Screenshots
 
