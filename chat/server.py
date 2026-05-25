@@ -4461,6 +4461,14 @@ def build_post_review_repair_artifact(card_id, repairs, review):
 
 def run_research_passes_if_needed(session_id, session, card_id, model, result):
     budget = project_research_budget(session)
+    can_now, cannot_now = harness_capabilities()
+    research_capability_note = (
+        f"Harness CAN: {', '.join(can_now)}\n"
+        f"Harness CANNOT: {', '.join(cannot_now)}\n"
+        "Do not claim web browsing, web fetching, local file emission, or workspace execution is impossible "
+        "when the relevant capability appears in Harness CAN. If source artifacts are missing, identify the "
+        "missing acquisition step or artifact path instead of saying the harness cannot do it."
+    )
     research = {
         "policy": f"Up to {WORKER_TASK_ITEM_CAP} research passes are available when the task requires them.",
         "taskSize": budget["taskSize"],
@@ -4480,6 +4488,9 @@ Card: {card_id}
 Section summary: {result.get('summary', '')}
 Section details:
 {truncate_text(result.get('details', ''), 3000)}
+
+Harness capability truth:
+{research_capability_note}
 
 Decide whether this section needs extra research before completion.
 Use at most {budget['maxPasses']} passes for this {budget['taskSize']} task.
@@ -4514,7 +4525,10 @@ Project: {session.get('project', '')}
 Card: {card_id}
 Topic: {topic}
 
-Use the current project and section context only. If external internet research would be required, say so plainly instead of inventing facts.
+Use the current project and section context only. If external internet research would be required and web_browse/web_fetch is available, say what source acquisition should fetch or reuse. If web_browse/web_fetch is unavailable, say so plainly instead of inventing facts.
+
+Harness capability truth:
+{research_capability_note}
 
 Section details:
 {truncate_text(result.get('details', ''), 3000)}
@@ -4610,8 +4624,26 @@ def ensure_completion_review(session_id, session, card_id, model, card):
     return review
 
 
+def build_review_workspace_snapshot(session, result):
+    validation = result.get("validation") if isinstance(result, dict) else {}
+    result_workspace = result.get("workspace") if isinstance(result, dict) else ""
+    workspace_dir = result_workspace or (session.get("projectDirectory", "") if isinstance(session, dict) else "")
+    if not isinstance(validation, dict) or validation.get("passed") is not False:
+        return "No workspace snapshot attached; deterministic validation did not report failure."
+    if not workspace_dir or not os.path.isdir(workspace_dir):
+        return "No workspace snapshot attached; workspace directory was not found."
+    return build_workspace_repair_snapshot(
+        session,
+        workspace_dir,
+        max_files=6,
+        per_file_limit=1200,
+        total_limit=7000,
+    )
+
+
 def run_completion_review(session_id, session, card_id, model, result):
     responsibility = card_review_responsibility(card_id)
+    workspace_snapshot = build_review_workspace_snapshot(session, result)
     prompt = f"""You are the independent Gemma Forge completion reviewer.
 
 YOUR ONLY JOB IS TO RETURN A JSON OBJECT EVALUATING THE PRIOR SECTION'S OUTPUT.
@@ -4637,6 +4669,9 @@ Section details:
 Workspace:
 {result.get('workspace') or session.get('projectDirectory', '')}
 
+Workspace file snapshot:
+{workspace_snapshot}
+
 Validation data:
 {json.dumps(result.get('validation', {}), indent=2)}
 
@@ -4649,6 +4684,10 @@ Post-review repairs:
 Rules:
 - Judge only whether this specific Forge Section met its responsibility. Do not require the section to complete later cards or the full project.
 - If validation data exists and says passed is false, return passed false.
+- If validation says a content count is 0 but the workspace snapshot clearly
+  shows matching data, source URLs, or markup, report that as a
+  validator/artifact conflict in findings instead of claiming the artifact lacks
+  the content.
 - If validation data exists and says passed is true, do not fail because a
   count is greater than the requested minimum. `deliverable.count` and
   content quantity checks are deterministic contract gates; treat reviewer
@@ -5067,6 +5106,8 @@ CAPABILITY_KEYWORDS = {
         r"\bnews\s+(feed|ticker|headlines?|articles?)\b",
         r"\b(headlines?|articles?)\s+from\s+(the\s+)?(web|internet|sites?|websites?|urls?)\b",
         r"\b(competitor|reference|inspiration|gallery)\s+(sites?|websites?|pages?)\b",
+        r"\b(?:at\s+least|minimum|min\.?|no\s+fewer\s+than)?\s*\d+\s+(?:authoritative|external|current|live|web|online)?\s*(sources?|references?|citations?)\b",
+        r"\bauthoritative\s+(sources?|references?|citations?)\b",
     ],
     "screenshot_capture": [
         r"\b(take|capture|save|grab)\s+(screenshots?|screen\s+captures?)\b",
@@ -5166,7 +5207,7 @@ CONTENT_QUANTITY_ITEMS = (
     "concepts?", "sections?", "categories?", "topics?", "images?",
     "screenshots?", "logos?", "icons?", "features?", "examples?",
     "products?", "items?", "entries?", "slides?", "charts?", "tables?",
-    "rows?",
+    "rows?", "references?", "citations?", "sources?", "checks?", "days?",
 )
 CONTENT_QUANTITY_ITEM_PATTERN = "|".join(CONTENT_QUANTITY_ITEMS)
 COUNT_TOKEN_PATTERN = r"\d+|" + "|".join(NUMBER_WORDS.keys())
@@ -5193,6 +5234,7 @@ def normalize_quantity_item(item):
         "references": "reference",
         "citations": "citation",
         "sources": "source",
+        "days": "day",
         "headlines": "headline",
         "stories": "story",
         "checks": "check",
@@ -5267,6 +5309,17 @@ def add_content_requirement(requirements, seen, count, item, source, tail):
         "source": source_clean,
         "minimum_total": parsed_count,
     })
+
+
+def content_quantity_full_source(match):
+    full_source = (match.group(0) or "").strip(" ,")
+    if full_source:
+        return full_source.split(",", 1)[0]
+    try:
+        full_source = (match.group(1) or "").strip(" ,")
+    except (IndexError, TypeError):
+        full_source = ""
+    return full_source.split(",", 1)[0]
 
 
 SCRIPT_RUNTIME_QUANTITY_ITEM_PATTERN = r"(?:\.[a-z0-9]{1,12}\s+)?(?:files?|directories?|subdirectories?|folders?|subfolders?|dirs?)"
@@ -5394,6 +5447,14 @@ def detect_content_quantity_requirements(text):
             re.IGNORECASE,
         ),
         re.compile(
+            rf"\b(?:(?:at\s+least|minimum|min\.?|no\s+fewer\s+than)\s+)?"
+            rf"(?P<count>{COUNT_TOKEN_PATTERN})\s+"
+            rf"(?:(?:[a-z0-9][a-z0-9-]*|source-backed)\s+){{0,4}}"
+            rf"(?P<item>{CONTENT_QUANTITY_ITEM_PATTERN})\b"
+            rf"(?P<tail>[^.!?\n]{{0,120}})",
+            re.IGNORECASE,
+        ),
+        re.compile(
             rf"\b(?P<count>{COUNT_TOKEN_PATTERN})\s+(?P<item>{CONTENT_QUANTITY_ITEM_PATTERN})\b"
             rf"(?P<tail>\s+(?:in|for|under|per)\s+[^.!?\n]{{1,100}})?",
             re.IGNORECASE,
@@ -5401,17 +5462,32 @@ def detect_content_quantity_requirements(text):
     ]
 
     for pattern in patterns:
-        for match in pattern.finditer(source_text):
+        overlapping_pattern = re.compile(rf"(?=({pattern.pattern}))", pattern.flags)
+        for match in overlapping_pattern.finditer(source_text):
             tail = match.group("tail") or ""
-            full_source = (match.group(0) or "").split(",", 1)[0]
             add_content_requirement(
                 requirements,
                 seen,
                 match.group("count"),
                 match.group("item"),
-                full_source,
+                content_quantity_full_source(match),
                 tail,
             )
+
+    day_plan_pattern = re.compile(
+        rf"\b(?P<count>{COUNT_TOKEN_PATTERN})\s*[- ]\s*day(?:'s)?\s+"
+        rf"(?P<label>(?:meal\s+)?plan)\b(?P<tail>[^.!?\n]{{0,120}})",
+        re.IGNORECASE,
+    )
+    for match in day_plan_pattern.finditer(source_text):
+        add_content_requirement(
+            requirements,
+            seen,
+            match.group("count"),
+            "days",
+            content_quantity_full_source(match),
+            "meal plan generation " + (match.group("tail") or ""),
+        )
 
     return requirements
 
@@ -5456,6 +5532,94 @@ def merge_content_quantity_requirements(existing, detected):
         seen.add(key)
         merged.append(requirement)
     return merged
+
+
+def append_unique_requirement_line(lines, line):
+    if not line:
+        return lines
+    normalized_line = re.sub(r"\s+", " ", str(line).strip())
+    if not normalized_line:
+        return lines
+    normalized_seen = {
+        re.sub(r"\s+", " ", str(item).strip()).lower()
+        for item in lines
+    }
+    if normalized_line.lower() not in normalized_seen:
+        lines.append(normalized_line)
+    return lines
+
+
+def prompt_contains_all(text, words):
+    lowered = str(text or "").lower()
+    return all(word.lower() in lowered for word in words)
+
+
+def raw_project_requirement_lines(project_text):
+    """Preserve high-signal UI/acceptance requirements from the user's raw ask.
+
+    The Context Writer model is still responsible for synthesis, but this keeps
+    concrete controls/checks from disappearing before GSD, Execution, or Review.
+    """
+    lowered = str(project_text or "").lower()
+    lines = []
+
+    if "household" in lowered and "size" in lowered:
+        lines.append(
+            "Household-size control must be accepted and used to recalculate visible meal and water quantities."
+        )
+    if "dietary mode" in lowered or ("standard" in lowered and "vegetarian" in lowered and "low-sodium" in lowered):
+        lines.append(
+            "Dietary mode control must switch meal-plan data for standard, vegetarian, and low-sodium modes; option values must match the data keys used by the script."
+        )
+    if "water estimate" in lowered or prompt_contains_all(lowered, ["water", "panel"]):
+        lines.append(
+            "Water estimate panel must update from the selected household size and dietary mode."
+        )
+    if "pantry" in lowered and ("group" in lowered or "category" in lowered or "checklist" in lowered):
+        lines.append(
+            "Pantry checklist must be grouped by category and include the requested pantry/substitution items."
+        )
+    if "constraints audit" in lowered or ("audit" in lowered and "constraint" in lowered):
+        lines.append(
+            "Constraints audit must be visible and summarize how the deliverable satisfies the binding requirements."
+        )
+    if "printable" in lowered or "print view" in lowered or "print summary" in lowered:
+        lines.append(
+            "Printable summary view must be available; print styles should hide interactive controls."
+        )
+    if "references" in lowered or "citations" in lowered or "authoritative sources" in lowered:
+        lines.append(
+            "References section must cite the authoritative source URLs used by the project."
+        )
+    if re.search(r"\bno\s+(?:cdn|remote\s+assets?|external\s+assets?)\b", lowered):
+        lines.append(
+            "Use self-contained local code/assets; do not load CDN or remote runtime assets."
+        )
+
+    return lines
+
+
+def apply_raw_project_requirements(parsed, project_text):
+    if not isinstance(parsed, dict):
+        return parsed
+    preserved = raw_project_requirement_lines(project_text)
+    if not preserved:
+        return parsed
+
+    constraints = parsed.get("constraints") if isinstance(parsed.get("constraints"), dict) else {}
+    hard_requirements = constraints.get("hard_requirements") if isinstance(constraints.get("hard_requirements"), list) else []
+    hard_requirements = [str(item).strip() for item in hard_requirements if str(item).strip()]
+    acceptance = parsed.get("acceptance") if isinstance(parsed.get("acceptance"), list) else []
+    acceptance = [str(item).strip() for item in acceptance if str(item).strip()]
+
+    for line in preserved:
+        append_unique_requirement_line(hard_requirements, line)
+        append_unique_requirement_line(acceptance, line)
+
+    constraints["hard_requirements"] = hard_requirements
+    parsed["constraints"] = constraints
+    parsed["acceptance"] = acceptance
+    return parsed
 
 
 # Anti-deflection lines per deliverable format. The Context Writer uses these
@@ -6546,6 +6710,8 @@ def enrich_project_context(parsed, project_text, model=None):
         constraints["hard_requirements"] = hard_requirements
         parsed["constraints"] = constraints
         parsed["acceptance"] = acceptance
+
+    apply_raw_project_requirements(parsed, project_text or "")
 
     missing = missing_capabilities(union)
     open_questions = parsed.get("open_questions") if isinstance(parsed.get("open_questions"), list) else []
@@ -12030,7 +12196,15 @@ def validation_text_extensions(project_context):
     if fmt == "html":
         # UI/component counts should measure rendered document structure.
         # CSS selector names and comments are support code, not extra cards.
-        return {".html", ".htm", ".md", ".markdown", ".txt", ".pdf"}
+        extensions = {".html", ".htm", ".md", ".markdown", ".txt", ".pdf"}
+        requirements_text = " ".join(
+            " ".join(str(req.get(key, "") or "") for key in ("item", "scope", "source"))
+            for req in listify(project_context.get("content_requirements"))
+            if isinstance(req, dict)
+        ).lower()
+        if "meal plan" in requirements_text or "pantry" in requirements_text:
+            extensions.update({".js", ".mjs", ".cjs"})
+        return extensions
     return None
 
 
@@ -12288,6 +12462,79 @@ def content_requirement_requests_list_count(requirement, normalized_item):
     return bool(re.search(r"\b(?:unordered|ordered|bullet|numbered)?\s*list\b|\b<ul\b|\b<li\b", text))
 
 
+def js_assignment_array_bodies(text, names):
+    bodies = []
+    for name in names:
+        pattern = re.compile(
+            rf"\b(?:const|let|var)?\s*{re.escape(name)}\s*=\s*\[(?P<body>.*?)\]\s*;",
+            re.IGNORECASE | re.DOTALL,
+        )
+        bodies.extend(match.group("body") for match in pattern.finditer(text or ""))
+    return bodies
+
+
+def count_js_array_entries_with_keys(text, names, keys):
+    key_pattern = "|".join(re.escape(key) for key in keys)
+    counts = []
+    for body in js_assignment_array_bodies(text, names):
+        counts.append(regex_count(rf"['\"]?(?:{key_pattern})['\"]?\s*:", body))
+    return max(counts or [0])
+
+
+def count_meal_plan_days(text):
+    source = text or ""
+    object_count = regex_count(
+        r"\{(?=[^{}]{0,2500}['\"]?day['\"]?\s*:)"
+        r"(?=[^{}]{0,2500}\bbreakfast\b)"
+        r"(?=[^{}]{0,2500}\blunch\b)"
+        r"(?=[^{}]{0,2500}\bdinner\b)"
+        r"(?=[^{}]{0,2500}\bsnack\b)[^{}]{0,2500}\}",
+        source,
+    )
+    day_numbers = {
+        value.lstrip("0") or "0"
+        for value in re.findall(r"['\"]?day['\"]?\s*:\s*['\"]?(?:day\s*)?(\d{1,2})\b", source, re.IGNORECASE)
+    }
+    day_numbers.update(
+        value.lstrip("0") or "0"
+        for value in re.findall(r"\bday\s+(?:#\s*)?(\d{1,2})\b", source, re.IGNORECASE)
+    )
+    day_numbers.update(
+        value.lstrip("0") or "0"
+        for value in re.findall(r"\bdata-day\s*=\s*['\"]?(\d{1,2})\b", source, re.IGNORECASE)
+    )
+    return max(object_count, len(day_numbers))
+
+
+def count_pantry_item_units(text):
+    source = text or ""
+    array_count = count_js_array_entries_with_keys(
+        source,
+        [
+            "PANTRY_ITEMS",
+            "PANTRY_SUBSTITUTIONS",
+            "SUBSTITUTION_ITEMS",
+            "SUBSTITUTIONS",
+            "pantryItems",
+            "pantrySubstitutions",
+            "substitutions",
+        ],
+        ["item", "ingredient", "name"],
+    )
+    pantry_blocks = re.findall(
+        r"<(?:section|div|ul|ol)\b[^>]*(?:pantry|substitut|checklist)[^>]*>(.*?)"
+        r"</(?:section|div|ul|ol)>",
+        source,
+        re.IGNORECASE | re.DOTALL,
+    )
+    pantry_list_count = sum(regex_count(r"<li\b", block) for block in pantry_blocks)
+    pantry_object_count = regex_count(
+        r"\{(?=[^{}]{0,1200}(?:pantry|substitut))[^{}]{0,1200}['\"]?(?:item|ingredient|name)['\"]?\s*:",
+        source,
+    )
+    return max(array_count, pantry_list_count, pantry_object_count)
+
+
 def validate_python_script_runtime_side_effects(workspace_dir, files, project_context, requirements):
     candidates = code_deliverable_files(files, project_context, ".py")
     if not candidates:
@@ -12373,6 +12620,16 @@ def count_content_units(text, item, requirement=None):
     normalized_item = normalize_quantity_item(item)
     if not text:
         return 0
+    requirement_text = content_requirement_text(requirement)
+
+    if "meal plan" in requirement_text and "day" in requirement_text:
+        return count_meal_plan_days(text)
+
+    if (
+        "pantry" in requirement_text
+        and ("item" in requirement_text or normalized_item in {"item", "entry", "product", "example"})
+    ):
+        return count_pantry_item_units(text)
 
     statement_kind = sql_content_statement_kind(requirement, raw_item=raw_item)
     if statement_kind:

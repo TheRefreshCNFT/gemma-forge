@@ -1311,6 +1311,84 @@ VERIFICATION:
         self.assertEqual(review["fixesNeeded"], [])
         self.assertIn("Verification is read-only", " ".join(review["findings"]))
 
+    def test_failed_validation_review_prompt_receives_workspace_snapshot(self):
+        workspace_dir = os.path.join(self.tmp.name, "review-snapshot")
+        os.makedirs(workspace_dir, exist_ok=True)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(
+                "<!doctype html><script>"
+                "const PANTRY_ITEMS = [{ item: 'Rice' }];"
+                "const MEAL_PLAN_DATA = { standard: [{ day: 1, breakfast: 'A', lunch: 'B', dinner: 'C', snack: 'D' }] };"
+                "</script>"
+            )
+        review_payload = {
+            "passed": False,
+            "summary": "Validation failed.",
+            "findings": [],
+            "fixesNeeded": [],
+            "confidence": "medium",
+        }
+        captured = {}
+
+        def fake_call(_model, prompt, fallback, **_kwargs):
+            captured["prompt"] = prompt
+            return review_payload, "{}", {"status": "ok"}
+
+        result = {
+            "summary": "Generated Pantry Quest.",
+            "details": "Validation found missing content.",
+            "workspace": workspace_dir,
+            "validation": {
+                "passed": False,
+                "failures": ["content requirement expected at least 12 `items`, but deterministic validation found 0."],
+            },
+        }
+
+        with patch.object(server, "call_ollama_json", side_effect=fake_call):
+            server.run_completion_review(
+                "review-snapshot",
+                {"project": "Build Pantry Quest."},
+                "execution",
+                "gemma-4",
+                result,
+            )
+
+        self.assertIn("validator/artifact conflict", captured["prompt"])
+        self.assertIn("PANTRY_ITEMS", captured["prompt"])
+        self.assertIn("MEAL_PLAN_DATA", captured["prompt"])
+
+    def test_research_pass_prompt_uses_harness_capability_truth(self):
+        captured = {}
+
+        def fake_plan(_model, prompt, _fallback, **_kwargs):
+            captured["plan_prompt"] = prompt
+            return {
+                "needed": True,
+                "passCount": 1,
+                "topics": ["Check whether the source acquisition artifacts are enough."],
+            }, "{}", {"status": "ok"}
+
+        def fake_note(_model, prompt):
+            captured["note_prompt"] = prompt
+            return "Finding: use fetched artifacts."
+
+        with patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server, "call_ollama_json", side_effect=fake_plan), \
+                patch.object(server, "call_ollama", side_effect=fake_note):
+            research = server.run_research_passes_if_needed(
+                "research-capability",
+                {"project": "Research current pantry guidance and build an HTML app."},
+                "gsd",
+                "gemma-4",
+                {"summary": "Planning complete.", "details": "Need live sources."},
+            )
+
+        self.assertEqual(research["used"], 1)
+        self.assertIn("Harness CAN", captured["plan_prompt"])
+        self.assertIn("web_browse", captured["plan_prompt"])
+        self.assertIn("Harness capability truth", captured["note_prompt"])
+        self.assertIn("source acquisition", captured["note_prompt"])
+
     def test_verification_prompt_receives_staged_skill_context(self):
         workspace_dir = os.path.join(self.tmp.name, "verification-skill-context")
         os.makedirs(os.path.join(workspace_dir, "artifacts"), exist_ok=True)
@@ -2512,6 +2590,176 @@ open_questions: []
         self.assertEqual(parsed["content_requirements"][0]["count"], 3)
         self.assertIn("top 3 articles", parsed["content_requirements"][0]["source"].lower())
         self.assertTrue(any("at least 3 articles" in item.lower() for item in parsed["acceptance"]))
+
+    def test_detects_source_pantry_and_day_content_quantity_requirements(self):
+        prompt = (
+            "Build Pantry Quest as one HTML file with a 7-day meal plan, "
+            "at least 6 authoritative sources, and at least 12 common pantry items."
+        )
+
+        requirements = server.detect_content_quantity_requirements(prompt)
+
+        self.assertTrue(any(
+            requirement["count"] == 7
+            and server.normalize_quantity_item(requirement["item"]) == "day"
+            and "meal plan" in requirement["source"].lower()
+            for requirement in requirements
+        ))
+        self.assertTrue(any(
+            requirement["count"] == 6
+            and server.normalize_quantity_item(requirement["item"]) == "source"
+            for requirement in requirements
+        ))
+        self.assertTrue(any(
+            requirement["count"] == 12
+            and server.normalize_quantity_item(requirement["item"]) == "item"
+            and "pantry" in requirement["source"].lower()
+            for requirement in requirements
+        ))
+
+    def test_project_context_enrichment_preserves_pantry_acceptance(self):
+        project_text = (
+            "Build a no-CDN Pantry Quest HTML app with a household-size input from 1-8, "
+            "dietary mode selector for standard, vegetarian, and low-sodium, a water "
+            "estimate panel, a grouped pantry checklist by category with at least 12 "
+            "common pantry items, a constraints audit, printable summary view, a 7-day "
+            "meal plan, and at least 6 authoritative sources."
+        )
+        raw = """Rationale.
+<<<CONTEXT_BEGIN>>>
+---
+project:
+  name: Pantry Quest
+  type: code
+  domain: emergency planning
+intent:
+  surface_ask: "Build Pantry Quest."
+  underlying_need: A self-contained planning app.
+  success_means: The page has the requested controls and data.
+deliverable:
+  format: html
+  count: 1
+  path_pattern: index.html
+  encoding: gforge_file_block
+  partial: false
+  scope: A single HTML app.
+  anti_deflection: stub
+capabilities_required:
+  - emit_files
+constraints:
+  hard_requirements:
+    - The page is responsive.
+  tone:
+    - practical
+skill:
+  use: ui-ux-pro-max
+  staged_path: .gforge/skills/ui-ux-pro-max
+acceptance:
+  - index.html exists.
+open_questions: []
+---
+<<<CONTEXT_END>>>
+"""
+
+        with patch.object(server.tool_browse, "is_available", return_value=True):
+            parsed, _yaml_text, errors = server.parse_project_context(raw, project_text=project_text)
+
+        self.assertEqual(errors, [])
+        normalized = {
+            (server.normalize_quantity_item(item["item"]), item["count"])
+            for item in parsed["content_requirements"]
+        }
+        self.assertIn(("day", 7), normalized)
+        self.assertIn(("item", 12), normalized)
+        self.assertIn(("source", 6), normalized)
+        self.assertIn("web_browse", parsed["capabilities_required"])
+        acceptance_text = "\n".join(parsed["acceptance"]).lower()
+        self.assertIn("household-size", acceptance_text)
+        self.assertIn("dietary mode", acceptance_text)
+        self.assertIn("pantry checklist", acceptance_text)
+        self.assertIn("printable summary", acceptance_text)
+
+    def test_html_js_pantry_meal_plan_content_counts_from_static_data(self):
+        workspace_dir = os.path.join(self.tmp.name, "pantry-static-counts")
+        os.makedirs(workspace_dir, exist_ok=True)
+        meal_entries = ",\n".join(
+            "{ day: %d, breakfast: 'B%d', lunch: 'L%d', dinner: 'D%d', snack: 'S%d' }"
+            % (index, index, index, index, index)
+            for index in range(1, 8)
+        )
+        pantry_entries = ",\n".join(
+            "{ item: 'Pantry Item %d', category: 'Staples' }" % index
+            for index in range(1, 13)
+        )
+        refs = "\n".join(
+            "<a href='https://example.com/ref-%d'>Reference %d</a>" % (index, index)
+            for index in range(1, 7)
+        )
+        html = """<!doctype html>
+<html>
+<body>
+<main>
+  <section id="references">%s</section>
+</main>
+<script>
+const MEAL_PLAN_DATA = {
+  standard: [%s]
+};
+const PANTRY_ITEMS = [%s];
+</script>
+</body>
+</html>
+""" % (refs, meal_entries, pantry_entries)
+        with open(os.path.join(workspace_dir, "index.html"), "w") as f:
+            f.write(html)
+
+        project_context = {
+            "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+            "content_requirements": [
+                {
+                    "count": 7,
+                    "item": "day's meal plan (breakfast, lunch, dinner, snack)",
+                    "scope": "meal plan generation",
+                    "source": "7-day meal plan",
+                    "minimum_total": 7,
+                },
+                {
+                    "count": 12,
+                    "item": "common pantry items",
+                    "scope": "whole deliverable",
+                    "source": "at least 12 common pantry items",
+                    "minimum_total": 12,
+                },
+                {
+                    "count": 6,
+                    "item": "authoritative sources",
+                    "scope": "whole deliverable",
+                    "source": "at least 6 authoritative sources",
+                    "minimum_total": 6,
+                },
+            ],
+        }
+
+        failures, results = server.validate_content_quantity_requirements(
+            workspace_dir,
+            [{"path": "index.html"}],
+            project_context,
+        )
+
+        self.assertEqual(failures, [])
+        meal_actual = next(
+            result["actual"]
+            for result in results
+            if "meal plan" in result["source"].lower()
+        )
+        actuals = {
+            server.normalize_quantity_item(result["item"]): result["actual"]
+            for result in results
+            if server.normalize_quantity_item(result["item"]) in {"item", "source"}
+        }
+        self.assertGreaterEqual(meal_actual, 7)
+        self.assertGreaterEqual(actuals["item"], 12)
+        self.assertGreaterEqual(actuals["source"], 6)
 
     def test_intake_recovers_contract_when_model_yaml_repair_is_invalid(self):
         project = (
