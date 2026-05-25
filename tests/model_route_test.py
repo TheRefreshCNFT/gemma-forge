@@ -21,6 +21,20 @@ class FakeOllamaResponse:
         return {"message": {"content": "ok"}}
 
 
+class FakeOllamaContentResponse:
+    status_code = 200
+
+    def __init__(self, content):
+        self.content = content
+        self.text = json.dumps({"message": {"content": content}})
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {"message": {"content": self.content}}
+
+
 class FakeHfModel:
     def __init__(self, model_id, downloads=0, tags=None, card_data=None):
         self.modelId = model_id
@@ -134,6 +148,29 @@ class ModelRouteTest(unittest.TestCase):
         self.assertEqual(captured["json"]["model"], "gempus4:tuned")
         self.assertEqual(captured["timeout"], server.LARGE_MODEL_REQUEST_TIMEOUT_SECONDS)
         self.assertEqual(transport["timeoutSeconds"], server.LARGE_MODEL_REQUEST_TIMEOUT_SECONDS)
+
+    def test_ollama_empty_response_retries_once(self):
+        calls = []
+
+        def fake_post(url, json, timeout):
+            calls.append({"url": url, "json": json, "timeout": timeout})
+            if len(calls) == 1:
+                return FakeOllamaContentResponse("")
+            return FakeOllamaContentResponse("Plan ready.")
+
+        with patch.object(server.requests, "post", fake_post):
+            content, transport = server.call_ollama_with_transport(
+                "gemma-4-e4b-it",
+                "Plan this.",
+                options_override=server.planning_model_options("gemma-4-e4b-it"),
+            )
+
+        self.assertEqual(content, "Plan ready.")
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(transport["status"], "ok")
+        self.assertEqual(transport["attempts"], 2)
+        self.assertEqual(calls[0]["json"]["options"]["num_predict"], 2048)
+        self.assertEqual(calls[0]["json"]["options"]["num_ctx"], 8192)
 
     def test_large_model_name_fallback_uses_extended_ollama_timeout(self):
         with patch.object(server, "scan_workspace", return_value={"ollama": {"models": []}}):
@@ -1791,7 +1828,8 @@ acceptance:
 
         self.assertEqual(captured["extra_keys"], ["gsd"])
         self.assertEqual(captured["options"]["temperature"], 0.2)
-        self.assertNotIn("num_predict", captured["options"])
+        self.assertEqual(captured["options"]["num_predict"], 2048)
+        self.assertEqual(captured["options"]["num_ctx"], 8192)
         self.assertIn("GSD staged package reference", captured["prompt"])
         self.assertIn(".gforge/skills/gsd", captured["prompt"])
         self.assertIn("workflows/plan-phase.md", captured["prompt"])

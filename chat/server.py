@@ -3463,10 +3463,16 @@ OLLAMA_KEEP_ALIVE = "30m"
 # Per-call overrides via options_override still apply, e.g. the Project
 # Context Writer + small-model reviewer use CONTEXT_DELIBERATION_OPTIONS
 # (temperature=0.1) for fully deterministic structured-output paths.
-# num_ctx / num_predict are NOT overridden here — those stay at each
-# Modelfile's defaults (gempus4:tuned's 65536 ctx, etc.).
+# Default card calls leave num_ctx / num_predict at the Modelfile defaults
+# (gempus4:tuned's 65536 ctx, etc.). Planning/GSD is the exception: it needs
+# enough room to emit a complete phase plan even when the selected model's
+# runtime defaults are conservative.
 OLLAMA_DEFAULT_OPTIONS = {"temperature": 0.3}
-PLANNING_MODEL_OPTIONS = {"temperature": 0.2}
+PLANNING_MODEL_OPTIONS = {
+    "temperature": 0.2,
+    "num_ctx": 8192,
+    "num_predict": 2048,
+}
 TINY_MODEL_MAX_B = 1.5
 
 
@@ -3495,7 +3501,7 @@ def call_ollama_with_transport(model, prompt, options_override=None):
       status: one of "ok" | "empty" | "timeout" | "unreachable" | "http_error"
       model: the model id we asked for
       elapsedMs: how long the call took, including any retry
-      attempts: 1 or 2 (single retry on ConnectionError only)
+      attempts: 1 or 2 (single retry on ConnectionError or empty content)
       error: stringified error or None
       timeoutSeconds: the per-request timeout that was in effect
 
@@ -3533,6 +3539,16 @@ def call_ollama_with_transport(model, prompt, options_override=None):
             response.raise_for_status()
             content = response.json().get("message", {}).get("content", "")
             elapsed_ms = int((time.time() - started) * 1000)
+            if not content and attempt == 1:
+                emit_event(
+                    "ollama",
+                    f"{model} ← empty ({elapsed_ms} ms); retrying",
+                    attempt=attempt,
+                    ok=False,
+                    retry=True,
+                )
+                emit_event("ollama", f"{model} → call", attempt=attempt + 1, retry_reason="empty")
+                continue
             emit_event("ollama", f"{model} ← {'ok' if content else 'empty'} ({elapsed_ms} ms)",
                        attempt=attempt, ok=bool(content))
             return content, {
