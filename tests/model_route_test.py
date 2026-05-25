@@ -2097,6 +2097,84 @@ open_questions: []
             urls,
         )
 
+    def test_public_authority_research_seeds_named_agency_urls(self):
+        prompt = (
+            "Use web research from at least 6 authoritative sources, prioritizing "
+            "FEMA, Ready.gov, CDC, USDA, Red Cross, and state extension offices. "
+            "Build a no-cook emergency pantry meal planner."
+        )
+
+        urls = server.infer_web_research_urls(prompt)
+
+        self.assertGreaterEqual(len(urls), 6)
+        self.assertIn("https://www.ready.gov/food", urls)
+        self.assertIn("https://www.ready.gov/water", urls)
+        self.assertTrue(any("cdc.gov/water-emergency" in url for url in urls))
+        self.assertTrue(any("nutrition.gov" in url or "usda.gov" in url for url in urls))
+        self.assertTrue(any("fema.gov" in url for url in urls))
+        self.assertTrue(any("redcross.org" in url for url in urls))
+
+    def test_prepare_workspace_research_searches_when_browse_required_without_urls(self):
+        workspace_dir = os.path.join(self.tmp.name, "search-discovery-research")
+        os.makedirs(workspace_dir, exist_ok=True)
+        fetched_urls = []
+        search_queries = []
+
+        def fake_search(query, limit=8, allowed_domains=None, timeout=15):
+            search_queries.append((query, tuple(allowed_domains or ())))
+            return [
+                "https://example.edu/source-one",
+                "https://example.org/source-two",
+                "https://example.net/source-three",
+            ][:limit]
+
+        def fake_fetch(url, mode="auto"):
+            fetched_urls.append(url)
+            return {
+                "ok": True,
+                "url": url,
+                "status": 200,
+                "mode": mode,
+                "title": "Search result source",
+                "text": "source text",
+            }
+
+        def fake_write(_workspace_dir, result):
+            return {
+                "url": result["url"],
+                "path": f"research/source-{len(fetched_urls):02d}.md",
+                "title": result["title"],
+                "ok": True,
+                "status": 200,
+                "mode": result["mode"],
+            }
+
+        session = {
+            "project": "Search authoritative sources for urban heat island mitigation and write a short HTML guide.",
+            "projectContext": {
+                "deliverable": {"format": "html", "count": 1, "path_pattern": "index.html"},
+                "capabilities_required": ["emit_files", "web_browse"],
+                "content_requirements": [
+                    {"count": 3, "minimum_total": 3, "item": "authoritative sources", "scope": "references"}
+                ],
+            },
+        }
+
+        with patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server.tool_browse, "search_web_urls", side_effect=fake_search), \
+                patch.object(server.tool_browse, "fetch_url", side_effect=fake_fetch), \
+                patch.object(server.tool_browse, "write_research_artifact", side_effect=fake_write):
+            research = server.prepare_workspace_research(workspace_dir, session)
+
+        self.assertTrue(search_queries)
+        self.assertEqual(fetched_urls[:3], [
+            "https://example.edu/source-one",
+            "https://example.org/source-two",
+            "https://example.net/source-three",
+        ])
+        self.assertEqual(research["inferred_urls"], fetched_urls)
+        self.assertIsNone(research["skipped_reason"])
+
     def test_prepare_workspace_research_fetches_github_docs_seed_urls_without_explicit_urls(self):
         workspace_dir = os.path.join(self.tmp.name, "github-docs-research")
         os.makedirs(workspace_dir, exist_ok=True)
@@ -3583,6 +3661,7 @@ open_questions: []
                 patch.object(server, "prepare_harness_maintenance_context", return_value={"requested": False, "actionsFile": "artifacts/maintenance-actions.json"}), \
                 patch.object(server, "prepare_workspace_git_references", return_value={"requested": False, "available": True, "cloned": []}), \
                 patch.object(server.tool_browse, "is_available", return_value=True), \
+                patch.object(server.tool_browse, "search_web_urls", return_value=[]), \
                 patch.object(server, "call_ollama_execution_payload", side_effect=AssertionError("model should not run")):
             execution = server.execute_model_authored_project("session-test", session, "gemma-4", workspace_dir)
 

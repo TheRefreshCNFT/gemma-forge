@@ -9608,6 +9608,18 @@ def dedupe_urls(urls, limit=WORKER_TASK_ITEM_CAP):
     return seen
 
 
+def dedupe_preserve_order(items, limit=WORKER_TASK_ITEM_CAP):
+    seen = []
+    for item in items or []:
+        cleaned = str(item or "").strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.append(cleaned)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
 GITHUB_OPERATIONS_DOC_SEED_URLS = [
     "https://docs.github.com/en/organizations/managing-organization-settings/creating-rulesets-for-repositories-in-your-organization",
     "https://docs.github.com/en/organizations/managing-organization-settings/managing-rulesets-for-repositories-in-your-organization",
@@ -9631,6 +9643,53 @@ GITHUB_OPERATIONS_DOC_SEED_URLS = [
     "https://docs.github.com/en/actions/concepts/runners/github-hosted-runners",
 ]
 
+PUBLIC_AUTHORITY_SOURCE_HINTS = [
+    (
+        [r"\bfema\b"],
+        ["fema.gov"],
+        [
+            "https://www.fema.gov/press-release/20250602/how-build-kit-emergencies",
+        ],
+    ),
+    (
+        [r"\bready\.?gov\b", r"\bready\s+gov\b"],
+        ["ready.gov"],
+        [
+            "https://www.ready.gov/food",
+            "https://www.ready.gov/water",
+        ],
+    ),
+    (
+        [r"\bcdc\b", r"\bcenters?\s+for\s+disease\s+control\b"],
+        ["cdc.gov"],
+        [
+            "https://www.cdc.gov/water-emergency/about/how-to-create-and-store-an-emergency-water-supply.html",
+            "https://www.cdc.gov/water-emergency/about/index.html",
+        ],
+    ),
+    (
+        [r"\busda\b", r"\bfsis\b", r"\bnutrition\.?gov\b"],
+        ["usda.gov", "fsis.usda.gov", "nutrition.gov", "fns.usda.gov", "snaped.fns.usda.gov"],
+        [
+            "https://www.nutrition.gov/topics/shopping-cooking-and-meal-planning/emergency-food-supplies",
+            "https://www.fsis.usda.gov/food-safety/safe-food-handling-and-preparation/emergencies/keep-your-food-safe-during-emergencies",
+            "https://snaped.fns.usda.gov/resources/nutrition-education-materials/stay-safe-during-emergencies",
+        ],
+    ),
+    (
+        [r"\bred\s+cross\b", r"\bamerican\s+red\s+cross\b"],
+        ["redcross.org"],
+        [
+            "https://www.redcross.org/get-help/how-to-prepare-for-emergencies/survival-kit-supplies.html",
+        ],
+    ),
+    (
+        [r"\b(cooperative\s+extension|state\s+extension|extension\s+offices?)\b"],
+        ["edu"],
+        [],
+    ),
+]
+
 
 def github_operations_docs_research_requested(text):
     lowered = str(text or "").lower()
@@ -9649,14 +9708,107 @@ def github_operations_docs_research_requested(text):
     ))
 
 
+def public_authority_research_requested(text):
+    lowered = str(text or "").lower()
+    if not re.search(r"\b(research|sources?|references?|citations?|cite|web|official|authoritative|public guidance)\b", lowered):
+        return False
+    if not re.search(r"\b(authoritative|official|public guidance|public health|preparedness|emergency|disaster|nutrition|food|water|pantry)\b", lowered):
+        return False
+    return any(
+        re.search(pattern, lowered)
+        for patterns, _domains, _urls in PUBLIC_AUTHORITY_SOURCE_HINTS
+        for pattern in patterns
+    )
+
+
+def public_authority_seed_urls(text, limit=WORKER_TASK_ITEM_CAP):
+    lowered = str(text or "").lower()
+    urls = []
+    if not public_authority_research_requested(text):
+        return urls
+    for patterns, _domains, seed_urls in PUBLIC_AUTHORITY_SOURCE_HINTS:
+        if any(re.search(pattern, lowered) for pattern in patterns):
+            urls.extend(seed_urls)
+    return dedupe_urls(urls, limit=limit)
+
+
+def public_authority_search_domains(text):
+    lowered = str(text or "").lower()
+    domains = []
+    for patterns, hint_domains, _seed_urls in PUBLIC_AUTHORITY_SOURCE_HINTS:
+        if any(re.search(pattern, lowered) for pattern in patterns):
+            domains.extend(hint_domains)
+    return dedupe_preserve_order(domains)
+
+
+def requested_research_source_count(session, project_text):
+    counts = []
+    context = session.get("projectContext") if isinstance(session, dict) else {}
+    if isinstance(context, dict):
+        for requirement in context.get("content_requirements") or []:
+            if not isinstance(requirement, dict):
+                continue
+            item_text = " ".join(str(requirement.get(key, "")) for key in ("item", "scope", "source")).lower()
+            if re.search(r"\b(sources?|references?|urls?|pages?|articles?)\b", item_text):
+                count = requirement.get("minimum_total") or requirement.get("count")
+                if isinstance(count, int) and count > 0:
+                    counts.append(count)
+    text = str(project_text or "")
+    for match in re.finditer(r"(?:at\s+least\s+)?(\d+)\s+(?:authoritative\s+|official\s+)?(?:sources?|references?|urls?|pages?|articles?)", text, re.IGNORECASE):
+        try:
+            counts.append(int(match.group(1)))
+        except ValueError:
+            pass
+    return max(counts) if counts else 0
+
+
+def build_web_research_search_queries(project_text, target_count=6):
+    text = re.sub(r"\s+", " ", str(project_text or "")).strip()
+    lowered = text.lower()
+    queries = []
+    if public_authority_research_requested(text):
+        base = "emergency food water pantry no-cook meal planning authoritative guidance"
+        domains = public_authority_search_domains(text)
+        for domain in domains:
+            queries.append(f"site:{domain} {base}")
+        queries.append(f"{base} {' '.join(domains[:6])}".strip())
+    if text:
+        queries.append(text[:220])
+    return dedupe_preserve_order(queries)[:max(1, min(8, target_count or 6))]
+
+
+def discover_web_research_urls(project_text, existing_urls=None, limit=WORKER_TASK_ITEM_CAP, target_count=6):
+    urls = list(existing_urls or [])
+    if len(urls) >= min(limit, max(1, target_count)):
+        return dedupe_urls(urls, limit=limit)
+    domains = public_authority_search_domains(project_text)
+    queries = build_web_research_search_queries(project_text, target_count=target_count)
+    remaining = max(0, limit - len(urls))
+    for query in queries:
+        if remaining <= 0:
+            break
+        found = tool_browse.search_web_urls(
+            query,
+            limit=remaining,
+            allowed_domains=domains or None,
+        )
+        urls.extend(found)
+        urls = dedupe_urls(urls, limit=limit)
+        remaining = max(0, limit - len(urls))
+        if len(urls) >= min(limit, max(1, target_count)):
+            break
+    return dedupe_urls(urls, limit=limit)
+
+
 def infer_web_research_urls(project_text, limit=WORKER_TASK_ITEM_CAP):
     """
     Infer a bounded set of web-research targets when the user asked for live
     source work in natural language but did not paste explicit URLs.
 
     This is intentionally conservative and transparent: it only seeds obvious
-    named destinations (Yahoo News) or well-known reference sites for broad
-    gallery research. The fetched artifacts remain the evidence source.
+    named destinations or well-known reference sites. Search discovery happens
+    later in prepare_workspace_research(), and fetched artifacts remain the
+    evidence source.
     """
     text = project_text or ""
     lowered = text.lower()
@@ -9664,6 +9816,8 @@ def infer_web_research_urls(project_text, limit=WORKER_TASK_ITEM_CAP):
 
     if re.search(r"\b(yahoo\s*news|yahoonews)\b", lowered):
         urls.append("https://news.yahoo.com/")
+
+    urls.extend(public_authority_seed_urls(text, limit=limit))
 
     gallery_requested = re.search(r"\b(gallery|galleries|art\s+dealer|art\s+dealers)\b", lowered)
     web_research_requested = re.search(
@@ -9722,7 +9876,29 @@ def prepare_workspace_research(workspace_dir, session):
     caps_required = session_capabilities_required(session)
     wants_browse = any(c in {"web_browse", "web_fetch"} for c in caps_required)
     wants_source_screenshots = "screenshot_capture" in set(caps_required) and source_screenshot_requested(project_text)
+    source_target_count = requested_research_source_count(session, project_text)
     urls = infer_web_research_urls(project_text or "", limit=WORKER_TASK_ITEM_CAP)
+    if source_target_count:
+        target_url_count = min(WORKER_TASK_ITEM_CAP, max(6, source_target_count))
+    elif urls:
+        target_url_count = len(urls)
+    else:
+        target_url_count = 6 if wants_browse else 0
+    if wants_browse and len(urls) < target_url_count:
+        discovered_urls = discover_web_research_urls(
+            project_text or "",
+            existing_urls=urls,
+            limit=WORKER_TASK_ITEM_CAP,
+            target_count=target_url_count,
+        )
+        if len(discovered_urls) > len(urls):
+            emit_event(
+                "browse",
+                f"search discovered {len(discovered_urls) - len(urls)} source URL(s)",
+                mode="search",
+                ok=True,
+            )
+            urls = discovered_urls
 
     if not wants_browse and not urls:
         return {"fetched": [], "screenshots": [], "skipped_reason": "no browse capability required and no URLs in request"}

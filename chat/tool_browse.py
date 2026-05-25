@@ -32,10 +32,13 @@ All modes return a normalized dict:
 from __future__ import annotations
 
 import hashlib
+import html
 import os
 import re
 import time
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.request import Request, urlopen
 
 
 def is_available() -> bool:
@@ -227,6 +230,10 @@ def fetch_url(url: str, mode: str = "auto", timeout: int = 1200) -> dict:
 
 
 URL_PATTERN = re.compile(r"(https?://[^\s,)>'\"]+)", re.IGNORECASE)
+DDG_RESULT_PATTERN = re.compile(
+    r"<a[^>]+class=[\"'][^\"']*result__a[^\"']*[\"'][^>]+href=[\"']([^\"']+)[\"']",
+    re.IGNORECASE,
+)
 
 
 def extract_urls(text: str, limit: int = 25) -> list:
@@ -241,6 +248,68 @@ def extract_urls(text: str, limit: int = 25) -> list:
         if len(seen) >= limit:
             break
     return seen
+
+
+def _search_result_url(href: str) -> str:
+    cleaned = html.unescape(href or "").strip()
+    if cleaned.startswith("//"):
+        cleaned = "https:" + cleaned
+    parsed = urlparse(cleaned)
+    if parsed.netloc.endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
+        target = parse_qs(parsed.query).get("uddg", [""])[0]
+        cleaned = target or cleaned
+    return cleaned
+
+
+def _domain_allowed(url: str, allowed_domains: list[str] | tuple[str, ...] | None) -> bool:
+    if not allowed_domains:
+        return True
+    host = (urlparse(url).netloc or "").lower()
+    host = host[4:] if host.startswith("www.") else host
+    for domain in allowed_domains:
+        allowed = str(domain or "").strip().lower()
+        if not allowed:
+            continue
+        allowed = allowed[1:] if allowed.startswith(".") else allowed
+        if host == allowed or host.endswith("." + allowed):
+            return True
+    return False
+
+
+def search_web_urls(query: str, limit: int = 8, allowed_domains: list[str] | tuple[str, ...] | None = None,
+                    timeout: int = 15) -> list:
+    """
+    Discover candidate source URLs for browse-required tasks that did not name
+    literal URLs. Uses DuckDuckGo's lightweight HTML endpoint, then returns
+    de-redirected result links. The caller still fetches each returned URL and
+    only fetched artifacts count as evidence.
+    """
+    query = re.sub(r"\s+", " ", str(query or "")).strip()
+    if not query or limit <= 0:
+        return []
+
+    url = "https://duckduckgo.com/html/?" + urlencode({"q": query})
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0 GemmaForge/0.1"})
+    try:
+        body = urlopen(req, timeout=timeout).read(300000).decode("utf-8", errors="replace")
+    except Exception:
+        return []
+
+    results = []
+    for href in DDG_RESULT_PATTERN.findall(body):
+        candidate = _search_result_url(href)
+        if not candidate.startswith(("http://", "https://")):
+            continue
+        parsed = urlparse(candidate)
+        if parsed.netloc.endswith("duckduckgo.com"):
+            continue
+        if not _domain_allowed(candidate, allowed_domains):
+            continue
+        if candidate not in results:
+            results.append(candidate)
+        if len(results) >= limit:
+            break
+    return results
 
 
 def url_slug(url: str, max_len: int = 60) -> str:
