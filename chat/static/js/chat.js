@@ -199,8 +199,8 @@ function updateDirectoryModeNote() {
     }
 
     input.placeholder = existing
-        ? "/Users/webot/Projects/existing-project"
-        : "/Users/webot/Projects/new-project";
+        ? "~/Projects/existing-project"
+        : "~/Projects/new-project";
     note.textContent = existing
         ? "Existing directory: this path must already exist. Forge Flow orients on it before any implementation work."
         : "No directory yet: leave blank for Forge to create a workspace automatically, or enter a desired new path and Project Execution will create it.";

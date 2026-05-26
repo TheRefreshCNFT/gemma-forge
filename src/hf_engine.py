@@ -7,9 +7,13 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("HuggingFaceEngine")
 
 class HuggingFaceEngine:
-    def __init__(self, token_path: str = "/Users/webot/.webot/credentials/hf-token"):
+    def __init__(self, token_path: Optional[str] = None):
         self.api = HfApi()
-        self.token = self._load_token(token_path)
+        resolved_token_path = token_path or os.environ.get(
+            "GFORGE_HF_TOKEN_PATH",
+            os.path.join(os.path.expanduser("~"), ".gforge", "credentials", "hf-token"),
+        )
+        self.token = self._load_token(resolved_token_path)
         if self.token:
             try:
                 login(token=self.token)
