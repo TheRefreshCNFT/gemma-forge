@@ -11,6 +11,7 @@ HF_TOKEN_DEFAULT = os.path.join(
     "credentials",
     "hf-token",
 )
+HF_TOKEN_ORACLE_PATH = "/home/opc/webot_configs/hf-token.txt"
 HF_TOKEN_LEGACY_PATH = "/Users/webot/.webot/credentials/hf-token"
 HF_TOKEN_PATH_ENV_VARS = ("GFORGE_HF_TOKEN_PATH", "HF_TOKEN_PATH")
 HF_TOKEN_VALUE_ENV_VARS = ("GFORGE_HF_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
@@ -33,6 +34,8 @@ def resolve_hf_token_path() -> str:
         value = os.environ.get(key, "").strip()
         if value:
             return _expand_config_path(value)
+    if os.path.exists(HF_TOKEN_ORACLE_PATH):
+        return HF_TOKEN_ORACLE_PATH
     if os.path.exists(HF_TOKEN_LEGACY_PATH):
         return HF_TOKEN_LEGACY_PATH
     return HF_TOKEN_DEFAULT

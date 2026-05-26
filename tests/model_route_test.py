@@ -8,6 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import chat.server as server
+import chat.workspace_scan as workspace_scan
 
 
 class FakeOllamaResponse:
@@ -119,6 +120,22 @@ class ModelRouteTest(unittest.TestCase):
         with patch.dict(os.environ, env_clear, clear=False), \
                 patch.object(server, "HF_TOKEN_PATH", token_file):
             self.assertEqual(server.read_hf_token(), "from-file")
+
+    def test_hf_token_path_uses_oracle_file_when_present(self):
+        env_clear = {
+            "GFORGE_HF_TOKEN_PATH": "",
+            "HF_TOKEN_PATH": "",
+        }
+
+        def fake_exists(path):
+            return path == workspace_scan.HF_TOKEN_ORACLE_PATH
+
+        with patch.dict(os.environ, env_clear, clear=False), \
+                patch.object(workspace_scan.os.path, "exists", fake_exists):
+            self.assertEqual(
+                workspace_scan.resolve_hf_token_path(),
+                workspace_scan.HF_TOKEN_ORACLE_PATH,
+            )
 
     def test_default_model_is_sent_to_ollama_and_recorded(self):
         captured = {}
