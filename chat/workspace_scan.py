@@ -40,11 +40,38 @@ LLAMA_CPP_ROOT = os.environ.get("LLAMA_CPP_ROOT") or (
     else LLAMA_CPP_DEFAULT
 )
 HF_TOKEN_DEFAULT = os.path.join(GFORGE_HOME, "credentials", "hf-token")
-HF_TOKEN_PATH = os.environ.get("GFORGE_HF_TOKEN_PATH") or (
-    "/Users/webot/.webot/credentials/hf-token"
-    if os.path.exists("/Users/webot/.webot/credentials/hf-token")
-    else HF_TOKEN_DEFAULT
-)
+HF_TOKEN_LEGACY_PATH = "/Users/webot/.webot/credentials/hf-token"
+HF_TOKEN_PATH_ENV_VARS = ("GFORGE_HF_TOKEN_PATH", "HF_TOKEN_PATH")
+HF_TOKEN_VALUE_ENV_VARS = ("GFORGE_HF_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
+
+
+def _expand_config_path(path: str) -> str:
+    return os.path.expandvars(os.path.expanduser(path.strip()))
+
+
+def hf_token_from_env() -> str | None:
+    for key in HF_TOKEN_VALUE_ENV_VARS:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    return None
+
+
+def resolve_hf_token_path() -> str:
+    for key in HF_TOKEN_PATH_ENV_VARS:
+        value = os.environ.get(key, "").strip()
+        if value:
+            return _expand_config_path(value)
+    if os.path.exists(HF_TOKEN_LEGACY_PATH):
+        return HF_TOKEN_LEGACY_PATH
+    return HF_TOKEN_DEFAULT
+
+
+def hf_token_ready() -> bool:
+    return bool(hf_token_from_env()) or os.path.exists(resolve_hf_token_path())
+
+
+HF_TOKEN_PATH = resolve_hf_token_path()
 FORGE_FLOW_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "webot-flow", "SKILL.md")
 GSD_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "gsd", "SKILL.md")
 SOCRATICODE_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "socraticode")
@@ -313,7 +340,7 @@ def _tool_status() -> dict[str, Any]:
 
     return {
         "llamaCppReady": os.path.isdir(LLAMA_CPP_ROOT),
-        "hfTokenReady": os.path.exists(HF_TOKEN_PATH),
+        "hfTokenReady": hf_token_ready(),
         "forgeFlowReady": _skill_ready("webot-flow"),
         "gsdReady": _skill_ready("gsd"),
         "socraticodeReady": bool(socraticode.get("ready") and socraticode_probe.get("ready")),

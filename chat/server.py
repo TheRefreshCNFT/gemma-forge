@@ -273,7 +273,7 @@ def _unsubscribe_events(q):
             if existing_q is not q
         ]
 try:
-    from .workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, scan_workspace
+    from .workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, hf_token_from_env, scan_workspace
     from .tool_runtime import (
         axon_runtime_status,
         axon_project_probe,
@@ -283,7 +283,7 @@ try:
         socraticode_runtime_status,
     )
 except ImportError:
-    from workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, scan_workspace
+    from workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, hf_token_from_env, scan_workspace
     from tool_runtime import (
         axon_runtime_status,
         axon_project_probe,
@@ -13781,6 +13781,9 @@ def provision_modelfile_path(model_name):
 
 
 def read_hf_token():
+    token = hf_token_from_env()
+    if token:
+        return token
     try:
         if HF_TOKEN_PATH and os.path.exists(HF_TOKEN_PATH):
             with open(HF_TOKEN_PATH, "r") as token_file:

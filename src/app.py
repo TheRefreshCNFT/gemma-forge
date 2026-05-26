@@ -393,11 +393,14 @@ class GGUFConverterApp(ctk.CTk):
                 
                 self.log(f"Downloading to: {model_dir}")
                 
-                snapshot_download(
-                    repo_id=model_id, 
-                    local_dir=model_dir, 
-                    max_workers=8
-                )
+                download_args = {
+                    "repo_id": model_id,
+                    "local_dir": model_dir,
+                    "max_workers": 8,
+                }
+                if self.hf_engine.token:
+                    download_args["token"] = self.hf_engine.token
+                snapshot_download(**download_args)
                 
                 self.after(0, lambda: self.finalize_model_selection(model_dir, model_id))
             except Exception as e:

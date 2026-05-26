@@ -97,6 +97,29 @@ class ModelRouteTest(unittest.TestCase):
         server.MODEL_PROVISION_JOBS.clear()
         self.tmp.cleanup()
 
+    def test_read_hf_token_prefers_server_env(self):
+        token_file = os.path.join(self.tmp.name, "hf-token")
+        with open(token_file, "w") as f:
+            f.write("from-file")
+
+        with patch.dict(os.environ, {"GFORGE_HF_TOKEN": " from-env "}, clear=False), \
+                patch.object(server, "HF_TOKEN_PATH", token_file):
+            self.assertEqual(server.read_hf_token(), "from-env")
+
+    def test_read_hf_token_uses_configured_file(self):
+        token_file = os.path.join(self.tmp.name, "hf-token")
+        with open(token_file, "w") as f:
+            f.write("from-file\n")
+
+        env_clear = {
+            "GFORGE_HF_TOKEN": "",
+            "HF_TOKEN": "",
+            "HUGGING_FACE_HUB_TOKEN": "",
+        }
+        with patch.dict(os.environ, env_clear, clear=False), \
+                patch.object(server, "HF_TOKEN_PATH", token_file):
+            self.assertEqual(server.read_hf_token(), "from-file")
+
     def test_default_model_is_sent_to_ollama_and_recorded(self):
         captured = {}
 
