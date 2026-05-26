@@ -17,6 +17,16 @@ chat/sessions.json
 chat/session-data/
 chat/models.json
 
+# Local agent/workspace context. These stay local/backup-only and are not part
+# of the public installable product repo.
+AGENTS.md
+HANDOFF.md
+ACTIVE_STATE.md
+.handoffs/
+.planning/
+smoke-tests/
+gemma-forge-*-test/
+
 *.gguf
 *.safetensors
 models/

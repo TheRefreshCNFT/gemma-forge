@@ -670,11 +670,10 @@ button {
 }
 
 .planner-grid {
+    --bottom-card-height: clamp(420px, 48dvh, 620px);
     grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr);
     grid-template-rows: auto;
-    align-items: start;
-    /* Let the page grow when Project Context needs more reading room.
-       The left intake/terminal column caps itself and scrolls internally. */
+    align-items: stretch;
     flex: 0 0 auto;
     min-height: 0;
 }
@@ -1991,19 +1990,18 @@ textarea {
 }
 
 .session-conversation-card {
-    --context-pane-height: clamp(420px, 48dvh, 620px);
     background: var(--panel-alt);
     border: 1px solid var(--line);
     border-radius: 8px;
     padding: 14px;
-    margin-top: 4px;
+    margin-top: auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    flex: 0 0 var(--context-pane-height);
-    height: var(--context-pane-height);
-    min-height: var(--context-pane-height);
-    max-height: var(--context-pane-height);
+    flex: 0 0 var(--bottom-card-height);
+    height: var(--bottom-card-height);
+    min-height: var(--bottom-card-height);
+    max-height: var(--bottom-card-height);
     overflow: hidden;
 }
 
@@ -2100,7 +2098,7 @@ textarea {
        intake-panel (formerly the agent-output slot). Rounded, bordered,
        fits the column width. Fills remaining vertical space so the stream
        has room to breathe when expanded. */
-    margin: 14px 0 0 0;
+    margin: auto 0 0 0;
     flex: 1 1 auto;
     min-height: 140px;
     background: #0b0f17;
@@ -2115,9 +2113,10 @@ textarea {
 }
 
 .event-terminal:not(.collapsed) {
-    flex: 0 0 clamp(320px, 43dvh, 540px);
-    min-height: clamp(320px, 43dvh, 540px);
-    max-height: clamp(380px, 56dvh, 650px);
+    flex: 0 0 var(--bottom-card-height);
+    height: var(--bottom-card-height);
+    min-height: var(--bottom-card-height);
+    max-height: var(--bottom-card-height);
 }
 
 .event-terminal-header {

@@ -16,17 +16,15 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - `PROJECT_PLAN.md` - current hardening plan and final submission needs.
 - `SKILL.md` - agent-facing Gemma Forge harness behavior.
 - `forge.md` - hidden always-on Forge operating context, similar in role to an `AGENTS.md` for the harness.
-- `AGENTS.md` - local development and operating rules.
 - `.github/CODEOWNERS` - repository ownership rule for public PR review.
 - `.github/pull_request_template.md` - GitHub PR safety and verification checklist.
-- `.gitignore` - excludes local project records, generated workspaces, Axon indexes, logs, model files, and environments.
+- `.gitignore` - excludes local agent context, generated workspaces, Axon indexes, logs, model files, and environments.
 - `package.json` - npm entrypoint for the required `npm run check` command.
 - `pyproject.toml` - Python package metadata and `gemma-forge` CLI entrypoint.
 - `LICENSE` - MIT license.
 - `CONTEST_READINESS.md` - challenge checklist, repo plan, packaging path, and submission readiness.
 - `SUBMISSION_DRAFT.md` - DEV Build With Gemma 4 submission draft.
 - `launch_forge.command` - macOS launcher that starts the Forge Harness.
-- `.planning/` - local planning artifacts for the contest sprint.
 - `skills/` - bundled protocol skills staged by the launcher into
   `~/.gforge/harness/skills/` for one-package installs.
   - `skills/context-writer/SKILL.md` - internal Project Context Writer
@@ -71,7 +69,6 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - `docs/model-routing-proof.md` - proof path for `gemma-4` model routing.
 - `docs/python-verification-fine-tuning.md` - handoff for the Python/script verification fixes and the pattern to port next-language validation.
 - `docs/submission-media/` - screenshots, deterministic demo clip, local ComfyUI mood clips, and demo recording guide for the submission video.
-- `smoke-tests/hello-color-world/` - orchestration smoke-test deliverable with validation and screenshot artifact.
 
 ## Tests
 
@@ -91,13 +88,8 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Initial recommended Forge Brain: `gemma-4-e4b-it`.
 - Default embedding model for SocratiCode: `nomic-embed-text:latest`.
 - Current public repo: `https://github.com/TheRefreshCNFT/gemma-forge`.
-- Full-state external backups: `/Volumes/PHIXERO/Backups/gemma-forge/`.
-- Backup policy: a full backup/state-alignment request means the live
-  local working state is backed up to the external SSD and GitHub is
-  aligned with the installable repo state. Routine alignment backups can
-  omit `~/.gforge/models` when Ian says the model cache does not need to
-  be backed up again; repo and harness runtime/session state still get
-  preserved.
+- Full-state backups are operator-local and are not part of the public
+  installable repo.
 
 ## Current Behavior
 
