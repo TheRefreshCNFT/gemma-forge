@@ -4070,13 +4070,7 @@ def detect_tool_status():
             "mode": "local project protocol",
         },
         "gsd": {
-            "ready": any(
-                os.path.exists(path)
-                for path in (
-                    os.path.join(PROJECT_ROOT, "skills", "gsd", "SKILL.md"),
-                    os.path.join(GFORGE_DATA_ROOT, "skills", "gsd", "SKILL.md"),
-                )
-            ),
+            "ready": os.path.exists("/Users/webot/.codex/skills/gsd/SKILL.md"),
             "label": "GSD",
             "mode": "local skill prompt + Gemma planning",
         },

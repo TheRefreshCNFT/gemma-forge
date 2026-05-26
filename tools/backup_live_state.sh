@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: tools/backup_live_state.sh [--timestamp YYYYMMDDTHHMMSSZ] [--skip-check]
 
-Creates a verified full live local working-state backup.
+Creates a verified full live local working-state backup on the PHIXERO SSD.
 
 This script intentionally:
   - requires git HEAD to match origin/main before backup,
@@ -59,7 +59,7 @@ repo_src="$repo_root"
 harness_src="$HOME/.gforge/harness"
 model_cache="$HOME/.gforge/models"
 launch_agent="$HOME/Library/LaunchAgents/com.webot.gemma-forge.harness.plist"
-ssd_root="${GFORGE_BACKUP_ROOT:-$HOME/Backups/gemma-forge}"
+ssd_root="/Volumes/PHIXERO/Backups/gemma-forge"
 backup_root="$ssd_root/${timestamp}-full-live-local-working-state"
 archive="$backup_root/archives/gemma-forge-full-live-local-working-state.tar.gz"
 
@@ -67,8 +67,8 @@ command -v git >/dev/null || die "git is required"
 command -v rsync >/dev/null || die "rsync is required"
 command -v shasum >/dev/null || die "shasum is required"
 command -v gzip >/dev/null || die "gzip is required"
-mkdir -p "$ssd_root"
-[ -w "$ssd_root" ] || die "backup root is not writable: $ssd_root"
+[ -d /Volumes/PHIXERO ] || die "PHIXERO SSD is not mounted at /Volumes/PHIXERO"
+[ -w /Volumes/PHIXERO ] || die "PHIXERO SSD is not writable"
 [ -d "$harness_src" ] || die "harness runtime directory missing: $harness_src"
 [ ! -e "$backup_root" ] || die "backup target already exists: $backup_root"
 
@@ -124,7 +124,7 @@ git status --short --branch > "$backup_root/manifests/git-status.txt"
 git rev-parse HEAD > "$backup_root/manifests/git-head.txt"
 git log --oneline -1 > "$backup_root/manifests/git-last-commit.txt"
 git ls-remote origin refs/heads/main > "$backup_root/manifests/git-ls-remote-main.txt"
-df -h "$ssd_root" > "$backup_root/manifests/backup-free-space.txt"
+df -h /Volumes/PHIXERO > "$backup_root/manifests/ssd-free-space.txt"
 du -sh "$repo_src" "$harness_src" > "$backup_root/manifests/source-sizes.txt"
 npm run harness:status > "$backup_root/manifests/harness-status.txt" 2>&1 || true
 curl -fsS http://127.0.0.1:5005/api/model/route > "$backup_root/manifests/model-route.json" 2> "$backup_root/manifests/model-route.err" || true

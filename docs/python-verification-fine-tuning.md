@@ -181,7 +181,7 @@ On Ian's Mac, the shell `python3` may point at Homebrew Python without the harne
 dependencies. The live harness LaunchAgent uses:
 
 ```text
-.venv/bin/python -m chat.server
+/Users/webot/Projects/gemma-forge/.venv/bin/python -m chat.server
 ```
 
 For repo validation, prefer:

@@ -2,8 +2,7 @@
 set -euo pipefail
 
 ACTION="${1:-}"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO="${GFORGE_PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+REPO="${GFORGE_PROJECT_ROOT:-/Users/webot/Projects/gemma-forge}"
 HOST="${GFORGE_HOST:-127.0.0.1}"
 PORT="${GFORGE_PORT:-5005}"
 URL="http://$HOST:$PORT/"

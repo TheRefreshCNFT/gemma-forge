@@ -34,9 +34,17 @@ GFORGE_SKILLS_DIR = os.path.join(GFORGE_HOME, "skills")
 PROJECT_SKILLS_DIR = os.path.join(PROJECT_ROOT, "skills")
 AGENTS_SKILLS_DIR = os.path.join(HOME, ".agents", "skills")
 LLAMA_CPP_DEFAULT = os.path.join(GFORGE_HOME, "tools", "llama.cpp")
-LLAMA_CPP_ROOT = os.environ.get("LLAMA_CPP_ROOT", LLAMA_CPP_DEFAULT)
+LLAMA_CPP_ROOT = os.environ.get("LLAMA_CPP_ROOT") or (
+    "/Users/webot/Projects/gguf/llama.cpp"
+    if os.path.isdir("/Users/webot/Projects/gguf/llama.cpp")
+    else LLAMA_CPP_DEFAULT
+)
 HF_TOKEN_DEFAULT = os.path.join(GFORGE_HOME, "credentials", "hf-token")
-HF_TOKEN_PATH = os.environ.get("GFORGE_HF_TOKEN_PATH", HF_TOKEN_DEFAULT)
+HF_TOKEN_PATH = os.environ.get("GFORGE_HF_TOKEN_PATH") or (
+    "/Users/webot/.webot/credentials/hf-token"
+    if os.path.exists("/Users/webot/.webot/credentials/hf-token")
+    else HF_TOKEN_DEFAULT
+)
 FORGE_FLOW_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "webot-flow", "SKILL.md")
 GSD_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "gsd", "SKILL.md")
 SOCRATICODE_SKILL_PATH = os.path.join(CODEX_HOME, "skills", "socraticode")
