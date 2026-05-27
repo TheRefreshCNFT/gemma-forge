@@ -25,6 +25,11 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - `CONTEST_READINESS.md` - challenge checklist, repo plan, packaging path, and submission readiness.
 - `SUBMISSION_DRAFT.md` - DEV Build With Gemma 4 submission draft.
 - `launch_forge.command` - macOS launcher that starts the Forge Harness.
+- `docs/model-downloads.json` - metadata-only optional model catalog for
+  known-good GGUF downloads and advanced conversion candidates. It does not
+  contain model weights and is not part of the default install download.
+- `docs/model-provisioning.md` - public guidance for the fixed default model
+  lane, optional GGUF/Ollama downloads, and advanced llama.cpp conversion setup.
 - `skills/` - bundled protocol skills staged by the launcher into
   `~/.gforge/harness/skills/` for one-package installs.
   - `skills/context-writer/SKILL.md` - internal Project Context Writer
@@ -111,13 +116,21 @@ Non-negotiable authenticity rule: Gemma Forge must not pre-bake, fake, force, te
 - Settings can import installed Ollama models, search Hugging Face by
   provider/keyword/repo, select from five paged model-result pills,
   provision the selected repo into Ollama, show model route status, and
-  open the error log.
+  open the error log. Optional download recommendations are tracked as
+  metadata in `docs/model-downloads.json`; quickstart still pulls only the
+  fixed default `gemma4:e4b` / `gemma-4-e4b-it` lane.
 - Hugging Face provisioning now starts the old model-forge pipeline from
   the harness: download the selected repo into `~/.gforge/models`, use a
   direct GGUF when available, otherwise convert with
   `convert_hf_to_gguf.py`, quantize with `llama-quantize`, write an
   Ollama Modelfile, and run `ollama create`. The UI polls the provision
   job and only creates a project interface after the model is runnable.
+  Raw-weight conversion resolves a llama.cpp Python environment separately
+  from the Flask harness venv, preferring `GFORGE_LLAMA_CPP_PYTHON` or a
+  sibling llama.cpp checkout venv such as `/path/to/gguf/venv/bin/python`;
+  if converter dependencies are missing, provisioning fails before the
+  large download with guidance to use a GGUF/Ollama model or prepare
+  llama.cpp.
   Queued/provisioning/failed/downloaded-only models remain disabled in
   the Forge Brain pills and cannot start/run project work until Ollama
   lists them as installed.

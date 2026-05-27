@@ -327,6 +327,7 @@ HF_MODEL_SEARCH_PAGE_SIZE = 5
 HF_MODEL_SEARCH_MAX_OFFSET = 250
 HF_MODEL_SEARCH_MAX_QUERY_CHARS = 120
 LLAMA_CPP_BIN = os.environ.get("LLAMA_CPP_BIN", os.path.join(LLAMA_CPP_ROOT, "build", "bin"))
+LLAMA_CPP_CONVERTER_IMPORTS = ("transformers", "torch", "numpy", "sentencepiece")
 MODEL_PROVISION_LOCK = threading.Lock()
 MODEL_PROVISION_JOBS = {}
 MODEL_PROVISION_QUANTIZATION = os.environ.get("GFORGE_MODEL_QUANTIZATION", "Q4_K_M")
@@ -13614,6 +13615,19 @@ def run_model_provision_job(job_id):
         )
         remote_gguf = preferred_remote_gguf_file(repo_id)
 
+        converter = None
+        converter_python = None
+        if not remote_gguf and not job.get("downloadOnly"):
+            converter = require_llama_cpp_converter()
+            converter_python = require_llama_cpp_python()
+            update_model_provision_job(
+                job_id,
+                status="provisioning",
+                step="convert-ready",
+                progress=0.12,
+                message=f"Raw HF weights require llama.cpp conversion; using {converter_python}.",
+            )
+
         update_model_provision_job(
             job_id,
             status="provisioning",
@@ -13657,7 +13671,8 @@ def run_model_provision_job(job_id):
                 message=f"Found GGUF file {os.path.basename(gguf_path)}. Conversion and quantization are not needed.",
             )
         else:
-            converter = require_llama_cpp_converter()
+            converter = converter or require_llama_cpp_converter()
+            converter_python = converter_python or require_llama_cpp_python()
             update_model_provision_job(
                 job_id,
                 status="provisioning",
@@ -13669,7 +13684,7 @@ def run_model_provision_job(job_id):
             out_temp = out_gguf.replace(".gguf", "-f16.gguf")
             run_provision_command(
                 job_id,
-                [sys.executable, converter, model_dir, "--outfile", out_temp],
+                [converter_python, converter, model_dir, "--outfile", out_temp],
                 "convert",
             )
 
@@ -13863,6 +13878,89 @@ def require_llama_cpp_converter():
         if os.path.exists(candidate):
             return candidate
     raise RuntimeError(f"llama.cpp converter was not found. Expected convert_hf_to_gguf.py under {LLAMA_CPP_ROOT}.")
+
+
+def venv_python_path(venv_dir):
+    candidates = [
+        os.path.join(venv_dir, "bin", "python"),
+        os.path.join(venv_dir, "Scripts", "python.exe"),
+    ]
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return candidates[0]
+
+
+def llama_cpp_python_candidates():
+    candidates = []
+    configured = os.environ.get("GFORGE_LLAMA_CPP_PYTHON", "").strip() or os.environ.get("LLAMA_CPP_PYTHON", "").strip()
+    if configured:
+        candidates.append(configured)
+
+    llama_parent = os.path.dirname(os.path.abspath(LLAMA_CPP_ROOT))
+    candidates.extend([
+        venv_python_path(os.path.join(llama_parent, "venv")),
+        venv_python_path(os.path.join(LLAMA_CPP_ROOT, ".venv")),
+        venv_python_path(os.path.join(GFORGE_HOME, "tools", "llama.cpp", ".venv")),
+        sys.executable,
+    ])
+
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        unique.append(candidate)
+    return unique
+
+
+def python_has_required_modules(python_path, modules=LLAMA_CPP_CONVERTER_IMPORTS):
+    if not python_path or not os.path.exists(python_path):
+        return False, "missing"
+    if not os.access(python_path, os.X_OK):
+        return False, "not executable"
+
+    module_list = repr(list(modules))
+    script = (
+        "import importlib.util, sys\n"
+        f"missing = [m for m in {module_list} if importlib.util.find_spec(m) is None]\n"
+        "print(', '.join(missing))\n"
+        "sys.exit(1 if missing else 0)\n"
+    )
+    try:
+        result = subprocess.run(
+            [python_path, "-c", script],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=30,
+        )
+    except Exception as error:
+        return False, str(error)
+
+    missing = result.stdout.strip() or result.stderr.strip()
+    if result.returncode != 0:
+        return False, f"missing imports: {missing}" if missing else "import check failed"
+    return True, ""
+
+
+def require_llama_cpp_python():
+    checked = []
+    for candidate in llama_cpp_python_candidates():
+        ok, reason = python_has_required_modules(candidate)
+        if ok:
+            return candidate
+        checked.append(f"{candidate} ({reason})")
+
+    checked_text = "; ".join(checked) if checked else "no candidate Python interpreters found"
+    required = ", ".join(LLAMA_CPP_CONVERTER_IMPORTS)
+    raise RuntimeError(
+        "Raw Hugging Face conversion requires a llama.cpp Python environment "
+        f"with {required}. Set GFORGE_LLAMA_CPP_PYTHON to a prepared Python, "
+        "install the llama.cpp converter requirements, or choose a GGUF/Ollama "
+        f"model that does not need conversion. Checked: {checked_text}"
+    )
 
 
 def require_llama_quantize():

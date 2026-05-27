@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "catalogKind": "metadata-only",
+  "lastChecked": "2026-05-27",
+  "reviewCadence": "monthly",
+  "defaultInstall": {
+    "id": "gemma-4-e4b-it",
+    "label": "Gemma 4 E4B",
+    "sourceType": "ollama",
+    "source": "gemma4:e4b",
+    "localAlias": "gemma-4-e4b-it",
+    "autoInstalledByQuickstart": true,
+    "requiresLlamaCpp": false,
+    "notes": "The quickstart always pulls this model first and opens Gemma Forge with it ready."
+  },
+  "optionalDownloads": [
+    {
+      "id": "gemma-4-e4b-it-gguf",
+      "label": "Gemma 4 E4B GGUF Q4_K_M",
+      "sourceType": "huggingface-gguf",
+      "source": "unsloth/gemma-4-E4B-it-GGUF",
+      "recommendedFile": "gemma-4-E4B-it-Q4_K_M.gguf",
+      "suggestedOllamaName": "gemma-4-e4b-it",
+      "requiresLlamaCpp": false,
+      "approxDownloadGb": 5.0,
+      "status": "verified-local",
+      "lastVerified": "2026-05-24",
+      "notes": "Known-good direct GGUF path. Conversion is not required."
+    },
+    {
+      "id": "qwen3-5-9b-q4-k-m",
+      "label": "Qwen 3.5 9B GGUF Q4_K_M",
+      "sourceType": "huggingface-gguf",
+      "source": "unsloth/Qwen3.5-9B-GGUF",
+      "recommendedFile": "Qwen3.5-9B-Q4_K_M.gguf",
+      "suggestedOllamaName": "qwen3.5-9b",
+      "requiresLlamaCpp": false,
+      "approxDownloadGb": 5.7,
+      "status": "verified-local",
+      "lastVerified": "2026-05-26",
+      "notes": "Known-good direct GGUF path. Conversion is not required."
+    },
+    {
+      "id": "hyperclovax-seed-text-instruct-1-5b-q4-k-m",
+      "label": "HyperCLOVAX SEED Text Instruct 1.5B GGUF Q4_K_M",
+      "sourceType": "huggingface-gguf",
+      "source": "rippertnt/HyperCLOVAX-SEED-Text-Instruct-1.5B-Q4_K_M-GGUF",
+      "recommendedFile": "hyperclovax-seed-text-instruct-1.5b-q4_k_m.gguf",
+      "suggestedOllamaName": "hyperclovax-seed-text-instruct-1.5b-q4_k_m",
+      "requiresLlamaCpp": false,
+      "approxDownloadGb": 1.2,
+      "status": "verified-local",
+      "lastVerified": "2026-05-26",
+      "notes": "Small direct GGUF path for users experimenting with lighter local models."
+    },
+    {
+      "id": "vntl-llama3-8b-v2-q5-k-m",
+      "label": "VNTL Llama 3 8B v2 GGUF Q5_K_M",
+      "sourceType": "huggingface-gguf",
+      "source": "lmg-anon/vntl-llama3-8b-v2-gguf",
+      "recommendedFile": "vntl-llama3-8b-v2-hf-q5_k_m.gguf",
+      "suggestedOllamaName": "vntl-llama3-8b-v2",
+      "requiresLlamaCpp": false,
+      "approxDownloadGb": 5.8,
+      "status": "verified-local",
+      "lastVerified": "2026-05-26",
+      "notes": "Known-good direct GGUF path. Conversion is not required."
+    },
+    {
+      "id": "qwen3-6-35b-a3b-fp8-raw",
+      "label": "Qwen 3.6 35B A3B FP8 raw Hugging Face weights",
+      "sourceType": "huggingface-raw",
+      "source": "Qwen/Qwen3.6-35B-A3B-FP8",
+      "recommendedFile": null,
+      "suggestedOllamaName": "qwen3.6-35b-a3b-fp8",
+      "requiresLlamaCpp": true,
+      "approxDownloadGb": 35.0,
+      "status": "advanced-conversion-required",
+      "lastVerified": null,
+      "notes": "Raw safetensors repo. Requires llama.cpp converter Python plus llama-quantize before Gemma Forge can import it into Ollama."
+    }
+  ]
+}

@@ -12,6 +12,7 @@
 <p align="center">
   <a href="https://github.com/TheRefreshCNFT/gemma-forge">Repository</a> |
   <a href="docs/submission-media">Demo Media</a> |
+  <a href="docs/model-provisioning.md">Model Provisioning</a> |
   <a href="CONTEST_READINESS.md">Contest Readiness</a> |
   <a href="CONTRIBUTING.md">Contributing</a>
 </p>
@@ -41,7 +42,8 @@ The harness:
 - Scans local readiness: CPU, memory, disk, Ollama, installed models, tool state, and bundled skills.
 - Defaults to `gemma-4-e4b-it`, the Gemma 4 E4B / 4B-class lane chosen for extra reasoning headroom while staying practical for local use.
 - Shows users what the default model needs before provisioning: the harness reserves about 10 GB of disk and 8 GB of RAM for this lane, while the current quantized Ollama artifact is about 5 GB on disk.
-- Lets users import installed Ollama models or search/provision other compatible Hugging Face repos from Settings when they want a different local model.
+- Lets users import installed Ollama models or search/provision other compatible Hugging Face repos from Settings when they want a different local model after first run.
+- Keeps an optional metadata-only model download catalog at [`docs/model-downloads.json`](docs/model-downloads.json) for known-good direct GGUF paths and advanced raw-weight conversion notes.
 - Keeps each project in its own scoped workspace instead of one endless global chat.
 - Runs work through protocol cards for context, planning, execution, code intelligence, verification, and handoff.
 - Stages Forge skills into each project workspace so the local model can use the right instructions without depending on private absolute paths.
@@ -77,7 +79,7 @@ The hero screenshot above shows the main Forge Harness view: local readiness, Ol
       <br>
       <strong>Models And Interfaces</strong>
       <br>
-      Settings keeps model management in the app. Users can import installed Ollama models, search Hugging Face, name an Ollama model, provision supported repos, and confirm which model the harness actually called last. The default install target is `gemma-4-e4b-it`; users can still bring in other compatible local models when they want more control.
+      Settings keeps model management in the app after first run. Users can import installed Ollama models, search Hugging Face, name an Ollama model, provision supported repos, and confirm which model the harness actually called last. The default install target is always `gemma-4-e4b-it`; users can still bring in other compatible local models when they want more control.
     </td>
     <td width="50%" valign="top">
       <img src="docs/submission-media/screenshots/current/05-project-sidebar.png" alt="Project sidebar with active and done work">
@@ -146,7 +148,7 @@ Gemma Forge is local-first. A typical setup should have:
 - Git.
 - Ollama installed and running for local model calls.
 - Node.js 18 or newer for JavaScript validation checks.
-- A local Gemma model available through Ollama. On macOS, the one-command installer pulls `gemma4:e4b` and aliases it to `gemma-4-e4b-it` unless that default model step is explicitly skipped.
+- A local Gemma model available through Ollama. On macOS, the one-command installer pulls `gemma4:e4b` and aliases it to `gemma-4-e4b-it` for the fixed first-run path.
 
 The macOS launcher can install or verify the required local tools for a first run. Manual installs should prepare those dependencies before launching the harness.
 
@@ -177,6 +179,17 @@ What to expect:
 - Current quantized Ollama artifact: about 5 GB on disk.
 - The one-command installer uses this fixed first-run default instead of asking users to choose a model size during setup.
 - Users can still import installed Ollama models, provision other compatible Hugging Face repos from Settings, and choose what they want to run after setup.
+
+## Optional Model Downloads
+
+The quickstart does not ask users to choose a model and does not download any
+optional models. Once Gemma Forge is running with `gemma-4-e4b-it`, Settings can
+import installed Ollama models or provision optional Hugging Face models.
+
+Known-good optional downloads and advanced conversion notes are tracked in the
+metadata-only catalog at [`docs/model-downloads.json`](docs/model-downloads.json).
+For setup details, including when llama.cpp is required for raw Hugging Face
+weights, see [`docs/model-provisioning.md`](docs/model-provisioning.md).
 
 The first useful question is simple:
 

@@ -431,6 +431,67 @@ class ModelRouteTest(unittest.TestCase):
         self.assertEqual(record["status"], "installed")
         self.assertTrue(os.path.exists(record["modelfilePath"]))
 
+    def test_llama_cpp_python_prefers_sibling_gguf_venv(self):
+        llama_root = os.path.join(self.tmp.name, "gguf", "llama.cpp")
+        gguf_python = os.path.join(self.tmp.name, "gguf", "venv", "bin", "python")
+        os.makedirs(os.path.dirname(gguf_python), exist_ok=True)
+        os.makedirs(llama_root, exist_ok=True)
+        with open(gguf_python, "w") as f:
+            f.write("#!/usr/bin/env python\n")
+        os.chmod(gguf_python, 0o755)
+
+        def fake_import_check(python_path, modules=server.LLAMA_CPP_CONVERTER_IMPORTS):
+            return (python_path == gguf_python, "" if python_path == gguf_python else "missing imports")
+
+        with patch.object(server, "LLAMA_CPP_ROOT", llama_root), \
+                patch.object(server, "python_has_required_modules", side_effect=fake_import_check), \
+                patch.dict(os.environ, {"GFORGE_LLAMA_CPP_PYTHON": "", "LLAMA_CPP_PYTHON": ""}, clear=False):
+            self.assertEqual(server.require_llama_cpp_python(), gguf_python)
+
+    def test_raw_hf_provision_uses_llama_cpp_python_for_conversion(self):
+        commands = []
+        converter_python = "/opt/gforge-llama/bin/python"
+
+        def fake_download(_repo_id, model_dir, **_kwargs):
+            os.makedirs(model_dir, exist_ok=True)
+            with open(os.path.join(model_dir, "config.json"), "w") as f:
+                f.write("{}")
+            return model_dir
+
+        def fake_run(job_id, command, step):
+            commands.append((job_id, command, step))
+            return "ok"
+
+        workspace_after_create = {"ollama": {"models": [{"name": "raw-model:latest"}]}}
+
+        with patch.object(server, "MODELS_ROOT", self.tmp.name), \
+                patch.object(server, "preferred_remote_gguf_file", return_value=None), \
+                patch.object(server, "download_model_repo", side_effect=fake_download), \
+                patch.object(server, "require_llama_cpp_converter", return_value="/opt/llama.cpp/convert_hf_to_gguf.py"), \
+                patch.object(server, "require_llama_cpp_python", return_value=converter_python), \
+                patch.object(server, "require_llama_quantize", return_value="/opt/llama.cpp/build/bin/llama-quantize"), \
+                patch.object(server, "run_provision_command", side_effect=fake_run), \
+                patch.object(server, "scan_workspace", return_value=workspace_after_create):
+            job = {
+                "id": "model_raw_test",
+                "repoId": "Example/RawModel",
+                "modelName": "raw-model",
+                "status": "provisioning",
+                "message": "Provisioning queued.",
+                "createInterface": False,
+                "downloadOnly": False,
+                "quantization": "Q4_K_M",
+                "steps": [],
+            }
+            server.MODEL_PROVISION_JOBS[job["id"]] = dict(job)
+            server.run_model_provision_job(job["id"])
+
+        convert_command = [command for _job_id, command, step in commands if step == "convert"][0]
+        self.assertEqual(convert_command[0], converter_python)
+        self.assertIn("convert_hf_to_gguf.py", convert_command[1])
+        finished = server.model_provision_job_snapshot(job["id"])
+        self.assertEqual(finished["status"], "installed")
+
     def test_registered_uninstalled_model_cannot_start_project(self):
         server.save_models({
             "models": [{
