@@ -25,8 +25,10 @@ except ImportError:  # pragma: no cover - dependency is declared for installs.
     snapshot_download = None
 
 try:
+    from .hf_token import fetch_remote_hf_token, hf_token_from_env, read_hf_token_file, resolve_hf_token_path
     from . import tool_browse  # type: ignore
 except ImportError:
+    from hf_token import fetch_remote_hf_token, hf_token_from_env, read_hf_token_file, resolve_hf_token_path
     import tool_browse  # type: ignore
 
 try:
@@ -273,7 +275,7 @@ def _unsubscribe_events(q):
             if existing_q is not q
         ]
 try:
-    from .workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, hf_token_from_env, scan_workspace
+    from .workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, scan_workspace
     from .tool_runtime import (
         axon_runtime_status,
         axon_project_probe,
@@ -283,7 +285,7 @@ try:
         socraticode_runtime_status,
     )
 except ImportError:
-    from workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, hf_token_from_env, scan_workspace
+    from workspace_scan import GFORGE_HOME, HF_TOKEN_PATH, LLAMA_CPP_ROOT, MODELS_ROOT, scan_workspace
     from tool_runtime import (
         axon_runtime_status,
         axon_project_probe,
@@ -13784,13 +13786,13 @@ def read_hf_token():
     token = hf_token_from_env()
     if token:
         return token
-    try:
-        if HF_TOKEN_PATH and os.path.exists(HF_TOKEN_PATH):
-            with open(HF_TOKEN_PATH, "r") as token_file:
-                return token_file.read().strip() or None
-    except OSError:
-        return None
-    return None
+    configured_path = os.environ.get("GFORGE_HF_TOKEN_PATH", "").strip() or os.environ.get("HF_TOKEN_PATH", "").strip()
+    if configured_path:
+        return read_hf_token_file(configured_path)
+    token = fetch_remote_hf_token()
+    if token:
+        return token
+    return read_hf_token_file(resolve_hf_token_path())
 
 
 def download_model_repo(repo_id, model_dir, **kwargs):

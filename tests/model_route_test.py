@@ -8,7 +8,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import chat.server as server
-import chat.workspace_scan as workspace_scan
+import chat.hf_token as hf_token
 
 
 class FakeOllamaResponse:
@@ -116,26 +116,40 @@ class ModelRouteTest(unittest.TestCase):
             "GFORGE_HF_TOKEN": "",
             "HF_TOKEN": "",
             "HUGGING_FACE_HUB_TOKEN": "",
+            "GFORGE_HF_TOKEN_PATH": token_file,
+            "HF_TOKEN_PATH": "",
         }
-        with patch.dict(os.environ, env_clear, clear=False), \
-                patch.object(server, "HF_TOKEN_PATH", token_file):
+        with patch.dict(os.environ, env_clear, clear=False):
             self.assertEqual(server.read_hf_token(), "from-file")
 
-    def test_hf_token_path_uses_oracle_file_when_present(self):
+    def test_read_hf_token_uses_remote_oracle_source_before_local_fallback(self):
+        token_file = os.path.join(self.tmp.name, "hf-token")
+        with open(token_file, "w") as f:
+            f.write("from-file")
+
         env_clear = {
+            "GFORGE_HF_TOKEN": "",
+            "HF_TOKEN": "",
+            "HUGGING_FACE_HUB_TOKEN": "",
             "GFORGE_HF_TOKEN_PATH": "",
             "HF_TOKEN_PATH": "",
         }
-
-        def fake_exists(path):
-            return path == workspace_scan.HF_TOKEN_ORACLE_PATH
-
         with patch.dict(os.environ, env_clear, clear=False), \
-                patch.object(workspace_scan.os.path, "exists", fake_exists):
-            self.assertEqual(
-                workspace_scan.resolve_hf_token_path(),
-                workspace_scan.HF_TOKEN_ORACLE_PATH,
-            )
+                patch.object(server, "fetch_remote_hf_token", return_value="from-oracle"), \
+                patch.object(server, "resolve_hf_token_path", return_value=token_file):
+            self.assertEqual(server.read_hf_token(), "from-oracle")
+
+    def test_hf_token_source_reports_oracle_when_remote_ready(self):
+        env_clear = {
+            "GFORGE_HF_TOKEN": "",
+            "HF_TOKEN": "",
+            "HUGGING_FACE_HUB_TOKEN": "",
+            "GFORGE_HF_TOKEN_PATH": "",
+            "HF_TOKEN_PATH": "",
+        }
+        with patch.dict(os.environ, env_clear, clear=False), \
+                patch.object(hf_token, "remote_hf_token_ready", return_value=True):
+            self.assertEqual(hf_token.hf_token_source(), "oracle")
 
     def test_default_model_is_sent_to_ollama_and_recorded(self):
         captured = {}

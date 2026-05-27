@@ -2,50 +2,16 @@ import os
 import logging
 from typing import List, Dict, Any, Optional
 from huggingface_hub import HfApi, login
+from chat.hf_token import read_hf_token, resolve_hf_token_path
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("HuggingFaceEngine")
 
-HF_TOKEN_DEFAULT = os.path.join(
-    os.environ.get("GFORGE_HOME", os.path.join(os.path.expanduser("~"), ".gforge")),
-    "credentials",
-    "hf-token",
-)
-HF_TOKEN_ORACLE_PATH = "/home/opc/webot_configs/hf-token.txt"
-HF_TOKEN_LEGACY_PATH = "/Users/webot/.webot/credentials/hf-token"
-HF_TOKEN_PATH_ENV_VARS = ("GFORGE_HF_TOKEN_PATH", "HF_TOKEN_PATH")
-HF_TOKEN_VALUE_ENV_VARS = ("GFORGE_HF_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN")
-
-
-def _expand_config_path(path: str) -> str:
-    return os.path.expandvars(os.path.expanduser(path.strip()))
-
-
-def hf_token_from_env() -> Optional[str]:
-    for key in HF_TOKEN_VALUE_ENV_VARS:
-        value = os.environ.get(key, "").strip()
-        if value:
-            return value
-    return None
-
-
-def resolve_hf_token_path() -> str:
-    for key in HF_TOKEN_PATH_ENV_VARS:
-        value = os.environ.get(key, "").strip()
-        if value:
-            return _expand_config_path(value)
-    if os.path.exists(HF_TOKEN_ORACLE_PATH):
-        return HF_TOKEN_ORACLE_PATH
-    if os.path.exists(HF_TOKEN_LEGACY_PATH):
-        return HF_TOKEN_LEGACY_PATH
-    return HF_TOKEN_DEFAULT
-
-
 class HuggingFaceEngine:
     def __init__(self, token_path: Optional[str] = None):
         self.api = HfApi()
-        self.token_path = _expand_config_path(token_path) if token_path else resolve_hf_token_path()
-        self.token = hf_token_from_env() or self._load_token(self.token_path)
+        self.token_path = os.path.expandvars(os.path.expanduser(token_path.strip())) if token_path else resolve_hf_token_path()
+        self.token = self._load_token(self.token_path) if token_path else read_hf_token()
         if self.token:
             try:
                 login(token=self.token)
